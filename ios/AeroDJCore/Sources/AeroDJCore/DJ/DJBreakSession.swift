@@ -568,19 +568,20 @@ public final class DJBreakSession {
         case unknown
     }
 
-    /// Stale "up next" (-Fry): true when the song after this boundary may not be the planned
-    /// `tracks[k + 1]`, because the station queue feed may hand off a new queue here. Mirrors
-    /// `StationQueueFeed.takeForBoundary` (a hand-off needs a seeded active station whose key
-    /// differs from the playing queue's) and fails closed: a change promoted at this boundary,
-    /// or a queue whose station is unknown, counts as a change. Commentary, energy, genres,
-    /// moods, personality and briefing edits never change the key, so they never count.
+    /// Stale "up next" (-Fry, #301 -Echo): true when the song after this boundary may not be the
+    /// planned `tracks[k + 1]`, because the station queue feed may hand off a new queue here.
+    /// Mirrors `StationQueueFeed.takeForBoundary`: a hand-off needs a seeded active station whose
+    /// key differs from the playing queue's — including a reported seedless queue (`.known(nil)`),
+    /// which the feed replaces once the new seeded station is built. Fails closed on a change
+    /// promoted at this boundary or an unknown queue station. Commentary, energy, genres, moods,
+    /// personality and briefing edits never change the key, so they never count.
     nonisolated static func nextSongMayChange(queue: QueueStation, before: StationQueueKey?,
                                               after: StationQueueKey?) -> Bool {
         if before != after { return true }
         guard let after else { return false }          // no seeds: the feed keeps the queue
         switch queue {
         case .unknown: return true
-        case .known(nil): return false                 // the feed adopts the key, no hand-off
+        case .known(nil): return true                  // #301: reported seedless queue hands off once built
         case .known(let key?): return key != after
         }
     }
@@ -686,8 +687,8 @@ public final class DJBreakSession {
         await station.handle(.songBoundary(afterTrack: k))
         let stationAfter = StationQueueKey(station.active)
         let nextMayChange = Self.nextSongMayChange(queue: queueStation, before: stationBefore, after: stationAfter)
-        // The feed adopts a seeded key for a queue that started without one (no hand-off).
-        if queueStation == .known(nil), let stationAfter { queueStation = .known(stationAfter) }
+        // #301: do not adopt `stationAfter` onto `.known(nil)`; the session takes on the new key
+        // only when the feed actually hands off and `queueStarted` runs.
         // The change stream is async; apply a cadence change here so the next song's break
         // is planned with it before `songStarted(index: k + 1)` arrives.
         replanIfCadenceChanged(after: k)

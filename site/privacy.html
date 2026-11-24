@@ -41,7 +41,7 @@
     <!-- Copy: docs/site/privacy.md from sentinel/site-copy (#261) at bd58531, rendered by site/render-copy.py. Do not edit the copy here; change the .md and re-render. -->
 
     <h1>OnAirly Privacy Policy</h1>
-    <p><em>Last updated: November 13, 2026</em></p>
+    <p><em>Last updated: November 23, 2026</em></p>
     <section aria-labelledby="p-the-short-version">
       <h2 id="p-the-short-version">The short version</h2>
       <p>OnAirly: Personal AI Radio DJ is a radio DJ that runs on your iPhone or iPad, with iOS 17 or iPadOS 17 or later and an Apple Music subscription. Your calendar, Markdown notes, the things you share to OnAirly, your music library and your station settings are read and kept on your device. There are no ads, no analytics, no tracking and no data brokers in OnAirly, and we don't sell or share your data.</p>
@@ -63,8 +63,8 @@
       <p>What's sent: the text of every DJ line. That includes your personal items (calendar events, your shared email digest and other shared items, and notes), lines about songs from your music library, the station names you type, and the news and weather lines. Catalog song titles and artists can also be in those lines. OnAirly sends every line the DJ says to our voice server and on to ElevenLabs, which turns it into audio.</p>
       <p>What's never sent: your Apple ID, your contacts, your coordinates or your location itself, or anything you haven't approved for your briefing. Only the words the DJ speaks are sent, and a local news line can name your city or area.</p>
       <p>Your coordinates and your location itself are never sent, but a local news line can name your city or area.</p>
-      <p>How it's stored: our server keeps a short technical log without the text. Model training is turned off for our ElevenLabs account, but ElevenLabs may keep the text and audio it receives under <a href="https://elevenlabs.io/privacy-policy">its own privacy policy</a>.</p>
-      <p>You can switch back to the on-device voice at any time in Settings. Turning the cloud voice off stops this from the next line and deletes the saved cloud clips. Cloud clips of library songs and station names are kept between launches, for up to 7 days, so the same words aren't sent again. "Delete DJ clips, ratings and location" deletes them, along with the cloud clips made from your calendar, notes and shared items.</p>
+      <p>How it's stored: our server keeps a short technical log without the text, plus the App Attest security and quota records described under Data we collect below. Model training is turned off for our ElevenLabs account, but zero retention is not enabled, and ElevenLabs may keep the text and audio it receives under <a href="https://elevenlabs.io/privacy-policy">its own privacy policy</a>.</p>
+      <p>You can switch back to the on-device voice at any time in Settings. Turning the cloud voice off stops future sends from the next line and deletes the saved cloud clips on your device. It does not delete text or audio already sent to ElevenLabs (governed by ElevenLabs' privacy policy), and server-side App Attest records expire automatically on the timers below. Cloud clips of library songs and station names are kept between launches, for up to 7 days, so the same words aren't sent again. "Delete DJ clips, ratings and location" deletes them, along with the cloud clips made from your calendar, notes and shared items.</p>
     </section>
     <section aria-labelledby="p-local-news-and-weather">
       <h2 id="p-local-news-and-weather">Local news and weather</h2>
@@ -85,7 +85,7 @@
         <li><strong>City or region name.</strong> In TestFlight tester builds, the city or region name sent to GDELT for local news, as described above. This is not linked to your name or account.</li>
         <li><strong>Shared email digest.</strong> After you accept the cloud-voice notice, the text of a shared email digest that appears in a DJ line.</li>
         <li><strong>Other content you provide.</strong> After you accept the cloud-voice notice, the text of DJ lines that use your calendar, notes, other shared items, library-track lines, typed station names, and news or weather lines. Every DJ line's text goes to ElevenLabs, which may keep the text and the audio it generates. Model training is turned off for our ElevenLabs account.</li>
-        <li><strong>Device identifier.</strong> In TestFlight builds that use cloud voice, an App Attest install ID and key ID, so our server can confirm the request comes from a genuine copy of OnAirly. These are not linked to your name or Apple ID. Our server does not keep the raw install ID with the script text.</li>
+        <li><strong>Device identifier and attestation records.</strong> In TestFlight builds that use cloud voice, an App Attest install ID and key ID, so our server can confirm the request comes from a genuine copy of OnAirly. For each enrolled install, our voice server stores a per-install key record (public key, assertion counter, App Attest environment, creation day and tester tier) with a 90-day sliding TTL that refreshes when the app mints a token and expires automatically after 90 days of inactivity. It also keeps day-scoped hashed enrollment and token-mint counters for abuse and quota limits (2-day TTL) and short-lived single-use challenge marks (up to 5 minutes) to prevent replay. These security and quota records are not linked to your name or Apple ID, and our server never stores them with script text.</li>
         <li><strong>Song titles and artists.</strong> After you accept the cloud-voice notice, catalog song titles and artists that appear in a DJ line. These can travel in the same request as personal text.</li>
       </ul>
       <p>We do not collect a separate name field, a recording of your voice, purchase records, precise location, a user ID, crash or advertising data, browsing history, health or financial data, or your contacts. A typed station name that happens to be a person's name is treated as other content you provide. MusicKit and WeatherKit are Apple services.</p>
@@ -96,7 +96,7 @@
     </section>
     <section aria-labelledby="p-your-choices">
       <h2 id="p-your-choices">Your choices</h2>
-      <p>You can deny or revoke calendar, Apple Music and location access in iOS Settings, stop using your calendar or Markdown notes in the app's Connections, delete shared items in the app, or turn off cloud voice in Settings. "Delete DJ clips, ratings and location" removes saved spoken clips, ratings and location data on your device. Deleting the app removes everything it stored on your device.</p>
+      <p>You can deny or revoke calendar, Apple Music and location access in iOS Settings, stop using your calendar or Markdown notes in the app's Connections, delete shared items in the app, or turn off cloud voice in Settings. "Delete DJ clips, ratings and location" removes saved spoken clips, ratings and location data on your device. Deleting the app removes everything it stored on your device. Server-side App Attest records expire automatically (90-day sliding TTL for key records; 2-day TTL for hashed counters) and are not deleted on demand; text already sent to ElevenLabs while cloud voice was on cannot be remotely deleted by OnAirly and remains subject to ElevenLabs' privacy policy.</p>
     </section>
     <section aria-labelledby="p-changes">
       <h2 id="p-changes">Changes</h2>
