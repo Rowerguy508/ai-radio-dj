@@ -5,6 +5,8 @@ import SwiftUI
 @main
 struct AeroDJApp: App {
     private let dependencies: AppDependencies
+    /// #304 R1 (-Atlas): the app's scene phase across its scenes.
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         #if AERODJ_P0_DIAG
@@ -30,6 +32,17 @@ struct AeroDJApp: App {
                 // scene calls the same start. Station selection and the MusicKit player
                 // stay on the split root below this window.
                 .task { await AppRuntime.startIfNeeded() }
+                // #304 R1 (-Atlas): in the background the player may also hold the next station
+                // song, so MusicKit advances if iOS suspends the app; back to active, the player
+                // adopts that song if it is already playing, or goes back to one song.
+                .onChange(of: scenePhase) { _, phase in
+                    switch phase {
+                    case .background: dependencies.playback.sceneEnteredBackground()
+                    case .active: dependencies.playback.sceneBecameActive()
+                    case .inactive: break
+                    @unknown default: break
+                    }
+                }
                 #if AERODJ_P0_DIAG
                 .modifier(P0ScenePhaseTrace())
                 #endif
