@@ -11,7 +11,7 @@ import SwiftUI
 /// card: it opens that station and starts it (#454). Nothing else selects.
 ///
 /// TODO(#465 item 4): with `arrangement == .twoPane`, show this grid beside the detail.
-/// TODO(#465 item 2): with a `foldDivision`, keep the column gap on the fold.
+/// #465 item 2: with a `foldDivision`, `layout` places the column gap across the fold.
 /// On forward-merge of #493, scroll to its stored `aerodj.stations.scrollAnchor` before the
 /// selected station, like the carousel.
 struct StationGrid: View {
@@ -31,7 +31,8 @@ struct StationGrid: View {
                             .id(station.id)
                     }
                 }
-                .padding(.horizontal, CGFloat(AppWideLayout.screenGutter(.stations) + layout.sideInset))
+                .padding(.leading, CGFloat(AppWideLayout.screenGutter(.stations) + layout.leadingInset))
+                .padding(.trailing, CGFloat(AppWideLayout.screenGutter(.stations) + layout.trailingInset))
                 .padding(.top, 8)
                 .padding(.bottom, 24)
                 // The id sits on the grid, not the scroll view: in the wide capture the

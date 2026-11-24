@@ -25,9 +25,8 @@ extension EnvironmentValues {
 /// Split View resize, or unfolding the Duo with a sheet open) keeps the screen's state. Only
 /// values change: an inset, a column count.
 ///
-/// TODO(#465 item 2): on forward-merge of #510, attach `FoldDivisionProbe` here and pass the
-/// active vertical division it reports as `AppWideLayout.Input.foldDivision` (the types are
-/// the same once `FoldDivision` is a typealias for `FoldAwareness.Division`).
+/// #465 item 2: attaches `FoldDivisionProbe` on wide containers and passes the active vertical
+/// division in book pose as `AppWideLayout.Input.foldDivision`. Phones never attach the probe.
 /// When #501 lands, `SplitBarHost` owns the bar edge; this host owns widths and columns.
 private struct AppWideHost: ViewModifier {
     let screen: AppWideLayout.Screen
@@ -39,33 +38,56 @@ private struct AppWideHost: ViewModifier {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var size: CGSize = .zero
+    @State private var foldHinge: FoldAwareness.HingeSample?
+    @State private var foldDivisions: [FoldAwareness.Division] = []
 
-    private var decision: AppWideLayout.Decision? {
+    private var baseInput: AppWideLayout.Input {
         // #465 item 4: the arrangement `ArrangementPaneLayout` resolves for this container,
         // mapped onto #512's seam. `decide` does not read it yet, so nothing changes.
         let arrangement = ArrangementPaneLayout.resolve(
             hasRegularWidth: horizontalSizeClass == .regular,
             containerWidth: size.width, containerHeight: size.height,
             accessibilityTextSize: typeSize.isAccessibilitySize).appWideArrangement
-        let input = AppWideLayout.Input(hasRegularWidth: horizontalSizeClass == .regular,
-                                        containerWidth: size.width, containerHeight: size.height,
-                                        accessibilityTextSize: typeSize.isAccessibilitySize,
-                                        hasRegularHeight: verticalSizeClass.map { $0 == .regular },
-                                        // Onboarding is a content-sized sheet; see `heightIsContent`.
-                                        heightIsContent: screen == .onboarding,
-                                        arrangement: arrangement)
+        return AppWideLayout.Input(hasRegularWidth: horizontalSizeClass == .regular,
+                                   containerWidth: size.width, containerHeight: size.height,
+                                   accessibilityTextSize: typeSize.isAccessibilitySize,
+                                   hasRegularHeight: verticalSizeClass.map { $0 == .regular },
+                                   // Onboarding is a content-sized sheet; see `heightIsContent`.
+                                   heightIsContent: screen == .onboarding,
+                                   arrangement: arrangement)
+    }
+
+    private var isWideContainer: Bool {
+        AppWideLayout.isWide(baseInput)
+    }
+
+    private var decision: AppWideLayout.Decision? {
+        var input = baseInput
+        if AppWideLayout.isWide(input) {
+            input.foldDivision = AppWideLayout.activeBookFold(
+                in: foldDivisions, hinge: foldHinge,
+                containerWidth: size.width, containerHeight: size.height,
+                heightIsContent: screen == .onboarding)
+        }
         let decision = AppWideLayout.decide(input, for: screen)
         return decision.adapts ? decision : nil
     }
 
-    /// Replaces the Form's default margin (20 pt) only when the content is capped.
-    private var formMargin: CGFloat? {
-        guard formMargins, let decision, decision.sideInset > 0 else { return nil }
-        return CGFloat(AppWideLayout.screenGutter(screen) + decision.sideInset)
+    /// Replaces the Form's default margin (20 pt) only when the content is capped or shifted off a fold.
+    private var formEdgeMargins: (leading: CGFloat, trailing: CGFloat)? {
+        guard formMargins, let decision,
+              decision.leadingInset > 0 || decision.trailingInset > 0 else { return nil }
+        let gutter = AppWideLayout.screenGutter(screen)
+        return (CGFloat(gutter + decision.leadingInset), CGFloat(gutter + decision.trailingInset))
     }
 
     func body(content: Content) -> some View {
         margined(content)
+            .background {
+                if isWideContainer {
+                    FoldDivisionProbe(hinge: $foldHinge, divisions: $foldDivisions)
+                }
+            }
             .environment(\.appWideLayout, decision)
             .onGeometryChange(for: CGSize.self) { proxy in
                 proxy.size
@@ -78,12 +100,18 @@ private struct AppWideHost: ViewModifier {
 private extension AppWideHost {
     /// The phone path, an iPad sheet and any container under the readable cap get `content`
     /// untouched (not even a nil margin), so their Form keeps the system inset exactly.
-    /// Only a capped Form takes this branch. Crossing the cap rebuilds the Form; Settings
-    /// holds no state beyond an open delete confirmation, which a resize closes anyway.
+    /// Only a capped or fold-shifted Form takes this branch. Crossing the cap rebuilds the Form;
+    /// Settings holds no state beyond an open delete confirmation, which a resize closes anyway.
     @ViewBuilder
     func margined(_ content: Content) -> some View {
-        if let formMargin {
-            content.contentMargins(.horizontal, formMargin, for: .scrollContent)
+        if let edges = formEdgeMargins {
+            if abs(edges.leading - edges.trailing) < 0.5 {
+                content.contentMargins(.horizontal, edges.leading, for: .scrollContent)
+            } else {
+                content
+                    .contentMargins(.leading, edges.leading, for: .scrollContent)
+                    .contentMargins(.trailing, edges.trailing, for: .scrollContent)
+            }
         } else {
             content
         }
