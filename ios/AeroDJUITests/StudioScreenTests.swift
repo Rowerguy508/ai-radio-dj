@@ -998,7 +998,8 @@ final class StudioScreenTests: XCTestCase {
     /// (categories left, controls right) with a 32 pt center gutter straddling device midpoint
     /// (x = 410 pt) and a 56 pt trailing rail holding Done (>= 44 pt).
     @MainActor
-    func testDuoLandscapeSettingsMasterDetail() {
+    func testDuoLandscapeSettingsMasterDetail() throws {
+        try XCTSkipUnless(isOpenLayout, "The 820 × 640 pt container needs an iPad-size simulator window")
         let app = launch(scenario: "duoLandscapeSettings")
         let any = app.descendants(matching: .any)
         guard let (_, box) = openDuoContainer(app) else { return }
