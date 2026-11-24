@@ -157,7 +157,11 @@ final class AppWideLayoutTests: XCTestCase {
         XCTAssertEqual(approximate.label, "Use approximate location")
         XCTAssertEqual(app.buttons["localArea.manual"].label, "Enter a city or ZIP instead")
         XCTAssertEqual(app.buttons["localArea.notNow"].label, "Not now")
-        XCTAssertTrue(app.staticTexts["Local weather and news?"].exists)
+        // #625: CI builds have no news provider, so the title is "Local weather?", never "and news".
+        XCTAssertTrue(app.staticTexts["Local weather?"].exists, "title missing\n\(app.debugDescription)")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS[c] %@",
+                                                            "Local weather", "news")).firstMatch.exists,
+                       "the title says news in a build without a news provider")
         // #625 (-Echo): this required shot is the owner's real capture of copy v2. CI builds have
         // neither voice flag, so it is the Debug/Release/App Store body (`body(for: .appStore)`).
         func bodyText(_ phrase: String) -> XCUIElement {
@@ -175,7 +179,7 @@ final class AppWideLayoutTests: XCTestCase {
             XCTAssertTrue(box.contains(button.frame), "\(id) left the container")
             assertTarget(button, in: box, id) // #515 N1 (Fry): 44 pt minimum height
         }
-        let title = app.staticTexts["Local weather and news?"]
+        let title = app.staticTexts["Local weather?"]
         XCTAssertGreaterThanOrEqual(title.frame.minX, box.minX + 63, "title \(title.frame)")
         save(app, "duo-wide-localarea")
     }

@@ -9,7 +9,10 @@ final class LocalAreaPromptCopyTests: XCTestCase {
     /// (`LocalAreaConsentCopyBuildTests`). These pins are the owner-reviewed wording.
     func testConsentCopyAndVersionAreUnchanged() {
         XCTAssertEqual(LocalAreaConsentCopy.version, 2)
-        XCTAssertEqual(LocalAreaConsentCopy.title, "Local weather and news?")
+        // #625 (Orion): "and news" only in the build with a news provider.
+        XCTAssertEqual(LocalAreaConsentCopy.title(for: .appStore), "Local weather?")
+        XCTAssertEqual(LocalAreaConsentCopy.title(for: .ownerAB), "Local weather?")
+        XCTAssertEqual(LocalAreaConsentCopy.title(for: .tester), "Local weather and news?")
         XCTAssertEqual(LocalAreaConsentCopy.body(for: .appStore),
                        "OnAirly can mention your local weather between songs. It uses your approximate "
                        + "location only, while the app is open. To find your city or region, Apple's geocoding "

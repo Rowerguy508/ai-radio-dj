@@ -202,7 +202,7 @@ public final class LocalAreaStore: @unchecked Sendable {
 
 /// Copy for the opt-in prompt (`LocalAreaPrompt` in the app). Versioned like the cloud-voice copy.
 ///
-/// #625 (-Echo): the body says only what this build does (privacy.md, #624):
+/// #625 (-Echo): the title and body say only what this build does (privacy.md, #624):
 /// - every build: Apple's geocoding service (`CLGeocoder` in `CoarseLocation+App.swift`) gets the
 ///   coordinate rounded to 0.1 degree, or the typed city or ZIP, to find the city or region; Apple
 ///   Weather (WeatherKit) gets the rounded point.
@@ -213,7 +213,6 @@ public final class LocalAreaStore: @unchecked Sendable {
 ///   coordinates or the location itself. Debug, Release and App Store builds have neither.
 public enum LocalAreaConsentCopy {
     public static let version = 2
-    public static let title = "Local weather and news?"
 
     /// What a build can do with the listener's area, beyond Apple's geocoding and weather.
     public struct Build: Equatable, Sendable {
@@ -244,6 +243,13 @@ public enum LocalAreaConsentCopy {
             Build(localNews: TesterLocalNews.isCompiledIn,
                   cloudVoice: TesterVoice.enabled || OwnerVoiceTrial.paidProvidersEnabled)
         }
+    }
+
+    /// The prompt title for this build: "and news" only where a news provider is compiled in.
+    public static var title: String { title(for: .current) }
+
+    public static func title(for build: Build) -> String {
+        build.localNews ? "Local weather and news?" : "Local weather?"
     }
 
     /// The prompt body for this build.

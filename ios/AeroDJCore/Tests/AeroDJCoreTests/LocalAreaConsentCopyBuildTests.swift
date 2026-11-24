@@ -37,6 +37,19 @@ final class LocalAreaConsentCopyBuildTests: XCTestCase {
         }
     }
 
+    /// The title follows the same mapping: "and news" only where GDELT is compiled in.
+    func testTitleSaysNewsOnlyInTheBuildWithANewsProvider() {
+        for f in everyFlagState {
+            let build = LocalAreaConsentCopy.Build.flags(ownerAB: f.ownerAB, testerVoice: f.testerVoice)
+            let title = LocalAreaConsentCopy.title(for: build)
+            XCTAssertEqual(title.lowercased().contains("news"), build.localNews, "\(f): \(title)")
+            XCTAssertTrue(title.hasPrefix("Local weather"), "\(f)")
+        }
+        XCTAssertEqual(LocalAreaConsentCopy.title(for: .appStore), "Local weather?")
+        XCTAssertEqual(LocalAreaConsentCopy.title(for: .ownerAB), "Local weather?")
+        XCTAssertEqual(LocalAreaConsentCopy.title(for: .tester), "Local weather and news?")
+    }
+
     func testAppStoreBuildClaimsNoNewsSourceAndNoVoice() {
         let body = LocalAreaConsentCopy.body(for: .appStore)
         XCTAssertFalse(body.contains(newsSource))
@@ -66,10 +79,12 @@ final class LocalAreaConsentCopyBuildTests: XCTestCase {
     /// compile neither flag, so it is the App Store copy here.
     func testBodyIsThisBuildsCopy() {
         XCTAssertEqual(LocalAreaConsentCopy.body, LocalAreaConsentCopy.body(for: .current))
+        XCTAssertEqual(LocalAreaConsentCopy.title, LocalAreaConsentCopy.title(for: .current))
         XCTAssertEqual(LocalAreaConsentCopy.Build.current,
                        .flags(ownerAB: OwnerVoiceTrial.paidProvidersEnabled, testerVoice: TesterVoice.enabled))
         #if !AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB
         XCTAssertEqual(LocalAreaConsentCopy.Build.current, .appStore)
+        XCTAssertEqual(LocalAreaConsentCopy.title, "Local weather?")
         #endif
     }
 
