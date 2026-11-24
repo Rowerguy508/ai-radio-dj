@@ -153,6 +153,20 @@ final class StationQueueFeedTests: XCTestCase {
         XCTAssertNil(feed.takeForBoundary(active: new, playbackMayStart: true), "now the playing station")
     }
 
+    /// #304 R1 (-Atlas): the read-only check the background queue tail asks on every poll.
+    func testStationSwitchPendingIsReadOnlyAndMatchesTheBoundary() async throws {
+        let feed = makeFeed(QueueFakeCatalog())
+        XCTAssertFalse(feed.stationSwitchPending(active: new), "no queue start reported: never a switch")
+        XCTAssertNil(feed.playingKey, "the check does not adopt a key")
+        feed.queueStarted(for: old)
+        XCTAssertFalse(feed.stationSwitchPending(active: old), "same station")
+        XCTAssertTrue(feed.stationSwitchPending(active: new))
+        XCTAssertEqual(feed.stagedCount, nil, "the check builds nothing")
+        _ = await feed.prepare(new)
+        XCTAssertNotNil(feed.takeForBoundary(active: new, playbackMayStart: true))
+        XCTAssertFalse(feed.stationSwitchPending(active: new), "now the playing station")
+    }
+
     func testOrderIsDeterministicAcrossFeeds() async throws {
         let one = makeFeed(QueueFakeCatalog())
         let two = makeFeed(QueueFakeCatalog())
@@ -1375,6 +1389,24 @@ final class StationStartInstantTests: XCTestCase {
         XCTAssertEqual(aired.count, 1, "aired once, at the boundary, through the break path")
         let again = await s.songBoundary(queueEpoch: player.epoch)
         XCTAssertNil(again, "only the first boundary")
+    }
+
+    /// #304 R1 (-Atlas): a begun intro arms the first boundary, so the player keeps one song for it.
+    func testABegunIntroIsReportedUntilItsBoundaryTakesIt() async throws {
+        let (model, feed, player) = await rig()
+        let s = starter(feed)
+        let intro = FakeIntro()
+        s.intro = intro
+        s.airIntro = { _ in }
+        XCTAssertFalse(s.hasBegunIntro)
+        guard case .started = await open(s, model, player, station([seed(.artist, "a")]),
+                                         facts: StationIntroFacts(id: "a", name: "A")) else { return XCTFail() }
+        await waitFor { !intro.begins.isEmpty }
+        XCTAssertTrue(s.hasBegunIntro)
+        XCTAssertTrue(s.hasBegunIntro, "reading it takes nothing")
+        XCTAssertEqual(intro.takes, [])
+        _ = await s.songBoundary(queueEpoch: player.epoch)
+        XCTAssertFalse(s.hasBegunIntro, "the boundary took it")
     }
 
     func testAnIntroNotReadyAtTheBoundaryIsSkippedAndAQueueChangeDropsIt() async throws {

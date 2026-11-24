@@ -352,6 +352,10 @@ final class TalkoverCoordinator {
         apply(action, afterTrack: index)
     }
 
+    /// #304 R1 (-Atlas): whether this coordinator holds song k's boundary. Read-only, unlike
+    /// `claimsBoundary`, which is the boundary itself.
+    func ownsBoundary(_ k: Int) -> Bool { book.owns(key(k)) }
+
     /// The natural end of song k, synchronously from the binder. True: this coordinator owns
     /// the boundary; the binder must not hand out or take a break, and awaits `boundary(k)`.
     func claimsBoundary(_ k: Int) -> Bool {

@@ -217,6 +217,22 @@ enum PlaybackSessionBinder {
             talkover.songSkipped(index: index)
             Task { await djSession.songCut(afterTrack: index) }
         }
+        // #304 R1 (-Atlas): what is armed for song k's boundary. While nothing is, the player may also
+        // hold the next station song in the background, so a suspended app still advances (Core
+        // `BackgroundQueueTail`). Read-only checks: asked on background polls and while a song is queued.
+        let dj = dependencies.dj
+        music.boundaryWorkArmed = { @MainActor [dj, interlude, talkover, stationQueue] k in
+            BackgroundQueueTail.boundaryWorkArmed(afterTrack: k, dj: dj.state,
+                                                  interludeSpeaking: interlude.isSpeaking,
+                                                  talkoverOwnsBoundary: talkover.ownsBoundary(k),
+                                                  stationWorkPending: stationQueue?.boundaryWorkPending ?? false)
+        }
+        // The app was suspended through song k's end and MusicKit played the queued next song: a
+        // break armed for k is dropped (that boundary is gone), never played over the next song.
+        music.onQueueTailAdopted = { @MainActor [djSession] finishedIndex, workWasArmed in
+            guard workWasArmed else { return }
+            Task { await djSession.songCut(afterTrack: finishedIndex) }
+        }
         // Only real audio events reach the DJ session; nothing is synthesized from the plan.
         interlude.onPlayback = { [djSession] event in
             switch event {
