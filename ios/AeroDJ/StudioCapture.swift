@@ -123,6 +123,8 @@ enum StudioCaptureScenario: String {
     /// its own navigation bar, a playing song and a break ready (the DJ-break pill). The rail, and
     /// after Collapse the pinned column, must keep Play/Skip and the scrubber inside it.
     case duoLandscape
+    /// #461 PR 1: Open-Duo Landscape (820 x 640) two-pane Station Tuner.
+    case duoLandscapeTune
     /// Build 51 (-Atlas): the same 820 × 640 pt container as a two-column split with the Stations
     /// sidebar open beside the player. The detail is regular width and ~500 pt wide: it keeps
     /// the rail (`FoldedColumnLayout.usesRailColumn`).
@@ -205,7 +207,7 @@ enum StudioCaptureScenario: String {
             return PlaybackFixtures.stopped
         case .error:
             return PlaybackFixtures.recoverableError
-        case .duoWideReady, .duoWideSpeaking, .duoArrangement, .duoWideOnAir, .duoLandscape, .duoSidebar,
+        case .duoWideReady, .duoWideSpeaking, .duoArrangement, .duoWideOnAir, .duoLandscape, .duoLandscapeTune, .duoSidebar,
              .railDPhone, .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
              .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar:
             // A playing song the listener can seek. The shared fixture leaves canSeek false,
@@ -289,7 +291,7 @@ struct StudioCaptureView: View {
                 StationTapDuoContainer(dependencies: dependencies)
             } else if scenario == .duoWideReady || scenario == .duoWideEmpty || scenario == .duoWideSpeaking || scenario == .duoWideOnAir {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
-            } else if scenario == .duoLandscape || scenario == .duoSidebar {
+            } else if scenario == .duoLandscape || scenario == .duoLandscapeTune || scenario == .duoSidebar {
                 DuoOpenCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else if scenario.isRailDContainer {
                 RailDCaptureContainer(scenario: scenario, studio: dependencies.studio)
@@ -375,7 +377,7 @@ struct StudioCaptureView: View {
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
-            case .breakReady, .duoWideReady, .duoArrangement, .duoLandscape, .duoSidebar,
+            case .breakReady, .duoWideReady, .duoArrangement, .duoLandscape, .duoLandscapeTune, .duoSidebar,
                  .railDPhone, .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
                  .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
@@ -550,6 +552,9 @@ private struct DuoOpenCaptureContainer: View {
                         NavigationStack { player }
                     }
                     .navigationSplitViewStyle(.balanced)
+                } else if scenario == .duoLandscapeTune {
+                    TuneForm(studio: studio, onClose: {})
+                        .background(Color(.systemBackground))
                 } else {
                     NavigationStack { player }
                 }
