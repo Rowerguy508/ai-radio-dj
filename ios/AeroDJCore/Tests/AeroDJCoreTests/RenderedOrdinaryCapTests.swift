@@ -287,16 +287,19 @@ final class SessionOrdinaryCapReportTests: XCTestCase {
     }
 
     private func waitForPrepared(preparer: DJBreakPreparer, afterTrack k: Int) async {
-        let done = expectation(description: "break \(k) finished preparing")
-        let box = Events(done)
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
         await preparer.observe { event in
             switch event {
-            case .prepared(let at, _, _) where at == k: box.done.fulfill()
-            case .skipped(let at, _) where at == k: box.done.fulfill()
+            case .prepared(let at, _, _) where at == k:
+                continuation.yield()
+                continuation.finish()
+            case .skipped(let at, _) where at == k:
+                continuation.yield()
+                continuation.finish()
             default: break
             }
         }
-        await fulfillment(of: [done], timeout: 5)
+        for await _ in stream { break }
     }
 
     func testTrimmedOrdinaryBreakAppearsInSessionCapReport() async throws {
