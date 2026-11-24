@@ -23,7 +23,7 @@ final class OpenDuoRegularWidthTests: XCTestCase {
 
     func testThreshold() {
         XCTAssertEqual(FoldedColumnLayout.openDuoMaxSide, 1000)
-        XCTAssertEqual(DuoStationsLayout.statusColumnClearance, 88)
+        XCTAssertEqual(DuoStationsLayout.statusColumnClearance, 124)
     }
 
     func testOpenDuoGetsTheDuoStationsAtEitherWidthClass() {
@@ -150,7 +150,10 @@ final class OpenDuoRegularWidthTests: XCTestCase {
     func testRailTopClearsATrailingStatusColumnOnly() {
         XCTAssertEqual(DuoStationsLayout.railTopInset(trailingUnsafeWidth: 0), DuoStationsLayout.railVerticalInset)
         XCTAssertEqual(DuoStationsLayout.railTopInset(trailingUnsafeWidth: .nan), DuoStationsLayout.railVerticalInset)
-        XCTAssertEqual(DuoStationsLayout.railTopInset(trailingUnsafeWidth: 73), 88)
+        XCTAssertEqual(DuoStationsLayout.railTopInset(trailingUnsafeWidth: 73), 124)
+        XCTAssertEqual(DuoStationsLayout.closedRailTrailingInset(trailingUnsafeWidth: 0), RailDLayout.trailingInset)
+        XCTAssertEqual(DuoStationsLayout.closedRailTrailingInset(trailingUnsafeWidth: .nan), RailDLayout.trailingInset)
+        XCTAssertEqual(DuoStationsLayout.closedRailTrailingInset(trailingUnsafeWidth: 84), 20)
     }
 }
 
