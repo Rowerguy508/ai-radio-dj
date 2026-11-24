@@ -18,6 +18,21 @@ private struct SplitBarEdgeKey: EnvironmentKey {
     static let defaultValue: SplitViewLayout.BarEdge? = nil
 }
 
+#if DEBUG
+/// Capture-only (#574 review): true draws the "before" shot with the pre-#499 landscape
+/// guard. Release compiles the key and its reader out; a real window never sets it.
+private struct SplitPre499GuardKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var splitPre499Guard: Bool {
+        get { self[SplitPre499GuardKey.self] }
+        set { self[SplitPre499GuardKey.self] = newValue }
+    }
+}
+#endif
+
 extension EnvironmentValues {
     var splitMeasure: SplitMeasure? {
         get { self[SplitMeasureKey.self] }
@@ -56,6 +71,9 @@ struct SplitBarHost<Content: View>: View {
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.splitMeasure) private var measure
+    #if DEBUG
+    @Environment(\.splitPre499Guard) private var pre499Guard
+    #endif
     @State private var insets: SplitInsets?
     @State private var publishedMeasure: SplitMeasure?
     @State private var reading = SplitReading(width: 0, height: 0, leading: 0, trailing: 0)
@@ -120,10 +138,12 @@ struct SplitBarHost<Content: View>: View {
         let width = measure?.containerWidth
             ?? (Double(reading.width) + appliedLeading + appliedTrailing)
         let height = measure?.containerHeight ?? Double(reading.height)
-        let chrome = SplitViewLayout.chrome(hasRegularWidth: horizontalSizeClass == .regular,
-                                            containerWidth: width, containerHeight: height,
-                                            leadingInset: lead, trailingInset: trail,
-                                            preferredBarEdge: preferred)
+        // A missing size class is passed as nil and stays compact (#499).
+        let widthClass: SplitViewLayout.WidthClass? = horizontalSizeClass.map {
+            $0 == .regular ? SplitViewLayout.WidthClass.regular : SplitViewLayout.WidthClass.compact
+        }
+        let chrome = decision(widthClass: widthClass, width: width, height: height,
+                              leading: lead, trailing: trail)
         let next: SplitInsets? = chrome.adapts ? SplitInsets(
             measuredLeading: lead, measuredTrailing: trail,
             appliedLeading: appliedLeading, appliedTrailing: appliedTrailing,
@@ -132,6 +152,22 @@ struct SplitBarHost<Content: View>: View {
             containerWidth: width, containerHeight: height, leading: lead, trailing: trail)
         if next != insets { insets = next }
         if publishedMeasure != published { publishedMeasure = published }
+    }
+
+    private func decision(widthClass: SplitViewLayout.WidthClass?, width: Double, height: Double,
+                          leading: Double, trailing: Double) -> SplitViewLayout.Chrome {
+        #if DEBUG
+        if pre499Guard {
+            return SplitViewLayout.chromeWithPre499Guard(widthClass: widthClass,
+                                                         containerWidth: width, containerHeight: height,
+                                                         leadingInset: leading, trailingInset: trailing,
+                                                         preferredBarEdge: preferred)
+        }
+        #endif
+        return SplitViewLayout.chrome(widthClass: widthClass,
+                                      containerWidth: width, containerHeight: height,
+                                      leadingInset: leading, trailingInset: trailing,
+                                      preferredBarEdge: preferred)
     }
 }
 

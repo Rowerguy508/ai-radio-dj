@@ -156,6 +156,33 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertEqual(RailDLayout.spreadArtSide(leftWidth: 100, containerHeight: 100, minSide: 140, maxSide: 420), 140)
     }
 
+    /// Build 56 (951 × 669 CI shots, -Nova): on the open Duo the content column runs up to the
+    /// rail (it takes the 8 pt the rail gives back), so the L1 trailing page now stops
+    /// `openSpreadRailGutter` short of the rail glass. Before, Up next and the chips met the
+    /// rail's leading edge (0 pt in the layout, ≈ 2 pt in the shots).
+    func testOpenSpreadPageStopsShortOfTheRail() {
+        XCTAssertEqual(RailDLayout.openSpreadRailGutter, 16)
+        XCTAssertEqual(RailDLayout.openSpreadRailGutter, DuoStationsLayout.bookRailGutter,
+                       "the player's page ends where the Stations trailing page does")
+        let width = 951.0
+        let base = FoldedColumnLayout.duoHorizontal(containerWidth: width, containerHeight: 669,
+                                                    artMin: 140, artMax: 420)
+        // `FoldedPlayer.wideBody`'s open-Duo column: the base column plus its edge inset less the
+        // rail's 8 pt trailing inset.
+        let content = base.contentWidth + base.edgeInset - RailDLayout.trailingInset
+        let columnMinX = base.edgeInset + base.leftWidth + base.foldGutter
+        let columnMaxX = columnMinX + content
+        let railMinX = width - RailDLayout.trailingInset - RailDLayout.railWidth
+        XCTAssertEqual(base.barWidth, RailDLayout.railWidth)
+        XCTAssertEqual(columnMaxX, railMinX, accuracy: 0.001, "the column meets the rail glass")
+        let pageMinX = columnMinX + RailDLayout.spreadTrailingInset
+        let pageMaxX = columnMaxX - RailDLayout.openSpreadRailGutter
+        XCTAssertGreaterThanOrEqual(railMinX - pageMaxX, 16)
+        XCTAssertEqual(pageMinX, 513.5, accuracy: 0.001)
+        XCTAssertEqual(pageMaxX, 871, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(pageMaxX - pageMinX, 300, "room for Up next and the chips")
+    }
+
     func testSpreadTypeStartsAfterTheFoldAndNothingTouchesIt() {
         let metrics = FoldedColumnLayout.duoHorizontal(containerWidth: 820, containerHeight: 566,
                                                        artMin: 140, artMax: 420)

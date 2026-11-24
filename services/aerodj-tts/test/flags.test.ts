@@ -1,16 +1,26 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { appFlags, handleFlags, AIRPLAY_LONGFORM_FLAG } from '../src/flags-handler.js';
+import { appFlags, handleFlags, AIRPLAY_LONGFORM_FLAG, ONAIRLY_NOW_PLAYING_SESSION_FLAG } from '../src/flags-handler.js';
 import flagsEndpoint from '../api/flags.js';
 
 describe('GET /api/flags (#525)', () => {
   test('djAirPlayLongForm is a kill switch: off only for the exact string false', () => {
     assert.equal(AIRPLAY_LONGFORM_FLAG, 'AERODJ_DJ_AIRPLAY_LONGFORM');
-    assert.deepEqual(appFlags({}), { djAirPlayLongForm: true }, 'unset: on');
+    assert.deepEqual(appFlags({}), { djAirPlayLongForm: true, onAirlyNowPlayingSession: true }, 'unset: on');
     for (const value of ['', 'FALSE', 'False', ' false', 'false ', '0', 'no', 'off', 'true']) {
-      assert.deepEqual(appFlags({ AERODJ_DJ_AIRPLAY_LONGFORM: value }), { djAirPlayLongForm: true }, JSON.stringify(value));
+      assert.deepEqual(appFlags({ AERODJ_DJ_AIRPLAY_LONGFORM: value }), { djAirPlayLongForm: true, onAirlyNowPlayingSession: true }, JSON.stringify(value));
     }
-    assert.deepEqual(appFlags({ AERODJ_DJ_AIRPLAY_LONGFORM: 'false' }), { djAirPlayLongForm: false });
+    assert.deepEqual(appFlags({ AERODJ_DJ_AIRPLAY_LONGFORM: 'false' }), { djAirPlayLongForm: false, onAirlyNowPlayingSession: true });
+  });
+
+  test('onAirlyNowPlayingSession is a kill switch: off only for the exact string false (#600)', () => {
+    assert.equal(ONAIRLY_NOW_PLAYING_SESSION_FLAG, 'AERODJ_ONAIRLY_NOW_PLAYING_SESSION');
+    for (const value of ['', 'FALSE', 'False', ' false', 'false ', '0', 'no', 'off', 'true']) {
+      assert.deepEqual(appFlags({ AERODJ_ONAIRLY_NOW_PLAYING_SESSION: value }),
+        { djAirPlayLongForm: true, onAirlyNowPlayingSession: true }, JSON.stringify(value));
+    }
+    assert.deepEqual(appFlags({ AERODJ_ONAIRLY_NOW_PLAYING_SESSION: 'false' }),
+      { djAirPlayLongForm: true, onAirlyNowPlayingSession: false }, 'independent of the AirPlay flag');
   });
 
   test('GET answers the flags as JSON, never cached', async () => {
@@ -18,7 +28,7 @@ describe('GET /api/flags (#525)', () => {
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('cache-control'), 'no-store');
     assert.match(res.headers.get('content-type') ?? '', /^application\/json/);
-    assert.deepEqual(await res.json(), { djAirPlayLongForm: false });
+    assert.deepEqual(await res.json(), { djAirPlayLongForm: false, onAirlyNowPlayingSession: true });
   });
 
   test('the response depends only on env, not on the request', async () => {
@@ -26,7 +36,7 @@ describe('GET /api/flags (#525)', () => {
       headers: { Authorization: 'Bearer anything', Cookie: 'a=b', 'X-Install': 'id' },
     });
     const res = handleFlags(req, {});
-    assert.deepEqual(await res.json(), { djAirPlayLongForm: true });
+    assert.deepEqual(await res.json(), { djAirPlayLongForm: true, onAirlyNowPlayingSession: true });
   });
 
   test('other methods are refused', async () => {
@@ -45,10 +55,10 @@ describe('GET /api/flags (#525)', () => {
     try {
       delete process.env.AERODJ_DJ_AIRPLAY_LONGFORM;
       const on = flagsEndpoint.fetch(new Request('https://proxy.invalid/api/flags'));
-      assert.deepEqual(await on.json(), { djAirPlayLongForm: true }, 'unset: on');
+      assert.deepEqual(await on.json(), { djAirPlayLongForm: true, onAirlyNowPlayingSession: true }, 'unset: on');
       process.env.AERODJ_DJ_AIRPLAY_LONGFORM = 'false';
       const off = flagsEndpoint.fetch(new Request('https://proxy.invalid/api/flags'));
-      assert.deepEqual(await off.json(), { djAirPlayLongForm: false });
+      assert.deepEqual(await off.json(), { djAirPlayLongForm: false, onAirlyNowPlayingSession: true });
     } finally {
       if (before === undefined) delete process.env.AERODJ_DJ_AIRPLAY_LONGFORM;
       else process.env.AERODJ_DJ_AIRPLAY_LONGFORM = before;

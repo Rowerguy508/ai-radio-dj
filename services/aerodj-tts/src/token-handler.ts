@@ -5,6 +5,7 @@ import {
   attestEnabled,
   DISABLED_RETRY_AFTER_SECONDS,
   MISCONFIG_RETRY_AFTER_SECONDS,
+  noCategoryFallbackAllowed,
   paidStopped,
   STORE_RETRY_AFTER_SECONDS,
   testerVoiceEnabled,
@@ -18,6 +19,7 @@ import {
   selectAttestStore,
   tokenMintKey,
   type AttestStore,
+  type TesterReason,
 } from './attest-store.js';
 import { parseKeyId, verifyChallenge, type ChallengeFailure } from './challenge.js';
 import { secondsUntilNextUtcDay, type Env } from './handler.js';
@@ -62,7 +64,7 @@ export type TokenReason =
   | 'no_entitlement'
   | 'rate';
 
-export type TokenDetail = ChallengeFailure | AssertionFailure | 'reused' | 'counter' | 'revoked' | 'unknown_key' | 'category';
+export type TokenDetail = ChallengeFailure | AssertionFailure | 'reused' | 'counter' | 'revoked' | 'unknown_key' | 'category' | 'fallback_disabled';
 
 export interface TokenLogEntry {
   requestId: string;
@@ -140,14 +142,24 @@ function parseAssertionHeader(value: string | null): Buffer | null {
 interface StoredKey {
   pubKeySpki: Buffer;
   tier: 'tester' | undefined;
+  tierReason: TesterReason | undefined;
   revoked: boolean;
+}
+
+function parseTierReason(v: unknown): TesterReason | undefined {
+  return v === 'testflight_category' || v === 'no_category_fallback' ? v : undefined;
 }
 
 function parseRecord(raw: string): StoredKey | null {
   try {
     const v = JSON.parse(raw) as Record<string, unknown>;
     if (!v || typeof v !== 'object' || typeof v.pubKeySpki !== 'string') return null;
-    return { pubKeySpki: Buffer.from(v.pubKeySpki, 'base64'), tier: v.tier === 'tester' ? 'tester' : undefined, revoked: v.revoked !== false };
+    return {
+      pubKeySpki: Buffer.from(v.pubKeySpki, 'base64'),
+      tier: v.tier === 'tester' ? 'tester' : undefined,
+      tierReason: parseTierReason(v.tierReason),
+      revoked: v.revoked !== false,
+    };
   } catch {
     return null;
   }
@@ -224,10 +236,15 @@ export async function handleToken(request: Request, deps: TokenDeps): Promise<Re
     if (!verified.ok) return fail('assertion', verified.reason);
     // TestFlight only (owner decision 2026-11-02; external testers NOT approved, enforced
     // operationally by not inviting them). The tier is set at register from category 2, or
-    // from no category at all while tester voice is on (iOS 26 fallback, owner 2026-11-03;
-    // see register-handler `testerTier`, TODO tighten before public App Store launch). An
-    // assertion that carries a different category (e.g. the App Store build) is refused too.
+    // from no category at all while fallback is allowed (iOS 26 fallback, owner 2026-11-03;
+    // #407 N1/N2). Keys granted via `no_category_fallback` — and legacy tester keys written
+    // before #407 without `tierReason` — only mint while `noCategoryFallbackAllowed(deps.env)`
+    // is true; `testflight_category` keys stay unaffected. An assertion carrying a different
+    // category (e.g. the App Store build) is refused too.
     if (record.tier !== 'tester') return fail('no_entitlement');
+    if (record.tierReason !== 'testflight_category' && !noCategoryFallbackAllowed(deps.env)) {
+      return fail('no_entitlement', 'fallback_disabled');
+    }
     if (verified.validationCategory !== undefined && verified.validationCategory !== TESTFLIGHT_VALIDATION_CATEGORY) {
       return fail('no_entitlement', 'category');
     }
