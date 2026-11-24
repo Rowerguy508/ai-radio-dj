@@ -179,7 +179,10 @@ final class AppWideLayoutTests: XCTestCase {
     func testDuoLandscapeLocalAreaTwoPane() throws {
         let (app, box) = try launch("duoLandscapeLocalArea", size: Self.duoLandscape, orientation: .landscapeLeft)
         let any = app.descendants(matching: .any)
-        XCTAssertTrue(any["onboarding.localArea.twoPane"].waitForExistence(timeout: 10),
+        // The two-pane HStack fills the 820 x 640 container, so XCUI folds its identifier into
+        // capture.appWideContainer (Studio job 138221795660). The actions pane only renders in
+        // two-pane mode, so wait on it instead.
+        XCTAssertTrue(any["onboarding.localArea.pane.actions"].waitForExistence(timeout: 10),
                       "two-pane onboarding missing\n\(app.debugDescription)")
         let copyPane = any["onboarding.localArea.pane.copy"]
         let actionsPane = any["onboarding.localArea.pane.actions"]
