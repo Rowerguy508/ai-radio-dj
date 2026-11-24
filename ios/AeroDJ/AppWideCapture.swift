@@ -16,6 +16,8 @@ enum AppWideCaptureScenario: String, CaseIterable {
     case splitNarrowSettings
     /// Onboarding: `LocalAreaPrompt` at Duo width. Nothing is tapped; no location prompt.
     case duoWideLocalArea
+    /// #461 PR 4 (-Nova): Open-Duo Landscape (`820 × 640 pt`) horizontal two-pane Onboarding (`LocalAreaPrompt`).
+    case duoLandscapeLocalArea
 
     /// The scenario named in `-AeroDJStudioCaptureScenario`, if it is one of these.
     static func requested(defaults: UserDefaults = .standard) -> AppWideCaptureScenario? {
@@ -27,13 +29,14 @@ enum AppWideCaptureScenario: String, CaseIterable {
         case .duoWideLibrary, .splitNarrowLibrary: .library
         case .duoWideStations, .splitNarrowStations: .stations
         case .duoWideSettings, .splitNarrowSettings: .settings
-        case .duoWideLocalArea: .onboarding
+        case .duoWideLocalArea, .duoLandscapeLocalArea: .onboarding
         }
     }
 
     var input: AppWideLayout.Input {
         switch self {
         case .duoWideLibrary, .duoWideStations, .duoWideSettings, .duoWideLocalArea: AppWideLayout.duoWide
+        case .duoLandscapeLocalArea: AppWideLayout.Input(hasRegularWidth: false, containerWidth: 820, containerHeight: 640, hasRegularHeight: true)
         case .splitNarrowLibrary, .splitNarrowStations, .splitNarrowSettings: AppWideLayout.splitNarrow
         }
     }

@@ -8,6 +8,7 @@ import UIKit
 /// and `duo-wide-settings` (required in ios.yml, like `duo-wide-ready`) plus the narrow shots.
 final class AppWideLayoutTests: XCTestCase {
     private static let duo = CGSize(width: 640, height: 820)
+    private static let duoLandscape = CGSize(width: 820, height: 640)
     private static let narrow = CGSize(width: 340, height: 760)
 
     override func setUp() {
@@ -15,11 +16,12 @@ final class AppWideLayoutTests: XCTestCase {
     }
 
     @MainActor
-    private func launch(_ scenario: String, size: CGSize) throws -> (XCUIApplication, CGRect) {
+    private func launch(_ scenario: String, size: CGSize,
+                        orientation: UIDeviceOrientation = .portrait) throws -> (XCUIApplication, CGRect) {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
                                "-AeroDJStudioCaptureScenario", scenario]
-        XCUIDevice.shared.orientation = .portrait
+        XCUIDevice.shared.orientation = orientation
         app.launchAfterLeftoverExits()
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10), "no window\n\(app.debugDescription)")
@@ -169,6 +171,47 @@ final class AppWideLayoutTests: XCTestCase {
         let title = app.staticTexts["Local weather and news?"]
         XCTAssertGreaterThanOrEqual(title.frame.minX, box.minX + 63, "title \(title.frame)")
         save(app, "duo-wide-localarea")
+    }
+
+    /// #461 PR 4 (-Nova): Open-Duo Landscape (`820 × 640 pt`) horizontal two-pane Onboarding
+    /// (`LocalAreaPrompt`), keeping `LocalAreaConsentCopy` labels and actions 100% verbatim.
+    @MainActor
+    func testDuoLandscapeLocalAreaTwoPane() throws {
+        let (app, box) = try launch("duoLandscapeLocalArea", size: Self.duoLandscape, orientation: .landscapeLeft)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["onboarding.localArea.twoPane"].waitForExistence(timeout: 10),
+                      "two-pane onboarding missing\n\(app.debugDescription)")
+        let copyPane = any["onboarding.localArea.pane.copy"]
+        let actionsPane = any["onboarding.localArea.pane.actions"]
+        XCTAssertTrue(copyPane.exists && actionsPane.exists,
+                      "expected copy and actions panes\n\(app.debugDescription)")
+
+        // Verbatim copy and labels (locked by LocalAreaPromptCopyTests).
+        let title = app.staticTexts["Local weather and news?"]
+        let approximate = app.buttons["localArea.approximate"]
+        let manual = app.buttons["localArea.manual"]
+        let notNow = app.buttons["localArea.notNow"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(approximate.exists && manual.exists && notNow.exists, app.debugDescription)
+        XCTAssertEqual(approximate.label, "Use approximate location")
+        XCTAssertEqual(manual.label, "Enter a city or ZIP instead")
+        XCTAssertEqual(notNow.label, "Not now")
+
+        // Fold gutter centered on box.midX (x = 410 pt on 820 × 640).
+        XCTAssertLessThanOrEqual(copyPane.frame.maxX, box.midX - 15,
+                                 "copy pane crossed fold gutter: \(copyPane.frame) midX=\(box.midX)")
+        XCTAssertGreaterThanOrEqual(actionsPane.frame.minX, box.midX + 15,
+                                    "actions pane crossed fold gutter: \(actionsPane.frame) midX=\(box.midX)")
+
+        for (id, button) in [("localArea.approximate", approximate),
+                             ("localArea.manual", manual),
+                             ("localArea.notNow", notNow)] {
+            assertTarget(button, in: box, id)
+            XCTAssertGreaterThanOrEqual(button.frame.minX, box.midX + 15,
+                                        "\(id) crossed into fold gutter: \(button.frame)")
+        }
+
+        save(app, "duo-landscape-localarea")
     }
 
     // MARK: Narrow Split View: the phone path, unchanged
