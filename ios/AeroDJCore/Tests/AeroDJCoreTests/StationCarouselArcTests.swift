@@ -50,4 +50,59 @@ final class StationCarouselArcTests: XCTestCase {
         XCTAssertEqual(StationCarouselArc.at(phase: .nan, reduceMotion: false), .centred)
         XCTAssertEqual(StationCarouselArc.at(phase: .infinity, reduceMotion: false), .centred)
     }
+
+    // MARK: Open Duo (build 51: cards under the trailing toolbar, diagonal line on the centred card)
+
+    func testOpenDuoIsBothOrientationsAndNeverAnIPhone() {
+        XCTAssertTrue(StationCarouselLayout.isOpenDuo(containerWidth: 640, containerHeight: 820))
+        XCTAssertTrue(StationCarouselLayout.isOpenDuo(containerWidth: 820, containerHeight: 640))
+        let phones: [(Double, Double)] = [(320, 568), (375, 667), (390, 844), (393, 852), (402, 874),
+                                          (430, 932), (440, 956), (568, 320), (667, 375), (844, 390),
+                                          (932, 430), (956, 440), (340, 760), (0, 0), (.nan, 820)]
+        for (w, h) in phones {
+            XCTAssertFalse(StationCarouselLayout.isOpenDuo(containerWidth: w, containerHeight: h), "\(w) x \(h)")
+            XCTAssertFalse(StationCarouselLayout.clipsRow(containerWidth: w, containerHeight: h), "\(w) x \(h)")
+        }
+        XCTAssertTrue(StationCarouselLayout.clipsRow(containerWidth: 640, containerHeight: 820))
+    }
+
+    func testIPhoneCurveIsUnchanged() {
+        for phase in stride(from: -1.0, through: 1.0, by: 0.005) {
+            XCTAssertEqual(StationCarouselArc.at(phase: phase, reduceMotion: false),
+                           StationCarouselArc.at(phase: phase, reduceMotion: false, snapsCentre: false))
+        }
+        // A hair off centre is still a (tiny) transform without the snap.
+        XCTAssertNotEqual(StationCarouselArc.at(phase: 0.004, reduceMotion: false), .centred)
+    }
+
+    func testOpenDuoCentredCardIsExactlyUntransformed() {
+        for phase in [0.0, 0.0001, -0.0001, 0.004, -0.01, 0.0199, -0.0199] {
+            XCTAssertEqual(StationCarouselArc.at(phase: phase, reduceMotion: false, snapsCentre: true), .centred,
+                           "\(phase)")
+        }
+        for phase in [0.02, -0.02, 0.5, -1, 1] {
+            XCTAssertEqual(StationCarouselArc.at(phase: phase, reduceMotion: false, snapsCentre: true),
+                           StationCarouselArc.at(phase: phase, reduceMotion: false), "\(phase)")
+        }
+    }
+
+    /// Clipping the row on the Duo must never cut a card's top or bottom: every phase stays
+    /// inside the row's vertical padding, for every card size the carousel can draw.
+    func testClippedRowNeverCutsACardVertically() {
+        for cardWidth in stride(from: 200.0, through: 300.0, by: 20) {
+            for extra in stride(from: 40.0, through: 180.0, by: 35) {
+                let cardHeight = cardWidth + extra
+                for phase in stride(from: -1.0, through: 1.0, by: 0.01) {
+                    let y = StationCarouselLayout.cardVerticalExtent(cardWidth: cardWidth, cardHeight: cardHeight,
+                                                                     phase: phase, snapsCentre: true)
+                    XCTAssertGreaterThanOrEqual(y.minY, -StationCarouselLayout.rowTopPadding,
+                                                "\(cardWidth) \(cardHeight) \(phase)")
+                    XCTAssertLessThanOrEqual(y.maxY, cardHeight + StationCarouselLayout.rowBottomPadding,
+                                             "\(cardWidth) \(cardHeight) \(phase)")
+                }
+            }
+        }
+        XCTAssertEqual(StationCarouselLayout.rowTopPadding, 8)
+        XCTAssertEqual(StationCarouselLayout.rowBottomPadding, StationCarouselArc.edgeDrop + 16)
+    }
 }

@@ -21,6 +21,8 @@ struct StationCarousel: View {
     /// Scene storage, not `@State`: the compact/regular `if` destroys this view.
     @SceneStorage("aerodj.stations.scrollAnchor") private var storedFocus = ""
     @State private var containerWidth: CGFloat = 0
+    /// The whole column, safe areas and bars included. Only decides `isOpenDuo`.
+    @State private var columnSize: CGSize = .zero
 
     private var focusBinding: Binding<Station.ID?> {
         Binding(
@@ -40,6 +42,13 @@ struct StationCarousel: View {
         #endif
     }
 
+    /// Build 51 (open Duo): clip the card row and snap the centred card. Every iPhone,
+    /// portrait or landscape, is false and draws exactly what it did.
+    private var isOpenDuo: Bool {
+        StationCarouselLayout.isOpenDuo(containerWidth: Double(columnSize.width),
+                                        containerHeight: Double(columnSize.height))
+    }
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             // No section heading of its own: the split root's morphing "Stations" header is the
@@ -55,7 +64,16 @@ struct StationCarousel: View {
             .padding(.bottom, 24)
         }
         .scrollContentBackground(.hidden)
-        .background(FoldedStyle.background.ignoresSafeArea())
+        .background(
+            FoldedStyle.background
+                .ignoresSafeArea()
+                // The same backdrop as before; it only also reports the column's full size.
+                .onGeometryChange(for: CGSize.self) { proxy in
+                    proxy.size
+                } action: { size in
+                    if size != columnSize { columnSize = size }
+                }
+        )
         .environment(\.colorScheme, .dark)
         .toolbarColorScheme(.dark, for: .navigationBar)
     }
@@ -77,6 +95,7 @@ struct StationCarousel: View {
     private var arc: some View {
         // Captured by value: the transition closure is `@Sendable` and must not read `self`.
         let flat = reduceMotion
+        let snapsCentre = isOpenDuo
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
                 ForEach(stations) { station in
@@ -84,7 +103,8 @@ struct StationCarousel: View {
                                         onSelect: onSelect)
                         .frame(width: cardWidth)
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                            let arc = StationCarouselArc.at(phase: phase.value, reduceMotion: flat)
+                            let arc = StationCarouselArc.at(phase: phase.value, reduceMotion: flat,
+                                                           snapsCentre: snapsCentre)
                             return content
                                 .scaleEffect(arc.scale)
                                 .rotationEffect(.degrees(arc.rotationDegrees))
@@ -96,8 +116,8 @@ struct StationCarousel: View {
             }
             .scrollTargetLayout()
             // Room for the dropped, tilted side cards so the scroll view does not clip them.
-            .padding(.top, 8)
-            .padding(.bottom, StationCarouselArc.edgeDrop + 16)
+            .padding(.top, CGFloat(StationCarouselLayout.rowTopPadding))
+            .padding(.bottom, CGFloat(StationCarouselLayout.rowBottomPadding))
         }
         .contentMargins(.horizontal, sideMargin, for: .scrollContent)
         // Content margins reach every scroll view inside the modifier, so without this the
@@ -106,6 +126,10 @@ struct StationCarousel: View {
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: focusBinding)
         .scrollClipDisabled()
+        // Open Duo only: end the row at its own frame (inside the safe area), so a tilted card
+        // never draws or takes taps under the trailing Settings / Shared Items / + bar.
+        .modifier(OpenDuoRowClip(enabled: StationCarouselLayout.clipsRow(
+            containerWidth: Double(columnSize.width), containerHeight: Double(columnSize.height))))
         // On the scroll view itself: the split root puts `split.sidebar` on the whole column.
         .accessibilityIdentifier("stations.carousel")
         // Only when focus moves between cards, not when it is first set on appear.
@@ -152,6 +176,23 @@ struct StationCarousel: View {
             }
         }
         .padding(.horizontal, 16)
+    }
+}
+
+/// Build 51: the open Duo's card row stops at its frame. Off (every iPhone) returns the
+/// row untouched, so the phone keeps `scrollClipDisabled` and draws edge to edge as before.
+private struct OpenDuoRowClip: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .clipShape(Rectangle())
+                .contentShape(Rectangle())
+        } else {
+            content
+        }
     }
 }
 
