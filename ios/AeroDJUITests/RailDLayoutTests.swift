@@ -75,6 +75,21 @@ final class RailDLayoutTests: XCTestCase {
         save(app, "rail-d-duo-open-portrait")
     }
 
+    /// #434 (owner, Nov 23 2026): on the open Duo the art hides while the DJ talks, as on
+    /// iPhone. The orb takes the art's frame; the content-column orb is gone (one orb). -Nova
+    @MainActor
+    func testOpenPortraitOnAirHidesTheArt() throws {
+        let app = try launch("railDPortraitOnAir", container: Self.portrait, orientation: .portrait)
+        let box = try settledContainer(app, size: Self.portrait)
+        let any = app.descendants(matching: .any)
+        let rail = try assertRail(app, id: "folded.systemBar", hasCollapse: true)
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail))
+        XCTAssertTrue(any["dj.onAir"].waitForExistence(timeout: 10), "On Air missing\n\(app.debugDescription)")
+        assertOrbOnlyArtCard(app)
+        save(app, "rail-d-duo-open-portrait-onair",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
+    }
+
     @MainActor
     func testOpenPortraitWithTheSidebar() throws {
         let app = try launch("railDPortraitSidebar", container: Self.portrait, orientation: .portrait)
@@ -213,6 +228,12 @@ final class RailDLayoutTests: XCTestCase {
         let upNextCardInset: CGFloat = 12
         XCTAssertEqual(next.minX - upNextCardInset, title.minX, accuracy: 1,
                        "Up next's card (text \(next) less \(upNextCardInset) pt) lines up with the title \(title)")
+        // Build 56 (951 × 669 shots, -Nova): the right column stops at least 16 pt
+        // (`RailDLayout.openSpreadRailGutter`) short of the rail glass; it ran into it (≈ 2 pt).
+        // The glass is 56 pt, 8 pt in from the window edge (asserted above); `folded.systemBar` is
+        // `.contain`, so its own frame is its children's union, not the glass.
+        try assertRightColumnClearsTheRail(app, upNextText: next, cardInset: upNextCardInset,
+                                           railGlassMinX: box.maxX - Self.railEdgeInset - Self.railGlassWidth)
         let star = app.buttons["nowPlaying.rating"]
         XCTAssertTrue(star.waitForExistence(timeout: 5), "the star is missing\n\(app.debugDescription)")
         let gap = star.frame.minX - title.maxX
@@ -223,6 +244,33 @@ final class RailDLayoutTests: XCTestCase {
         assertAtLeastPoints(star.frame.height, 44)
         XCTAssertLessThanOrEqual(star.frame.maxX, rail.frame.minX + 1)
         save(app, shot, container: app.descendants(matching: .any)["capture.railDContainer"])
+    }
+
+    /// The open Duo's L1 trailing page against the rail: the Up next card (XCUI reports it at its
+    /// text, `cardInset` inside the glass card, `DuoUpNextList .padding(.horizontal, 12)`) and the
+    /// station chips row ending in Tune both end at least `minimumGap` before the rail glass.
+    @MainActor
+    private func assertRightColumnClearsTheRail(_ app: XCUIApplication, upNextText: CGRect, cardInset: CGFloat,
+                                                railGlassMinX: CGFloat, minimumGap: CGFloat = 16,
+                                                file: StaticString = #filePath, line: UInt = #line) throws {
+        let cardMaxX = upNextText.maxX + cardInset
+        XCTAssertGreaterThanOrEqual(railGlassMinX - cardMaxX, minimumGap - 0.5,
+                                    "Up next's card ends at \(cardMaxX) (text \(upNextText) plus \(cardInset) pt), "
+                                        + "the rail glass starts at \(railGlassMinX)", file: file, line: line)
+        // Typed and `.firstMatch`: one button, one dial, never an ambiguous match.
+        let tune = app.buttons.matching(identifier: "duo.stationTune").firstMatch
+        XCTAssertTrue(tune.waitForExistence(timeout: 5), "Tune missing\n\(app.debugDescription)", file: file, line: line)
+        let tuneFrame = try XCTUnwrap(settledFrame(of: tune, "Tune"), file: file, line: line)
+        assertAtLeastPoints(tuneFrame.width, 44, "Tune \(tuneFrame)", file: file, line: line)
+        assertAtLeastPoints(tuneFrame.height, 44, "Tune \(tuneFrame)", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(railGlassMinX - tuneFrame.maxX, minimumGap - 0.5,
+                                    "Tune \(tuneFrame) ends within \(minimumGap) pt of the rail glass at \(railGlassMinX)",
+                                    file: file, line: line)
+        let dial = app.descendants(matching: .any).matching(identifier: "duo.stationDial").firstMatch
+        XCTAssertTrue(dial.exists, "the station chips row\n\(app.debugDescription)", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(railGlassMinX - dial.frame.maxX, minimumGap - 0.5,
+                                    "the chips row \(dial.frame) ends within \(minimumGap) pt of the rail glass at \(railGlassMinX)",
+                                    file: file, line: line)
     }
 
     @MainActor
@@ -343,12 +391,25 @@ final class RailDLayoutTests: XCTestCase {
             let foldMin = box.minX + Self.foldMinX
             let foldMax = box.minX + Self.foldMaxX
             XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin, "DJ state \(frame) sits on the fold")
+            // #434: the open Duo's landscape is the L1 spread (#577); the art hides on air.
+            if onAir { assertOrbOnlyArtCard(app) }
         }
         save(app, shot,
              container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
     // MARK: Checks
+
+    /// #434: the art card shows only the orb (the on-air captures expose its layer id) and the
+    /// content column draws no second orb.
+    @MainActor
+    private func assertOrbOnlyArtCard(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["folded.artCard.orb"].waitForExistence(timeout: 5),
+                      "the art card shows the orb while on air\n\(app.debugDescription)", file: file, line: line)
+        XCTAssertFalse(any["folded.artCard.artwork"].exists, "the art is hidden while on air", file: file, line: line)
+        XCTAssertFalse(any["folded.visualizer"].exists, "one orb: no content-column orb", file: file, line: line)
+    }
 
     /// Echo (#558): the closed rail keeps the DJ chip in the content column, lined up with the
     /// title, one line, leading of the rail.

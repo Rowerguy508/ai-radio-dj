@@ -74,6 +74,12 @@ public struct BoundaryInterpreter: Sendable {
         detector.setSkipLoadInFlight(inFlight)
     }
 
+    /// #444 (Atlas): a user skip resets the one-rewind-cut cap. See
+    /// `PlaybackBoundaryDetector.noteUserSkip()`.
+    public mutating func noteUserSkip() {
+        detector.noteUserSkip()
+    }
+
     /// #444 (-Atlas): our own `play()` for the loaded song returned. See
     /// `PlaybackBoundaryDetector.noteOwnPlayReturned()`.
     public mutating func noteOwnPlayReturned() {
