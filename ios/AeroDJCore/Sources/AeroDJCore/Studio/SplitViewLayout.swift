@@ -5,7 +5,8 @@ import Foundation
 /// inputs as the outer-to-inner layout, plus the leading and trailing safe areas.
 /// Those two insets are independent: a split does not have matching sides.
 ///
-/// A missing width class is passed as `hasRegularWidth: false`, so it stays compact.
+/// A missing width class stays compact: `chrome(widthClass: nil, ...)`, or
+/// `hasRegularWidth: false` from callers that already hold a Bool.
 /// A full-screen iPhone does not adapt: portrait insets match, and landscape is
 /// shorter than `FoldedColumnLayout.duoMinHeight`. Equal insets keep `preferredBarEdge`,
 /// which is the side that screen already uses.
@@ -32,6 +33,18 @@ public enum SplitViewLayout {
             case .full: "full"
             }
         }
+    }
+
+    /// The horizontal width class, UI-free. `nil` is a missing class
+    /// (`horizontalSizeClass` not set yet) and is treated as compact.
+    public enum WidthClass: Equatable, Sendable {
+        case compact
+        case regular
+    }
+
+    /// Only `.regular` is regular. A missing width class stays compact (#499).
+    public static func hasRegularWidth(_ widthClass: WidthClass?) -> Bool {
+        widthClass == .regular
     }
 
     /// The outer edge. The larger safe-area inset is that side of the screen.
@@ -85,8 +98,20 @@ public enum SplitViewLayout {
 
     public static let samples = [narrow, half, wide, full]
 
+    /// Split slices of the Duo in landscape (820 × 640, compact class), outer edge leading.
+    /// Shorter than `FoldedColumnLayout.duoMinHeight` but taller than wide, so they adapt
+    /// (#499). Capture shots only (#574 review); not part of `samples`.
+    public static let duoLandscape320 = Sample(name: "duoLandscape320", width: 320, height: 640,
+                                               leading: 28, trailing: 0, hasRegularWidth: false)
+    public static let duoLandscape410 = Sample(name: "duoLandscape410", width: 410, height: 640,
+                                               leading: 28, trailing: 0, hasRegularWidth: false)
+    public static let duoLandscape500 = Sample(name: "duoLandscape500", width: 500, height: 640,
+                                               leading: 28, trailing: 0, hasRegularWidth: false)
+
+    public static let duoLandscapeSamples = [duoLandscape320, duoLandscape410, duoLandscape500]
+
     public static func sample(named name: String) -> Sample? {
-        samples.first { $0.name == name }
+        (samples + duoLandscapeSamples).first { $0.name == name }
     }
 
     public struct Chrome: Equatable, Sendable {
@@ -163,12 +188,43 @@ public enum SplitViewLayout {
         let asymmetric = abs(lead - trail) > 0.5
         // Landscape phones are shorter than the Duo and their insets already differ
         // (the sensor housing is on one side). That path stays the centred column.
-        let landscapePhone = height < FoldedColumnLayout.duoMinHeight
+        // Only a landscape-shaped window counts: a split slice of the Duo in landscape
+        // (820 × 640) is taller than it is wide and still adapts (#499).
+        let landscapePhone = width > height && height < FoldedColumnLayout.duoMinHeight
         let adapts = asymmetric && !landscapePhone && width > 0 && height > 0
         let edge = adapts ? barEdge(leading: lead, trailing: trail, preferred: preferredBarEdge) : preferredBarEdge
         return Chrome(span: span, barEdge: edge, leading: lead, trailing: trail, adapts: adapts,
                       contentWidth: max(0, width - lead - trail))
     }
+
+    /// The #499 decision with the width class as the view reads it: `nil` stays compact.
+    /// Same rules as `chrome(hasRegularWidth:...)`, which this calls.
+    public static func chrome(widthClass: WidthClass?, containerWidth: Double, containerHeight: Double,
+                              leadingInset: Double, trailingInset: Double,
+                              preferredBarEdge: BarEdge) -> Chrome {
+        chrome(hasRegularWidth: hasRegularWidth(widthClass), containerWidth: containerWidth,
+               containerHeight: containerHeight, leadingInset: leadingInset,
+               trailingInset: trailingInset, preferredBarEdge: preferredBarEdge)
+    }
+
+    #if DEBUG
+    /// Capture-only "before" for the #574 screenshots: the decision with the pre-#499
+    /// landscape guard (`height < duoMinHeight` alone), so a tall landscape slice of the
+    /// Duo does not adapt and the bar stays on the preferred side. Release compiles this
+    /// out; production always uses `chrome(widthClass:...)`.
+    public static func chromeWithPre499Guard(widthClass: WidthClass?, containerWidth: Double,
+                                             containerHeight: Double, leadingInset: Double,
+                                             trailingInset: Double, preferredBarEdge: BarEdge) -> Chrome {
+        var result = chrome(widthClass: widthClass, containerWidth: containerWidth,
+                            containerHeight: containerHeight, leadingInset: leadingInset,
+                            trailingInset: trailingInset, preferredBarEdge: preferredBarEdge)
+        if finite(containerHeight) < FoldedColumnLayout.duoMinHeight {
+            result.adapts = false
+            result.barEdge = preferredBarEdge
+        }
+        return result
+    }
+    #endif
 
     /// Padding for one side each. `applied` is the inset SwiftUI has already used, so a
     /// view that is already inside the safe area does not add it again. A symmetric pair
@@ -199,6 +255,61 @@ public enum SplitViewLayout {
             self.trailing = trailing
             self.width = width
         }
+    }
+
+    // MARK: Rail D on the Duo's landscape split slices (#574 rework)
+
+    /// Owner (relayed by Orion): no compact player on the open Duo's landscape split. #499 made
+    /// those slices (820 × 640 split into 320, 410 or 500 pt, taller than wide) adapt, and the
+    /// split host then drew the phone column, with the horizontal scrubber and no rail. They keep
+    /// Rail D instead: the column beside the trailing 56 pt rail (`FoldedPlayer.foldedOuterBody`),
+    /// with the rail on the slice's outer edge.
+    ///
+    /// Only the split host asks, and the slice must adapt (`chrome(...).adapts`: uneven side
+    /// insets, so a phone or a full-screen window with matching insets is never one). The
+    /// container is the whole slice, safe area included. True only for a slice that is
+    /// taller than wide, at least `FoldedColumnLayout.landscapeDuoMinHeight` (600) tall, under
+    /// `FoldedColumnLayout.duoMinHeight` (716), and at least `FoldedColumnLayout.railColumnMinWidth`
+    /// (320) wide. So every iPhone keeps today's player (it is never an adapting split), the
+    /// Duo's portrait split (320 × 820) keeps its column, and every iPad split slice (at least
+    /// 744 pt tall) is unchanged. Never a `.duoHorizontal` container: both sides are under 716.
+    public static func keepsRailD(containerWidth: Double, containerHeight: Double,
+                                  leadingInset: Double, trailingInset: Double) -> Bool {
+        guard containerWidth.isFinite, containerHeight.isFinite,
+              containerWidth > 0, containerHeight > 0 else { return false }
+        guard chrome(hasRegularWidth: false, containerWidth: containerWidth, containerHeight: containerHeight,
+                     leadingInset: leadingInset, trailingInset: trailingInset,
+                     preferredBarEdge: .trailing).adapts else { return false }
+        guard containerWidth <= containerHeight else { return false }
+        guard containerHeight >= FoldedColumnLayout.landscapeDuoMinHeight,
+              containerHeight < FoldedColumnLayout.duoMinHeight else { return false }
+        return containerWidth >= FoldedColumnLayout.railColumnMinWidth
+    }
+
+    /// The title on a Rail D slice. The closed screen's 40 pt single line truncates a normal
+    /// title to a few letters in a 228 pt column (the 320 slice less its 28 pt outer inset and
+    /// the rail), so the slice uses the open Duo's sizes: 34 pt (`RailDLayout.openTitlePointSize`)
+    /// when the column beside the rail is at least `RailDLayout.largeTitleMinColumn`, else 28 pt
+    /// (`RailDLayout.railColumnTitlePointSize`), and up to `sliceTitleLineLimit` lines.
+    public enum SliceTitle: Equatable, Sendable {
+        case open
+        case railColumn
+
+        public var pointSize: Double {
+            switch self {
+            case .open: return RailDLayout.openTitlePointSize
+            case .railColumn: return RailDLayout.railColumnTitlePointSize
+            }
+        }
+    }
+
+    public static let sliceTitleLineLimit = 2
+
+    /// `bodyWidth` is the width the player draws in: the slice less the host's insets
+    /// (`railFrame(...).width`). The column is that less the rail and its edge inset.
+    public static func sliceTitle(bodyWidth: Double) -> SliceTitle {
+        let column = FoldedOuterLayout.columnWidthBesideRail(containerWidth: finite(bodyWidth))
+        return column >= RailDLayout.largeTitleMinColumn ? .open : .railColumn
     }
 
     public static func railFrame(containerWidth: Double, leadingInset: Double,
