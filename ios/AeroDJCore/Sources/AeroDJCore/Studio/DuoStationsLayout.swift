@@ -133,16 +133,29 @@ public enum DuoStationsLayout {
     /// the trailing edge, a trailing safe-area inset (≈ 73 pt in the owner's @3x shots), and the
     /// rail sat inside it, ≈ 90 pt from the window edge. The screen now spans the window's width
     /// (`ignoresSafeArea` horizontally), so the rail is `RailDLayout.trailingInset` from the
-    /// window edge. Where that column exists the rail starts below the cluster: the cluster ends
-    /// ≈ 107 pt from the window top in the shots, ≈ 83 pt under a ≈ 24 pt top inset, so 88 pt
-    /// from the top of the safe area. Not measured on a device yet; build 55 logs the insets.
-    public static let statusColumnClearance: Double = 88
+    /// window edge. Measured on physical Duo build 57 (`open-duo-player.png` `2853×2007` and
+    /// `closed-duo-stations.png` `1398×2034`): the status cluster (bed / time / battery ring /
+    /// Wi-Fi / dots) ends at ≈ 110 pt from the window top on open landscape (and ≈ 158 pt on
+    /// closed portrait, where the system toolbar starts at ≈ 172 pt). 124 pt clears the dots
+    /// with ≈ 14 pt breathing room in both orientations (-Nova).
+    public static let statusColumnClearance: Double = 124
 
     /// Gap from the top of the safe area to the rail glass. `railVerticalInset` (8) with no
     /// trailing unsafe column: every simulator capture and every window today, unchanged.
     public static func railTopInset(trailingUnsafeWidth: Double) -> Double {
         guard trailingUnsafeWidth.isFinite, trailingUnsafeWidth > 0.5 else { return railVerticalInset }
         return max(railVerticalInset, statusColumnClearance)
+    }
+
+    /// Trailing inset for the closed-Duo Now Playing rail (`ClosedVerticalRail`).
+    /// On iPhone and every simulator capture (`trailingUnsafeWidth <= 0.5`), returns
+    /// `RailDLayout.trailingInset` (8 pt) so iPhone snapshots stay byte-identical.
+    /// On physical closed Duo (`trailingUnsafeWidth ≈ 84 pt`), centers the 56 pt rail
+    /// under the top-right status cluster (matching `closed-duo-stations.png`). -Nova
+    public static func closedRailTrailingInset(trailingUnsafeWidth: Double) -> Double {
+        guard trailingUnsafeWidth.isFinite, trailingUnsafeWidth > 0.5 else { return RailDLayout.trailingInset }
+        let centered = (trailingUnsafeWidth - RailDLayout.railWidth) / 2 + 6
+        return min(24, max(RailDLayout.trailingInset, centered))
     }
 
     /// `foldMinX` / `foldMaxX`: a reported vertical division, if any. Otherwise the book pose
