@@ -34,6 +34,7 @@ jobs:
     outputs:
       ios: ${{ steps.filter.outputs.ios }}
       core: ${{ steps.filter.outputs.core }}
+      consent: ${{ steps.filter.outputs.consent }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -57,6 +58,16 @@ jobs:
               - 'docs/site/HOLD-pro.md'
               - 'docs/site/DRAFT-privacy-tester-voice.md'
               - 'docs/PRIVACY_MATRIX.md'
+            # #631 (-Fry): the flagged consent-copy shots rebuild the app twice, so they run only
+            # when the local-area consent copy, its prompt, its build flags or its UI test change.
+            consent:
+              - 'ios/AeroDJCore/Sources/AeroDJCore/Interludes/LocalArea.swift'
+              - 'ios/AeroDJ/LocalAreaPrompt.swift'
+              - 'ios/AeroDJCore/Sources/AeroDJCore/Voice/CloudVoiceConsent.swift'
+              - 'ios/AeroDJCore/Sources/AeroDJCore/Interludes/GDELTNewsProvider.swift'
+              - 'ios/AeroDJ/TesterVoiceConsent+App.swift'
+              - 'ios/AeroDJUITests/AppWideLayoutTests.swift'
+              - '.github/workflows/ios.yml'
 
   core-tests:
     name: AeroDJCore tests
@@ -693,6 +704,94 @@ jobs:
         if: always() && runner.environment == 'self-hosted'
         timeout-minutes: 3
         run: ios/scripts/ci-selfhosted-cleanup.sh
+
+  consent-copy-flagged:
+    # #631 (-Fry): #629's required `duo-wide-localarea` shot is the unflagged build, so it shows
+    # only the App Store consent copy. These two legs are real flagged Debug builds, so the owner
+    # gets the tester and owner A/B copy as real captures, not the mock. Compile flags only: no
+    # secrets, no paid voices, no network voice calls. Hosted runners only.
+    name: Consent copy shots (${{ matrix.leg }})
+    needs: changes
+    if: needs.changes.outputs.consent == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: tester
+            conds: AERODJ_TESTER_VOICE
+          - leg: ownerab
+            conds: AERODJ_OWNER_AB
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      DERIVED_DATA: ios/build/DerivedData-consent
+      SHOTS: ${{ github.workspace }}/consent-copy-shots
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1 && xcrun metal --version; then
+            echo "Metal toolchain present"
+          else
+            xcodebuild -downloadComponent MetalToolchain
+            xcrun metal --version || { echo "::error::Metal toolchain still unavailable"; exit 1; }
+          fi
+      - name: Pick an iPhone simulator
+        run: |
+          PHONE=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                      | select(.name | startswith("iPhone"))] | last | .udid // empty')
+          test -n "$PHONE" || { echo "Need an iPhone simulator"; exit 1; }
+          echo "PHONE_UDID=$PHONE" >> "$GITHUB_ENV"
+      - name: Build for testing (${{ matrix.conds }})
+        run: |
+          xcodebuild build-for-testing \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PHONE_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            "SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited) ${{ matrix.conds }}"
+      - name: Local-area prompt at Duo width (${{ matrix.leg }} copy)
+        timeout-minutes: 20
+        run: |
+          mkdir -p "$SHOTS"
+          xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$PHONE_UDID" -b
+          ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
+            env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 600 \
+            -destination "id=$PHONE_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -only-testing:AeroDJUITests/AppWideLayoutTests/testDuoWideLocalAreaPromptIsTheReadableColumn \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Require the ${{ matrix.leg }} consent shot
+        run: |
+          ls -la "$SHOTS"
+          ls "$SHOTS" | grep -q "^duo-wide-localarea-${{ matrix.leg }}_" \
+            || { echo "missing duo-wide-localarea-${{ matrix.leg }} screenshot"; exit 1; }
+      - name: Upload consent shots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consent-copy-shots-${{ matrix.leg }}
+          path: consent-copy-shots/*.png
+          if-no-files-found: ignore
 
   studio-screenshots:
     name: Studio UI tests and screenshots (closed + open)
