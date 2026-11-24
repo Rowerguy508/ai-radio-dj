@@ -41,4 +41,10 @@ public enum DuoUpNextTimeline {
         lines.append(contentsOf: queued.map { Line(role: .queued, title: $0.title, detail: $0.artist) })
         return lines
     }
+
+    /// Build 58 (-Nova): upcoming songs only, for the Open-Duo Up Next card where the track
+    /// header and DJ status pill already display the current song and any pending DJ break.
+    public static func upcomingLines(queued: [Song]) -> [Line] {
+        queued.map { Line(role: .queued, title: $0.title, detail: $0.artist) }
+    }
 }

@@ -580,4 +580,14 @@ final class DuoUpNextTimelineTests: XCTestCase {
             queued: [])
         XCTAssertEqual(blank.map(\.role), [.nowPlaying])
     }
+
+    func testUpcomingLinesOmitsNowPlayingAndBreakChip() {
+        let upcoming = DuoUpNextTimeline.upcomingLines(queued: [
+            .init(title: "No Hay Nadie", artist: "Héctor El Father"),
+            .init(title: "Sobredosis", artist: "Romeo Santos"),
+        ])
+        XCTAssertEqual(upcoming.map(\.role), [.queued, .queued])
+        XCTAssertEqual(upcoming.map(\.title), ["No Hay Nadie", "Sobredosis"])
+        XCTAssertTrue(DuoUpNextTimeline.upcomingLines(queued: []).isEmpty)
+    }
 }
