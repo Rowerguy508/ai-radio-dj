@@ -1004,7 +1004,10 @@ final class StudioScreenTests: XCTestCase {
         let any = app.descendants(matching: .any)
         guard let (_, box) = openDuoContainer(app) else { return }
 
-        XCTAssertTrue(any["tune.twoPane"].waitForExistence(timeout: 15), app.debugDescription)
+        // The "tune.twoPane" HStack fills the 820 x 640 container, so the accessibility tree folds it
+        // into capture.duoOpenContainer (run 45380997049). The DJ pane only renders in two-pane mode,
+        // so wait on it instead.
+        XCTAssertTrue(app.scrollViews["tune.pane.dj"].waitForExistence(timeout: 15), app.debugDescription)
         let soundPane = app.scrollViews["tune.form"]
         let djPane = app.scrollViews["tune.pane.dj"]
         let rail = any["tune.rail"]
