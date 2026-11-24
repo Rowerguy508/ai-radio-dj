@@ -994,6 +994,44 @@ final class StudioScreenTests: XCTestCase {
         app.terminateIfRunning()
     }
 
+    /// #461 PR 1 (-Nova): Open-Duo Landscape (820 x 640) Station Tuner renders two scrollable panes
+    /// (Sound left, DJ + Briefings + Recipes right) with a 32 pt center gutter straddling the
+    /// device midpoint (x = 410 pt) and a 56 pt trailing rail holding Close and Save (>= 44 pt).
+    @MainActor
+    func testDuoLandscapeStationTunerTwoPane() {
+        let app = launch(scenario: "duoLandscapeTune")
+        let any = app.descendants(matching: .any)
+        guard let (_, box) = openDuoContainer(app) else { return }
+
+        XCTAssertTrue(any["tune.twoPane"].waitForExistence(timeout: 15), app.debugDescription)
+        let soundPane = app.scrollViews["tune.form"]
+        let djPane = app.scrollViews["tune.pane.dj"]
+        let rail = any["tune.rail"]
+        let closeButton = app.buttons["tune.rail.close"]
+        let saveButton = app.buttons["tune.rail.save"]
+
+        XCTAssertTrue(soundPane.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(djPane.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(rail.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(saveButton.waitForExistence(timeout: 5), app.debugDescription)
+
+        // Gutter straddles the container midpoint (x = 410 pt on 820 pt wide Duo landscape).
+        let midX = box.midX
+        XCTAssertLessThanOrEqual(soundPane.frame.maxX, midX - 14,
+                                 "Sound pane crossed the fold gutter: maxX=\(soundPane.frame.maxX), midX=\(midX)")
+        XCTAssertGreaterThanOrEqual(djPane.frame.minX, midX + 14,
+                                    "DJ pane crossed the fold gutter: minX=\(djPane.frame.minX), midX=\(midX)")
+
+        // Touch target floor (>= 44 x 44 pt) on rail actions.
+        XCTAssertGreaterThanOrEqual(closeButton.frame.width, 43.5)
+        XCTAssertGreaterThanOrEqual(closeButton.frame.height, 43.5)
+        XCTAssertGreaterThanOrEqual(saveButton.frame.width, 43.5)
+        XCTAssertGreaterThanOrEqual(saveButton.frame.height, 43.5)
+
+        save(app, "duo-landscape-tuner")
+    }
+
     /// Build 51 issue 2: with the Stations sidebar open the player fell back to the old centred
     /// layout (Playing-from bar, Queue and Tune buttons) and lost the rail. The ~500 pt detail now
     /// keeps the rail, with Play, Skip and Queue on it, and the scrubber stays on screen.
