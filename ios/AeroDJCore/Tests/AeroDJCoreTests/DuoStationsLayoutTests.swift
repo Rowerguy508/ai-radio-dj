@@ -157,6 +157,58 @@ final class DuoStationsLayoutTests: XCTestCase {
         XCTAssertEqual(DuoStationsLayout.tileHeight(available: 500, rows: 0), DuoStationsLayout.minTileHeight)
     }
 
+    /// Build 56 (951 × 669 CI shots, -Nova): A's last tile row ends the side gutter (24) above
+    /// the window's bottom edge at the device window, the sim book and upright. Before, the
+    /// 951 × 669 rows were 272 pt and ran to 666 of 669, clipped by the scroll view at 661.
+    func testTileGridKeepsTheBottomMarginInTheWindow() {
+        let header = DuoStationsLayout.tileHeaderBlock
+        let inset = DuoStationsLayout.railVerticalInset
+        let margin = DuoStationsLayout.tileGridBottomMargin
+        XCTAssertEqual(header, 92)
+        XCTAssertEqual(margin, DuoStationsLayout.leadingGutter, "the bottom margin is the side gutter")
+        XCTAssertEqual(margin, 24)
+        let cases: [(width: Double, height: Double, rows: Int, tile: Double)] = [
+            (951, 669, 2, 261),
+            (820, 640, 2, 247),
+            (640, 820, 3, 219),
+        ]
+        for c in cases {
+            let pose = DuoStationsLayout.geometry(containerWidth: c.width, containerHeight: c.height).pose
+            XCTAssertEqual(pose == .book ? 2 : 3, c.rows)
+            let page = c.height - 2 * inset
+            let tile = DuoStationsLayout.fittedTileHeight(pageHeight: page, headerBlock: header, rows: c.rows)
+            XCTAssertEqual(tile, c.tile, "\(c.width) × \(c.height)")
+            XCTAssertGreaterThan(tile, DuoStationsLayout.minTileHeight, "fits without the floor")
+            let maxY = DuoStationsLayout.lastTileRowMaxY(headerBlock: header, tileHeight: tile, rows: c.rows)
+            XCTAssertLessThanOrEqual(maxY, c.height - margin, "\(c.width) × \(c.height): last row \(maxY)")
+            XCTAssertGreaterThan(maxY, c.height - margin - Double(c.rows), "no more than a rounding point to spare")
+            // The grid's scroll content (ring inset, rows, gaps, bottom padding) fits its viewport,
+            // so eight stations never scroll.
+            let content = DuoStationsLayout.tileRingInset * 2 + tile * Double(c.rows)
+                + DuoStationsLayout.tileGap * Double(c.rows - 1) + DuoStationsLayout.tileGridBottomPadding
+            XCTAssertLessThanOrEqual(content, page - header)
+        }
+        // The old sizing at the device window: 272 pt rows, 3 pt from the bottom edge.
+        let old = DuoStationsLayout.tileHeight(available: 669 - 2 * inset - header, rows: 2)
+        XCTAssertEqual(old, 272)
+        XCTAssertEqual(DuoStationsLayout.lastTileRowMaxY(headerBlock: header, tileHeight: old, rows: 2), 666)
+        XCTAssertEqual(DuoStationsLayout.lastTileRowMaxY(headerBlock: header, tileHeight: 261, rows: 2), 644)
+    }
+
+    /// Scrolled to its end, a longer grid keeps the same 24 pt under its last row: the page ends
+    /// `railVerticalInset` above the window's edge, then the ring inset, then the padding.
+    func testScrolledTileGridKeepsTheBottomMargin() {
+        XCTAssertEqual(DuoStationsLayout.tileRingInset, 6)
+        XCTAssertEqual(DuoStationsLayout.tileGridBottomPadding, 10)
+        XCTAssertEqual(DuoStationsLayout.railVerticalInset + DuoStationsLayout.tileRingInset
+                       + DuoStationsLayout.tileGridBottomPadding, DuoStationsLayout.tileGridBottomMargin)
+        // A window too short for two rows keeps the floor (and scrolls).
+        XCTAssertEqual(DuoStationsLayout.fittedTileHeight(pageHeight: 300, headerBlock: 92, rows: 2),
+                       DuoStationsLayout.minTileHeight)
+        XCTAssertEqual(DuoStationsLayout.fittedTileHeight(pageHeight: .nan, headerBlock: 92, rows: 2),
+                       DuoStationsLayout.minTileHeight)
+    }
+
     func testDaytimeAndAfterDarkGrouping() {
         let morning = BuiltInStations.morningCalm.id
         let late = BuiltInStations.lateNight.id

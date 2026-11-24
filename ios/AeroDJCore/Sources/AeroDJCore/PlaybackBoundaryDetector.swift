@@ -106,6 +106,25 @@ public struct PlaybackBoundaryDetector: Sendable {
     /// #444 (-Atlas): our own `play()` for the skip's song returned (`noteOwnPlayReturned`), and no
     /// poll has seen that song yet. An empty queue now is MusicKit's Next cutting that song.
     private var ownPlayReturnedUnobserved = false
+    /// #444 (-Fry): our own `play()` for the skip's song returned, and no sample since has shown it
+    /// playing. A song that then stays paused at 0:00 for longer than the start-confirm deadline is
+    /// MusicKit's other Next shape (the one-song queue kept and rewound), which no other check can
+    /// see before a playing sample.
+    private var ownPlayReturnedNotSeenPlaying = false
+    /// The first stopped-at-start sample of that song after our `play()` returned: its entry and uptime.
+    private var stoppedAtStartAfterOwnPlay: (entry: String, uptime: TimeInterval)?
+    /// #585 review (Echo, Atlas): a slow start looks the same as a rewind for a while. After our
+    /// `play()` returns, MusicKit can report the song paused at 0:00 for seconds while it buffers
+    /// (cellular, AirPlay, the #526 lag). So the stall has to outlast #109's start-confirm deadline
+    /// (`PlaybackConfirmPolicy.deadlineSeconds`, 8 s), the app's existing line between a slow start
+    /// and a failed one. A shorter stall that then plays is a slow start and nothing happens.
+    static let rewoundBeforePlayingStallSeconds: TimeInterval = PlaybackConfirmPolicy.deadlineSeconds
+    /// #585 review (Atlas): one rewind-derived cut, then none until a song is seen playing (or a
+    /// clear or mid-song stop proves a real Next). If every song stalls at 0:00, this gives at most the
+    /// one advance a real second press would and then stops instead of walking down the queue. Known
+    /// gap: the skip path arms no start-confirm watchdog, so if the next song also stalls after the
+    /// capped cut, nothing reports it. Tracked in #586.
+    private var rewindCutSpent = false
 
     // Build 18 P0 (-Fry): sticky per-entry facts that a system interruption cannot clear.
     /// Share of the catalog duration that counts as "this entry played through".
@@ -201,10 +220,18 @@ public struct PlaybackBoundaryDetector: Sendable {
         userChangePending = true
         changeUnobserved = true
         ownPlayReturnedUnobserved = false
+        ownPlayReturnedNotSeenPlaying = false
+        stoppedAtStartAfterOwnPlay = nil
         endedEntryID = nil
         interruptionBeganNearEnd = false
         queueFinishedSinceInterruption = false
         endReportedSinceLoad = false
+    }
+
+    /// #444 (Atlas): a user skip (the app's Next intake) is a new press, so the one-rewind-cut cap
+    /// resets with it. Not called for the advance a rewind-derived cut itself causes.
+    public mutating func noteUserSkip() {
+        rewindCutSpent = false
     }
 
     /// #444 (-Echo): the app's skip is loading a song that has not yet played past the failed-start
@@ -225,6 +252,37 @@ public struct PlaybackBoundaryDetector: Sendable {
     /// reported no cut, no remote skip and no failed start, and the player sat empty.
     public mutating func noteOwnPlayReturned() {
         ownPlayReturnedUnobserved = skipLoadOpen && changeUnobserved
+        // #444 (-Fry): the same for MusicKit's rewind shape, whether or not a poll already saw the
+        // song at 0:00 while it loaded. Judged by `confirmsRewoundBeforePlaying`.
+        ownPlayReturnedNotSeenPlaying = skipLoadOpen && !rewindCutSpent
+        stoppedAtStartAfterOwnPlay = nil
+    }
+
+    /// #444 (-Fry): true once when this sample confirms that the skip's song, whose own `play()`
+    /// returned, was rewound to 0:00 and left paused before any poll saw it playing: stopped-at-start
+    /// samples of the same entry spanning at least `rewoundBeforePlayingStallSeconds`, with the skip
+    /// load still open and no user pause, route loss, interruption, or newer app change. Any
+    /// playing sample, hold, unknown position or uptime, or progress past the failed-start window
+    /// ends the watch. Read the facts before this sample (a new entry resets the hold flags).
+    private mutating func confirmsRewoundBeforePlaying(_ observation: PlaybackObservation, entry: String) -> Bool {
+        guard ownPlayReturnedNotSeenPlaying else { return false }
+        let minimum = Self.minimumProgress(duration: observation.duration ?? lastDuration)
+        guard skipLoadOpen, !observation.isPlaying, let position = observation.position, position < minimum,
+              let now = observation.uptime, !heldByUserOrRoute, !interruptionSinceLastPlayingSample else {
+            ownPlayReturnedNotSeenPlaying = false
+            stoppedAtStartAfterOwnPlay = nil
+            return false
+        }
+        if let first = stoppedAtStartAfterOwnPlay, first.entry == entry {
+            // Still inside the slow-start allowance: keep waiting, decide nothing.
+            guard now - first.uptime >= Self.rewoundBeforePlayingStallSeconds else { return false }
+            ownPlayReturnedNotSeenPlaying = false
+            stoppedAtStartAfterOwnPlay = nil
+            rewindCutSpent = true
+            return true
+        }
+        stoppedAtStartAfterOwnPlay = (entry, now)
+        return false
     }
 
     /// Why playback stopped. A natural end has no cause.
@@ -275,6 +333,7 @@ public struct PlaybackBoundaryDetector: Sendable {
     /// when the duration or a position is unknown, near the end, or after the song played through,
     /// so a natural end (even one that happened while the app was suspended) keeps its break.
     public mutating func takeRemoteSkip() -> Bool {
+        if remoteSkipPending { rewindCutSpent = false }
         defer { remoteSkipPending = false }
         return remoteSkipPending
     }
@@ -284,6 +343,8 @@ public struct PlaybackBoundaryDetector: Sendable {
     /// The caller reloads that song, or folds the cut into the one queued follow-up skip.
     /// It does not pause and it does not report a natural end.
     public mutating func takeSkipLoadCut() -> Bool {
+        // A clear, or a stop after the song was seen playing, is a real Next: the cap starts over.
+        if let cut = skipLoadCutPending, cut.shape == .clear || cut.targetSeenPlaying { rewindCutSpent = false }
         defer { skipLoadCutPending = nil }
         return skipLoadCutPending != nil
     }
@@ -441,6 +502,9 @@ public struct PlaybackBoundaryDetector: Sendable {
                 skipLoadCutPending = SkipLoadCut(shape: .clear, targetSeenPlaying: false)
                 return nil
             }
+            // #444 (-Fry): a clear is not the rewind shape; the clear checks here decide it.
+            ownPlayReturnedNotSeenPlaying = false
+            stoppedAtStartAfterOwnPlay = nil
             // Queue emptied. A natural finish of the last item is a boundary.
             let finished = entryID
             if finished != nil, interruptedEntryPlayedThrough { queueFinishedSinceInterruption = true }
@@ -476,6 +540,10 @@ public struct PlaybackBoundaryDetector: Sendable {
         }
         changeUnobserved = false
         ownPlayReturnedUnobserved = false
+        // #444 (-Fry): judged before the entry bookkeeping below resets this entry's hold flags.
+        let rewoundBeforePlaying = confirmsRewoundBeforePlaying(observation, entry: current)
+        // #585 review: a song really played, so a later stall may again be a rewound Next.
+        if observation.isPlaying { rewindCutSpent = false }
         guard let previous = entryID else {
             // First entry of a queue: nothing finished yet.
             entryID = current
@@ -504,6 +572,12 @@ public struct PlaybackBoundaryDetector: Sendable {
             endReportedSinceLoad = true
             if interruptedAtEnd { interruptionBeganNearEnd = true }
             return .naturalEnd(finishedEntryID: previous)
+        }
+        if rewoundBeforePlaying {
+            // #444 (-Fry): MusicKit's lock-screen Next kept the skip's one-song queue and rewound it
+            // to 0:00 before any poll saw it play. Not a failed start and not a natural end: the
+            // caller routes it like any other cut (after our `play()` returned, it is a Next).
+            skipLoadCutPending = SkipLoadCut(shape: .rewind, targetSeenPlaying: false)
         }
         if let duration = observation.duration { lastDuration = duration }
         /// #149: the previous sample's playhead, before this sample updates it.
