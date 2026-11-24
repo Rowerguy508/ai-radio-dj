@@ -12,7 +12,7 @@ import SwiftUI
 ///
 /// TODO(#465 item 4): showing this grid beside the detail still needs owner mockups first.
 /// The unused arrangement seam on `decide` is gone; this PR does not change that UI.
-/// TODO(#465 item 2): with a `foldDivision`, keep the column gap on the fold.
+/// #465 item 2: with a `foldDivision`, `layout` places the column gap across the fold.
 /// Same SceneStorage key as `StationCarousel`: a fold destroys the compact
 /// carousel and this grid must restore the focused card before falling back
 /// to the selected station (#492, #493).
@@ -42,7 +42,8 @@ struct StationGrid: View {
                             .id(station.id)
                     }
                 }
-                .padding(.horizontal, CGFloat(AppWideLayout.screenGutter(.stations) + layout.sideInset))
+                .padding(.leading, CGFloat(AppWideLayout.screenGutter(.stations) + layout.leadingInset))
+                .padding(.trailing, CGFloat(AppWideLayout.screenGutter(.stations) + layout.trailingInset))
                 .padding(.top, 8)
                 .padding(.bottom, 24)
                 // The id sits on the grid, not the scroll view: in the wide capture the
