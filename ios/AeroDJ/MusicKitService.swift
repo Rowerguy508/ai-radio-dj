@@ -1087,7 +1087,7 @@ final class MusicKitService: ObservableObject {
     }
 
     /// The catalog song of a queue entry, also while the entry is still transient.
-    private static func songID(of entry: MusicPlayer.Queue.Entry) -> String? {
+    private static func songID(of entry: ApplicationMusicPlayer.Queue.Entry) -> String? {
         if case let .song(song)? = entry.item { return song.id.rawValue }
         if let song = entry.transientItem as? Song { return song.id.rawValue }
         return nil
