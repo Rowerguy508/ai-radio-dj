@@ -220,6 +220,8 @@ public final class StationQueueFeed<Item: Sendable> {
     private var spacingArtists: [String: String] = [:]
     private static var maxSpacingArtists: Int { 2048 }
     private var generation = 0
+    /// #418 (-Atlas): the running seed stream for `.stream` (tests); unused by every other source.
+    private var seedStream: SplitMix64
     /// The station the playing queue belongs to. `nil` before the first queue start, and for a
     /// queue started on a station with no seeds (see `queueStartReported`).
     public private(set) var playingKey: StationQueueKey?
@@ -242,6 +244,9 @@ public final class StationQueueFeed<Item: Sendable> {
         let items: [Item]
         let previousKey: StationQueueKey?
         let previousReported: Bool
+        /// The opener this hand-off recorded, if any. `take` and `fastStartBegan` set it;
+        /// a refill leaves it nil (it does not call `rememberOpened`).
+        let openerID: String?
     }
 
     /// - Parameters:
@@ -273,6 +278,25 @@ public final class StationQueueFeed<Item: Sendable> {
         self.ratings = ratings
         self.songID = songID ?? { StationQueueSongID.of($0) }
         self.log = log
+        if case let .stream(start) = options.seedSource.kind { seedStream = SplitMix64(seed: start) } else { seedStream = SplitMix64(seed: 0) }
+    }
+
+    /// #418 (-Atlas): the shuffle seed for one build (a full queue or a first-song lookup). The app's
+    /// `.systemRandom` draws a fresh one every time; `.stream` draws the next from its stream.
+    private func nextBuildSeed(for key: StationQueueKey) -> UInt64 {
+        if case .stream = options.seedSource.kind {
+            return options.seedSource.seed(perDay: 0, using: &seedStream)
+        }
+        return options.seedSource.seed(perDay: key.shuffleSeed(day: day()))
+    }
+
+    /// The builder options for one build: a fresh seed, and short lists spread over the queue when
+    /// every build gets its own seed (#418).
+    private func buildOptions(for key: StationQueueKey, seed: UInt64) -> StationPoolBuilder.Options {
+        var opts = options
+        opts.shuffleSeed = seed
+        opts.spreadShortLists = options.seedSource.isFreshPerBuild
+        return opts
     }
 
     /// Songs staged for the next hand-off (count only), `nil` when nothing is staged.
@@ -344,8 +368,7 @@ public final class StationQueueFeed<Item: Sendable> {
         let config = configuration.validated()
         let pool = await resolver.resolve(seeds: config.seeds, reach: config.reach, affinity: bias.affinityArtists)
         guard mine == generation else { return superseded() }
-        var opts = options
-        opts.shuffleSeed = options.seedSource.seed(perDay: key.shuffleSeed(day: day()))
+        var opts = buildOptions(for: key, seed: nextBuildSeed(for: key))
         opts.excludedSongIDs = options.excludedSongIDs.union(recentlyPlayed())
         opts.ratings = bias
         let picks = StationPoolBuilder.build(pool, configuration: config, options: opts)
@@ -387,6 +410,14 @@ public final class StationQueueFeed<Item: Sendable> {
         }
     }
 
+    /// Testing only: set this station's cached openers. The app writes them through `prepare`,
+    /// which also replaces the staged list with the same build, so a test that needs a cached
+    /// song that is not in the current staged list uses this.
+    func seedCachedOpeners(_ items: [Item], for configuration: StationConfiguration) {
+        guard let key = StationQueueKey(configuration) else { return }
+        rememberOpeners(items, for: key)
+    }
+
     private func rememberArtists(of picks: [StationCandidate]) {
         if spacingArtists.count + picks.count > Self.maxSpacingArtists { spacingArtists = [:] }
         for pick in picks { spacingArtists[pick.id] = pick.artistKey }
@@ -424,8 +455,9 @@ public final class StationQueueFeed<Item: Sendable> {
     }
 
     /// #454: one playable song to start `configuration` with, as fast as possible, or nil.
-    /// In order: the staged queue's first song; a song from this station's last build (no catalog
+    /// In order: a song from the staged queue; a song from this station's last build (no catalog
     /// call); else the FIRST seed alone, core songs only (`.only`), and a few picks made playable.
+    /// Staged and cached lookups both skip a recent opener when another song is available (#476).
     /// Screened against the current never/tired exclusions and the songs just played. Never touches
     /// playback, `staged` or `playingKey`; the full build runs separately (`prepare`).
     public func firstSong(for configuration: StationConfiguration) async -> Item? {
@@ -435,7 +467,7 @@ public final class StationQueueFeed<Item: Sendable> {
         if hasReadyFirstSong(for: key) { return readyFirstSong(for: key) }
         let config = configuration.validated()
         guard !config.seeds.isEmpty else { return nil }
-        let buildSeed = options.seedSource.seed(perDay: key.shuffleSeed(day: day()))
+        let buildSeed = nextBuildSeed(for: key)
         let seedIndex = openerSeedIndex(for: key, seedCount: config.seeds.count, buildSeed: buildSeed)
         let seed = config.seeds[seedIndex]
         let bias = currentRatings(for: key)
@@ -443,9 +475,8 @@ public final class StationQueueFeed<Item: Sendable> {
         one.seeds = [seed]
         one.reach = .only
         let pool = await resolver.resolve(seeds: [seed], reach: .only, affinity: [])
-        var opts = options
+        var opts = buildOptions(for: key, seed: buildSeed)
         opts.limit = 3
-        opts.shuffleSeed = buildSeed
         opts.excludedSongIDs = options.excludedSongIDs.union(recentlyPlayed())
         opts.ratings = bias
         let picks = StationPoolBuilder.build(pool, configuration: one, options: opts)
@@ -473,9 +504,14 @@ public final class StationQueueFeed<Item: Sendable> {
         return candidates[Int(rng.next() % UInt64(candidates.count))]
     }
 
+    /// The first song that is not one of the station's recent openers, else the first.
+    private func firstAvailableOpener(_ items: [Item], key: StationQueueKey) -> Item? {
+        items.first { !isRecentOpener($0, key: key) } ?? items.first
+    }
+
     /// The first screened song that is not one of the station's recent openers (else the first).
     private func pickOpener(_ items: [Item], key: StationQueueKey, seedIndex: Int) -> Item? {
-        guard let song = items.first(where: { !isRecentOpener($0, key: key) }) ?? items.first else { return nil }
+        guard let song = firstAvailableOpener(items, key: key) else { return nil }
         if let id = songID(song) { lookedUpOpenerSeed[key] = (id, seedIndex) }
         return song
     }
@@ -502,11 +538,25 @@ public final class StationQueueFeed<Item: Sendable> {
         lookedUpOpenerSeed[key] = nil
     }
 
-    /// The first song available without a catalog call: the staged queue's, else a cached opener.
+    /// The first song available without a catalog call: the staged queue when it still has a
+    /// song after screening, else a cached opener. Both paths use `firstAvailableOpener`, so a
+    /// recent opener is skipped when another song is available, and a one-song (or all-recent)
+    /// list still opens with the first. An empty screened staged list falls through to the cache
+    /// (#594), as it did before the paths were unified.
     private func readyFirstSong(for key: StationQueueKey) -> Item? {
-        if let ready = staged, ready.key == key, let song = screened(ready.items, for: key).first { return song }
-        let allowed = cachedOpeners[key]?.filter { mayOpen(with: $0, key: key) } ?? []
-        return allowed.first { !isRecentOpener($0, key: key) } ?? allowed.first
+        let stagedSongs: [Item]
+        if let ready = staged, ready.key == key {
+            stagedSongs = screened(ready.items, for: key)
+        } else {
+            stagedSongs = []
+        }
+        let candidates: [Item]
+        if !stagedSongs.isEmpty {
+            candidates = stagedSongs
+        } else {
+            candidates = cachedOpeners[key]?.filter { mayOpen(with: $0, key: key) } ?? []
+        }
+        return firstAvailableOpener(candidates, key: key)
     }
 
     private func hasReadyFirstSong(for key: StationQueueKey) -> Bool { readyFirstSong(for: key) != nil }
@@ -518,7 +568,8 @@ public final class StationQueueFeed<Item: Sendable> {
     public func fastStartBegan(with song: Item, active: StationConfiguration) -> Bool {
         guard let key = StationQueueKey(active) else { return false }
         pendingHandOff = PendingHandOff(trigger: .idleStart, key: key, revision: currentRatings(for: key).revision,
-                                        items: [], previousKey: playingKey, previousReported: queueStartReported)
+                                        items: [], previousKey: playingKey, previousReported: queueStartReported,
+                                        openerID: songID(song))
         playingKey = key
         queueStartReported = true
         rememberOpened(song, key: key)
@@ -629,7 +680,8 @@ public final class StationQueueFeed<Item: Sendable> {
         }
         // Fry nit 1 (PR B): a failed start restores the screened list, never the unscreened build.
         pendingHandOff = PendingHandOff(trigger: .refill, key: key, revision: ready.revision, items: allowed,
-                                        previousKey: playingKey, previousReported: queueStartReported)
+                                        previousKey: playingKey, previousReported: queueStartReported,
+                                        openerID: nil)
         staged = nil
         playingKey = key
         // Echo (PR B): the last song is NOT screened. It is the song the DJ's break at this boundary
@@ -658,6 +710,14 @@ public final class StationQueueFeed<Item: Sendable> {
     /// active station's music settings changed since the playing queue started and its queue is
     /// staged; `nil` keeps the current queue (today's behavior). `playbackMayStart` false (a held
     /// start) always keeps the current queue: the existing deferral rules run unchanged.
+    /// #304 R1 (-Atlas): whether `takeForBoundary` would try a station switch at the next natural
+    /// boundary (the active station is not the playing queue's). Read-only: no build, no log, and
+    /// it does not adopt a key the way `take` does for a queue whose start was never reported.
+    public func stationSwitchPending(active: StationConfiguration) -> Bool {
+        guard let key = StationQueueKey(active), key != playingKey else { return false }
+        return playingKey != nil || queueStartReported
+    }
+
     public func takeForBoundary(active: StationConfiguration, playbackMayStart: Bool) -> [Item]? {
         take(.songBoundary, active: active, playbackMayStart: playbackMayStart, requireChange: true)
     }
@@ -694,7 +754,8 @@ public final class StationQueueFeed<Item: Sendable> {
         }
         // Fry nit 1 (PR B): a failed start restores the screened list, never the unscreened build.
         pendingHandOff = PendingHandOff(trigger: trigger, key: key, revision: ready.revision, items: items,
-                                        previousKey: playingKey, previousReported: queueStartReported)
+                                        previousKey: playingKey, previousReported: queueStartReported,
+                                        openerID: items.first.flatMap { songID($0) })
         staged = nil
         playingKey = key
         if let first = items.first { rememberOpened(first, key: key) }
@@ -706,6 +767,9 @@ public final class StationQueueFeed<Item: Sendable> {
     /// back: the playing queue keeps its own station (`playingKey`) and the station's songs are
     /// staged again (unless a newer build is already staged), so the next boundary or Play retries.
     /// `.started` and `.superseded` keep the hand-off. A queue start reported since (a tap) wins.
+    /// A failed start also drops `openerID` when it is still `recentOpeners.last` (#476 / #594):
+    /// that song never opened the station, so a retry's `firstSong` can still start with it.
+    /// A refill leaves `openerID` nil, so a failed refill does not evict the real last opener.
     public func handOffFinished(_ result: StationHandOffResult) {
         guard let handOff = pendingHandOff else { return }
         pendingHandOff = nil
@@ -713,7 +777,17 @@ public final class StationQueueFeed<Item: Sendable> {
         playingKey = handOff.previousKey
         queueStartReported = handOff.previousReported
         if staged == nil { staged = (handOff.key, handOff.revision, handOff.items) }
+        forgetOpened(handOff.openerID, key: handOff.key)
         log(.handOffFailed(handOff.trigger))
+    }
+
+    /// Drops `id` from opener memory only when it is still the most recent opener of `key`.
+    /// Safer than removing that ID wherever it sits: if a newer opener was recorded while this
+    /// hand-off was pending, memory is left alone rather than pulled from the middle.
+    private func forgetOpened(_ id: String?, key: StationQueueKey) {
+        guard let id, var recent = recentOpeners[key], recent.last == id else { return }
+        recent.removeLast()
+        recentOpeners[key] = recent.isEmpty ? nil : recent
     }
 
     private func keep(_ trigger: StationQueueTrigger, _ reason: StationQueueKeepReason) -> [Item]? {

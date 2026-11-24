@@ -103,9 +103,14 @@ public final class DJBreakSession {
     /// discovery are tuning sliders on the same station, so their new queue keeps the show going.
     /// A refill, a re-queue or restart on the same station, a skip, or a genre, mood, personality,
     /// energy or briefing edit never re-greets (none is in the key; the feed starts no new queue for
-    /// them). A tags-only station has no key (nil); switching between two tags-only stations does
-    /// not re-greet (known gap until stations have a real id).
+    /// them). A tags-only station has no key (nil): two of them are told apart by the station id the
+    /// caller passes (`openedStationID`, #568).
     private var openedStation: StationQueueKey??
+    /// #568: the station id (`StationRef.id`) the last queue was started for, nil when the caller
+    /// passed none. Only read when both the last and the new queue are tags-only (no key): two
+    /// known, different ids re-greet; the same id (a re-tap, a re-queue, a tag edit) or an unknown
+    /// one does not. Keyed stations still compare seeds only.
+    private var openedStationID: String?
     /// Station intro (#442). One chain at a time: a new station cancels the render already
     /// in flight and does not start another until that render's voice reservation is released.
     private var stationIntroID: String?
@@ -223,8 +228,10 @@ public final class DJBreakSession {
     /// `mayBeNarrated` before they are planned.
     @discardableResult
     public func beginQueueInBackground(_ tracks: [DJTrack], briefing: NarrationHandoff? = nil,
-                                       sources: [ConnectionItem] = [], stationName: String? = nil) -> Task<Void, Never> {
-        beginQueueInBackground(reserveQueueSetup(), tracks, briefing: briefing, sources: sources, stationName: stationName)
+                                       sources: [ConnectionItem] = [], stationName: String? = nil,
+                                       stationID: String? = nil) -> Task<Void, Never> {
+        beginQueueInBackground(reserveQueueSetup(), tracks, briefing: briefing, sources: sources,
+                               stationName: stationName, stationID: stationID)
     }
 
     /// #116 (-Atlas): marks a new queue as pending *before* `music.play` is called, so a
@@ -256,13 +263,15 @@ public final class DJBreakSession {
     public func beginQueueInBackground(_ reservation: QueueSetupReservation, _ tracks: [DJTrack],
                                        briefing: NarrationHandoff? = nil,
                                        sources: [ConnectionItem] = [],
-                                       stationName: String? = nil) -> Task<Void, Never> {
+                                       stationName: String? = nil,
+                                       stationID: String? = nil) -> Task<Void, Never> {
         let generation = reservation.generation
         guard generation == queueSetupGeneration, queueSetupPending else { return Task {} }
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             guard !Task.isCancelled, generation == self.queueSetupGeneration else { return }
-            await self.queueStarted(tracks, briefing: briefing, sources: sources, stationName: stationName)
+            await self.queueStarted(tracks, briefing: briefing, sources: sources, stationName: stationName,
+                                    stationID: stationID)
             guard !Task.isCancelled, generation == self.queueSetupGeneration else { return }
             self.queueSetupPending = false
             if let pending = self.pendingSongStart {
@@ -368,9 +377,12 @@ public final class DJBreakSession {
     /// A new queue: everything prepared for the old one is dropped, then the queue is planned
     /// with the active station's cadence. `briefing` is approved narration (may be nil);
     /// `sources` are the items its personal cues come from. A personal cue whose source is
-    /// missing from `sources` or not narratable now is left out (fails closed).
+    /// missing from `sources` or not narratable now is left out (fails closed). `stationID` is the
+    /// queue's station (`StationRef.id`), nil when unknown; it only tells two tags-only stations
+    /// apart for the show opener (#568).
     public func queueStarted(_ tracks: [DJTrack], briefing: NarrationHandoff? = nil,
-                             sources: [ConnectionItem] = [], stationName: String? = nil) async {
+                             sources: [ConnectionItem] = [], stationName: String? = nil,
+                             stationID: String? = nil) async {
         if let hook = testBeforeQueueStarted {
             await hook()
             guard !Task.isCancelled else { return }
@@ -442,9 +454,15 @@ public final class DJBreakSession {
         // keep it, including a refill that passes no name. Set before the re-greet.
         let spokenName = stationName.flatMap(EditorialStationName.usable)
         let seedsChanged = openedStation.map { $0?.seeds != committed?.seeds } ?? false
+        // #568: two tags-only stations (no key on either side) differ by their known station ids.
+        let tagsOnlyStationChanged = openedStation.map { opened in
+            opened == nil && committed == nil && stationID != nil && openedStationID != nil
+                && stationID != openedStationID
+        } ?? false
+        let stationChanged = seedsChanged || tagsOnlyStationChanged
         if let spokenName {
             writer.stationName = spokenName
-        } else if seedsChanged {
+        } else if stationChanged {
             writer.stationName = DJScriptWriter.builtInStationName
         }
         // A different station opens the show again (#358). Its old queue's opener, if it already
@@ -452,8 +470,9 @@ public final class DJBreakSession {
         // would start with no opener. Anti-repeat memory is kept (#472): the new opener won't
         // echo the last one, and a re-queue of the same seeds does not greet again. A time check
         // still inside 30 minutes is left out of that opener and reported as `.spacing`.
-        if seedsChanged { writer.greetAgain() }
+        if stationChanged { writer.greetAgain() }
         openedStation = .some(committed)
+        openedStationID = stationID
         replan(from: 0, keepingThrough: -1)
         let queuedAppend = stationAppendPending
         stationAppendPending = []
@@ -543,19 +562,20 @@ public final class DJBreakSession {
         case unknown
     }
 
-    /// Stale "up next" (-Fry): true when the song after this boundary may not be the planned
-    /// `tracks[k + 1]`, because the station queue feed may hand off a new queue here. Mirrors
-    /// `StationQueueFeed.takeForBoundary` (a hand-off needs a seeded active station whose key
-    /// differs from the playing queue's) and fails closed: a change promoted at this boundary,
-    /// or a queue whose station is unknown, counts as a change. Commentary, energy, genres,
-    /// moods, personality and briefing edits never change the key, so they never count.
+    /// Stale "up next" (-Fry, #301 -Echo): true when the song after this boundary may not be the
+    /// planned `tracks[k + 1]`, because the station queue feed may hand off a new queue here.
+    /// Mirrors `StationQueueFeed.takeForBoundary`: a hand-off needs a seeded active station whose
+    /// key differs from the playing queue's — including a reported seedless queue (`.known(nil)`),
+    /// which the feed replaces once the new seeded station is built. Fails closed on a change
+    /// promoted at this boundary or an unknown queue station. Commentary, energy, genres, moods,
+    /// personality and briefing edits never change the key, so they never count.
     nonisolated static func nextSongMayChange(queue: QueueStation, before: StationQueueKey?,
                                               after: StationQueueKey?) -> Bool {
         if before != after { return true }
         guard let after else { return false }          // no seeds: the feed keeps the queue
         switch queue {
         case .unknown: return true
-        case .known(nil): return false                 // the feed adopts the key, no hand-off
+        case .known(nil): return true                  // #301: reported seedless queue hands off once built
         case .known(let key?): return key != after
         }
     }
@@ -661,8 +681,8 @@ public final class DJBreakSession {
         await station.handle(.songBoundary(afterTrack: k))
         let stationAfter = StationQueueKey(station.active)
         let nextMayChange = Self.nextSongMayChange(queue: queueStation, before: stationBefore, after: stationAfter)
-        // The feed adopts a seeded key for a queue that started without one (no hand-off).
-        if queueStation == .known(nil), let stationAfter { queueStation = .known(stationAfter) }
+        // #301: do not adopt `stationAfter` onto `.known(nil)`; the session takes on the new key
+        // only when the feed actually hands off and `queueStarted` runs.
         // The change stream is async; apply a cadence change here so the next song's break
         // is planned with it before `songStarted(index: k + 1)` arrives.
         replanIfCadenceChanged(after: k)
@@ -831,12 +851,12 @@ public final class DJBreakSession {
         writer.markLineReporting(break: handedID(k))
     }
 
-    /// The whole break ended `.finished`. Whether that means every line was heard depends on the
-    /// player: one that said at `play` it reports each line (`breakReportsLines`) is counted only
-    /// by `lineFinished`, so a `.finished` here (also how a stale or withdrawn resume ends, with
-    /// lines never played) records nothing more. A player that did not say so, such as a
-    /// talk-over handed no per-line cue ids matching its clips, gets the fallback: every
-    /// personal line of the break is recorded now.
+    /// The whole break ended `.finished`. The app's boundary and talk-over players always report
+    /// lines at `play` (`.reportsLines` / `breakReportsLines`), including on a cue-id mismatch,
+    /// which reports lines with no ids so nothing counts as aired (fail closed; #414 / #424).
+    /// Only `lineFinished` lines count; a `.finished` here (also how a stale or withdrawn resume
+    /// ends, with lines never played) records nothing more. The `!reportsLines` fallback below is
+    /// not reachable from the app; it remains for tests and any future player that does not report.
     public func playbackFinished(afterTrack k: Int) {
         if let aired = handedOutPersonal, aired.afterTrack == k, !aired.reportsLines {
             handedOutPersonal = nil

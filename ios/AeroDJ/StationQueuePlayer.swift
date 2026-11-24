@@ -110,6 +110,14 @@ final class StationQueuePlayer {
         }
     }
 
+    /// #304 R1 (-Atlas): the next natural boundary has station work: a begun station intro, a
+    /// station switch, or station edits that apply there. Read-only, so it can be asked on every
+    /// poll; the player then keeps one song so that boundary runs as today.
+    var boundaryWorkPending: Bool {
+        createdStart.hasBegunIntro || station.hasPendingChanges
+            || feed.stationSwitchPending(active: station.active)
+    }
+
     /// Every natural boundary calls this once `airStationIntro` is set, so a begun intro is
     /// taken (aired, skipped, or dropped) and cannot keep a voice reservation.
     func stationIntroAtBoundary() async -> StationIntroDisposition? {
@@ -125,6 +133,9 @@ final class StationQueuePlayer {
             guard let self else { return }
             self.queueEpoch += 1
             if self.ownQueueStarting { self.ownQueueStarting = false; self.stationOwnsQueue = true; return }
+            // #217 (-Atlas): an external queue start (e.g. song tap) supersedes any in-flight
+            // station tap immediately, even while it is still inside authorize() or apply().
+            self.createdStart.cancelPending()
             self.stationOwnsQueue = false
             self.lastStartedStationKey = StationQueueKey(self.station.committedDisplayed)
             self.feed.queueStarted(for: self.station.committedDisplayed, songCount: self.music.queue.count)
@@ -159,6 +170,8 @@ final class StationQueuePlayer {
         // and when the app comes back to the foreground. A new day part re-plans the DJ's breaks
         // (same day part: nothing changes). Never captured at launch or station start.
         music.onUserResumed = { [weak self] in self?.djSession.timeOfDayMayHaveChanged() }
+        // #217 (-Atlas): an explicit Pause cancels any in-flight station start.
+        music.onUserPaused = { [weak self] in self?.cancelCreatedStationStart() }
         foregroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.djSession.timeOfDayMayHaveChanged() }
@@ -327,6 +340,11 @@ final class StationQueuePlayer {
         // (committed seeds still equal the previous queue's) keeps the previous tag.
         let stationRef = StationQueueOwner.tag(owner: owner, playing: music.snapshot.station,
                                                committed: committed, previous: lastStartedStationKey)
+        // #568 (Echo's #571 review): the DJ tells two tags-only stations apart by id, and a
+        // tags-only station has no owner (no key). Fall back to the last applied recipe id, the
+        // same UUID string `PlayerView` passes as `station.id`, so the feed path neither drops
+        // the id nor resets it for a later tap-path switch. -Fry
+        let stationID = owner?.id ?? studio?.lastAppliedRecipeID?.uuidString
         do {
             try await TapPlaySequence.run(
             reserve: { djSession.reserveQueueSetup() },
@@ -341,7 +359,7 @@ final class StationQueuePlayer {
                 djSession.acceptStationAppends(generation: reservation.generation, queueEpoch: self.queueEpoch)
                 return djSession.beginQueueInBackground(reservation, djTracks,
                                                        briefing: offer.briefing, sources: offer.sources,
-                                                       stationName: stationRef?.name)
+                                                       stationName: stationRef?.name, stationID: stationID)
             },
             release: { djSession.releaseQueueSetup($0) })
             lastStartedStationKey = StationQueueKey(committed)

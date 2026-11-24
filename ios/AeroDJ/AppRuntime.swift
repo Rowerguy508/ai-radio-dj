@@ -29,6 +29,8 @@ enum AppRuntime {
             // #465 item 7: widget and Live Activity feed. Observes only; does nothing until
             // the widget extension is embedded, and never sits on the playback path.
             NowPlayingSurfaces.shared.start(dependencies)
+            // #539 follow-up: the OnAirly lock-screen session (iOS 27 and later; no-op before).
+            OnAirlyNowPlayingSession.shared.start(dependencies)
         }
         startup = task
         await task.value

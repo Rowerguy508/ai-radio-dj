@@ -156,7 +156,7 @@ struct MusicSearch {
                     scheduleBreakPrep: { reservation in
                         djSession.beginQueueInBackground(
                             reservation, djTracks, briefing: briefingForQueue, sources: sources,
-                            stationName: station.name)
+                            stationName: station.name, stationID: station.id)
                     },
                     release: { djSession.releaseQueueSetup($0) })
             })

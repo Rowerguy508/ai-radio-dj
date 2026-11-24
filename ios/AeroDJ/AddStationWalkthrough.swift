@@ -114,7 +114,8 @@ struct AddStationWalkthroughView: View {
     @Environment(\.appWideLayout) private var appWide
 
     /// Extra side inset that holds the step at the readable width. Zero on the phone path.
-    private var wideInset: CGFloat { CGFloat(appWide?.sideInset ?? 0) }
+    private var wideLeadingInset: CGFloat { CGFloat(appWide?.leadingInset ?? 0) }
+    private var wideTrailingInset: CGFloat { CGFloat(appWide?.trailingInset ?? 0) }
 
     init(studio: StudioPresentationModel, creation: StationCreationModel,
          initialStep: AddStationStep = .kind, initialKind: StationCreationKind? = nil,
@@ -155,7 +156,8 @@ struct AddStationWalkthroughView: View {
                             .accessibilityFocused($headingFocused)
                         stepContent
                     }
-                    .padding(.horizontal, 20 + wideInset)
+                    .padding(.leading, 20 + wideLeadingInset)
+                    .padding(.trailing, 20 + wideTrailingInset)
                     .padding(.vertical, 18)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     // New identity per step, so the transition and pop-ins rerun.
@@ -627,7 +629,8 @@ struct AddStationWalkthroughView: View {
                               enabled: AddStationWalkthrough.canGoNext(from: step, progress)) { goNext() }
             }
         }
-        .padding(.horizontal, 20 + wideInset)
+        .padding(.leading, 20 + wideLeadingInset)
+        .padding(.trailing, 20 + wideTrailingInset)
         .padding(.top, 10)
         .padding(.bottom, 14)
         .background(AddStationStyle.canvas)
@@ -700,7 +703,8 @@ private struct StepIndicator: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(AddStationStyle.secondary)
         }
-        .padding(.horizontal, CGFloat(appWide?.sideInset ?? 0))
+        .padding(.leading, CGFloat(appWide?.leadingInset ?? 0))
+        .padding(.trailing, CGFloat(appWide?.trailingInset ?? 0))
         .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.8), value: current)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(current.accessibilityLabel)

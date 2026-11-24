@@ -225,14 +225,9 @@ so the compact layout and its sheet keep their radii.
   the DJ state is `.speaking`. Collapse shows this centred column and does not
   change playback. Controls start below `duoStatusClearance`. Below 500 pt
   wide (every iPhone in portrait) the compact player is unchanged.
-- **Regular-width arrangement:** when the width class is regular and the container is
-  the tall listen layout (`controlPlacement` is `.duoHorizontal`), artwork and the
-  controls are one pane and the up-next timeline is the other (`ArrangementPaneLayout`).
-  A wider-than-tall container splits left and right; otherwise the timeline is below.
-  Accessibility text sizes stack both in one scrolling column. Compact width, phone
-  portrait, and the short landscape column keep the player above, unchanged. On Air and
-  its dot use `DJStudioState.onAirLabel` only. iOS 27.1 draws the split with
-  `ArrangementView`; older SDKs draw the same frames.
+- **Regular-width arrangement:** regular width on the open Duo, and every
+  wide-and-tall container at either size class, gets `FoldedPlayer` with the
+  rail (#544, #542). The two-pane arrangement is no longer routed.
 - **No `ViewThatFits` at the top level.** Use it inside a zone, for example to pick
   between icon+label and icon-only transport buttons at large text sizes.
 - **Height:** if the container height is below 480 pt in Studio, Zone A keeps the
@@ -280,7 +275,13 @@ so the compact layout and its sheet keep their radii.
   The leading and trailing safe areas are read separately. The larger one is the
   outer edge, and the Now Playing symbol bar, the station sidebar, and the Library
   and Settings bar buttons sit on that side. Equal insets keep the current side.
-  A full-screen iPhone, including landscape, does not take this path. Hit targets
+  A full-screen iPhone, including landscape, does not take this path. A split slice
+  that is taller than it is wide (the Duo in landscape) still does. A missing width
+  class is compact (`SplitViewLayout.chrome(widthClass: nil, ...)`). On those Duo
+  landscape slices (320, 410 and 500 × 640) Now Playing keeps Rail D, never the
+  compact phone column: the column beside the 56 pt rail, the rail on the trailing (right)
+  edge as on the closed Duo,
+  and a 34 or 28 pt title on up to two lines (`SplitViewLayout.keepsRailD`). Hit targets
   stay at least 44 pt, and controls stay inside the container.
 - Scroll only where content can exceed the container: the queue list, the Tune and
   Connections segments, and the whole layout at accessibility sizes. Zone A itself

@@ -26,7 +26,7 @@ final class TentPoseTests: XCTestCase {
         if holdControls { app.launchArguments += ["-AeroDJTentHoldControls", "YES"] }
         if reduceMotion { app.launchArguments += ["-AeroDJReduceMotion", "YES"] }
         XCUIDevice.shared.orientation = .landscapeLeft
-        app.launch()
+        app.launchAfterLeftoverExits()
         let loading = app.descendants(matching: .any)["capture.loading"]
         let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: loading)
         XCTAssertEqual(XCTWaiter().wait(for: [done], timeout: 20), .completed, "capture still loading\n\(app.debugDescription)")
@@ -82,7 +82,7 @@ final class TentPoseTests: XCTestCase {
 
         // No buttons on the face until it is touched; the lower half takes no touch.
         XCTAssertTrue(app.buttons["tent.showControls"].waitForExistence(timeout: 5))
-        XCTAssertGreaterThanOrEqual(app.buttons["tent.showControls"].frame.height, 44)
+        assertAtLeastPoints(app.buttons["tent.showControls"].frame.height, 44)
         XCTAssertFalse(app.buttons["tent.playPause"].exists, "transport hidden until a tap")
         XCTAssertFalse(any["tent.stationDial"].exists, "dial hidden until a tap")
         for button in app.buttons.allElementsBoundByIndex where button.identifier.hasPrefix("tent.") {
@@ -108,8 +108,8 @@ final class TentPoseTests: XCTestCase {
                                 ("queue", app.buttons["tent.queue"]), ("tune", app.buttons["tent.tune"]),
                                 ("back", app.buttons["tent.back"])] {
             XCTAssertTrue(element.waitForExistence(timeout: 5), "\(name) missing\n\(app.debugDescription)")
-            XCTAssertGreaterThanOrEqual(element.frame.width, 44, "\(name) \(element.frame)")
-            XCTAssertGreaterThanOrEqual(element.frame.height, 44, "\(name) \(element.frame)")
+            assertAtLeastPoints(element.frame.width, 44, "\(name) \(element.frame)")
+            assertAtLeastPoints(element.frame.height, 44, "\(name) \(element.frame)")
             XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(element.frame), "\(name) left the container")
             XCTAssertLessThan(element.frame.maxY, box.minY + 306, "\(name) is on the face, not the back half")
         }

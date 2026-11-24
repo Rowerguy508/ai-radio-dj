@@ -50,6 +50,13 @@ struct DuoVerticalRail: View {
     var resume: () async -> Void = {}
     var skip: () async -> Void = {}
     @Binding var moreOpen: Bool
+    /// Mockup D: the vertical song-position bar between the sleep timer and the live dot.
+    /// Nil (no track or no duration) keeps the spacer that holds the dot at the bottom.
+    var scrubber: RailScrubberInput? = nil
+    /// Build 54 follow-up (-Nova): on the open Duo the top slot is the now-playing thumbnail (the
+    /// Stations rail's), still Collapse (`folded.collapse`, same action, label and hint). Nil
+    /// keeps the chevron: every other rail is unchanged.
+    var thumbnail: StationRef? = nil
 
     /// Always false (#542). Build 49 (Xcode 27.2, iOS 27.1) took the system vertical toolbar
     /// here, a path no CI build or UI test has ever run, and the Duo lost the 2.0 rail. Every
@@ -60,9 +67,13 @@ struct DuoVerticalRail: View {
 
     var body: some View {
         VStack(spacing: CGFloat(DuoRailLayout.spacing)) {
-            DuoRailIconButton(systemImage: "chevron.down", label: "Collapse",
-                              hint: "Shows the folded player. Music continues.",
-                              identifier: "folded.collapse", action: onCollapse)
+            if let thumbnail {
+                DuoRailNowPlayingButton(station: thumbnail, action: onCollapse)
+            } else {
+                DuoRailIconButton(systemImage: "chevron.down", label: "Collapse",
+                                  hint: "Shows the folded player. Music continues.",
+                                  identifier: "folded.collapse", action: onCollapse)
+            }
             DuoRailMoreButton(open: $moreOpen, reviewCount: reviewCount)
             if showsTransport {
                 DuoRailPlayPauseButton(transport: transport, startTimedOut: startTimedOut,
@@ -76,7 +87,12 @@ struct DuoVerticalRail: View {
                               hint: "Opens the queue",
                               identifier: "queue.affordance", action: onQueue)
             DuoSleepTimerButton(pause: pause)
-            Spacer(minLength: CGFloat(DuoRailLayout.spacerMinLength))
+            if let scrubber {
+                // D: the bar fills the lower rail down to the live dot.
+                RailScrubber(input: scrubber)
+            } else {
+                Spacer(minLength: CGFloat(DuoRailLayout.spacerMinLength))
+            }
             DuoLiveDot(state: dj.state)
         }
         .padding(.vertical, CGFloat(DuoRailLayout.verticalPadding))
@@ -91,12 +107,15 @@ struct DuoVerticalRail: View {
     }
 }
 
-/// #537: the closed (phone-width) reskin's trailing rail. The #479 rail's own play/pause and
-/// skip plates (44 pt, `transport.playPause` / `transport.skip`) and its glass. Collapse, ⋯,
-/// Queue, the sleep timer and the live dot stay on the unfolded rail only: the closed header
-/// already has ⋯ (Queue and Tune are in it), and there is nothing to collapse.
-/// The plates sit at the bottom of the rail, in thumb reach and level with the scrubber.
-struct ClosedVerticalRail: View {
+/// Mockup D (owner: "Yes, build it"): the closed (phone-width) reskin's rail, shared by the
+/// iPhone and the closed Duo. One full-height glass column, top to bottom: ⋯ (`more`, the
+/// header's menu moved here, with Tune, the star and Connections), Play/Pause and Skip (the
+/// #479 plates, `transport.playPause` / `transport.skip`), Queue (`queue.affordance`,
+/// promoted from ⋯), the sleep timer, the vertical song-position bar and the live dot. No
+/// Collapse: the header keeps Back and there is nothing to collapse.
+struct ClosedVerticalRail<More: View>: View {
+    let dj: DJStatusPresentation
+    let upNext: [TrackInfo]
     let transport: TransportState
     let startTimedOut: Bool
     let showsTransport: Bool
@@ -104,42 +123,57 @@ struct ClosedVerticalRail: View {
     let cancelStart: () -> Void
     let resume: () async -> Void
     let skip: () async -> Void
+    let onQueue: () -> Void
+    var scrubber: RailScrubberInput? = nil
+    @ViewBuilder let more: () -> More
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
+        VStack(spacing: CGFloat(DuoRailLayout.spacing)) {
+            more()
             if showsTransport {
-                VStack(spacing: CGFloat(DuoRailLayout.spacing)) {
-                    DuoRailPlayPauseButton(transport: transport, startTimedOut: startTimedOut,
-                                           pause: pause, cancelStart: cancelStart, resume: resume)
-                    DuoRailIconButton(systemImage: "forward.fill", label: "Skip",
-                                      hint: "Skips this song.",
-                                      identifier: "transport.skip",
-                                      action: { Task { await skip() } })
-                }
-                .padding(.vertical, CGFloat(DuoRailLayout.verticalPadding))
-                .frame(width: CGFloat(FoldedOuterLayout.closedRailWidth))
-                .accessibilityElement(children: .contain)
-                .modifier(DuoRailGlass())
+                DuoRailPlayPauseButton(transport: transport, startTimedOut: startTimedOut,
+                                       pause: pause, cancelStart: cancelStart, resume: resume)
+                DuoRailIconButton(systemImage: "forward.fill", label: "Skip",
+                                  hint: "Skips this song.",
+                                  identifier: "transport.skip",
+                                  action: { Task { await skip() } })
             }
+            DuoRailIconButton(systemImage: "list.bullet", label: Self.queueLabel(upNext),
+                              hint: "Opens the queue",
+                              identifier: "queue.affordance", action: onQueue)
+            DuoSleepTimerButton(pause: pause)
+            if let scrubber {
+                RailScrubber(input: scrubber)
+            } else {
+                Spacer(minLength: CGFloat(DuoRailLayout.spacerMinLength))
+            }
+            DuoLiveDot(state: dj.state)
         }
+        .padding(.vertical, CGFloat(DuoRailLayout.verticalPadding))
         .frame(width: CGFloat(FoldedOuterLayout.closedRailWidth))
-        .frame(maxHeight: .infinity, alignment: .bottom)
+        .frame(maxHeight: .infinity)
+        .modifier(DuoRailGlass())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("folded.closedRail")
+    }
+
+    /// The label the closed ⋯ row used ("Queue. Up next: …"), so VoiceOver reads the same.
+    static func queueLabel(_ upNext: [TrackInfo]) -> String {
+        upNext.first.map { "Queue. Up next: \($0.title) by \($0.artistName)" } ?? "Queue. Up next: nothing queued"
     }
 }
 
 // MARK: - Glass (local to this rail)
 
 /// One glass column. Reduce Transparency and Increase Contrast use an opaque fill.
+/// Internal (not private) so the open-Duo Stations rail (`DuoStationsRail`) draws the same glass.
 /// Nothing here animates, so Reduce Motion has no transition to remove.
-private struct DuoRailGlass: ViewModifier {
+struct DuoRailGlass: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 25, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: CGFloat(RailDLayout.railCornerRadius), style: .continuous)
         let strong = contrast == .increased
         if reduceTransparency || strong {
             content
@@ -177,7 +211,7 @@ private struct DuoRailGlass: ViewModifier {
 
 // MARK: - Controls
 
-private struct DuoRailIconButton: View {
+struct DuoRailIconButton: View {
     let systemImage: String
     let label: String
     let hint: String
@@ -200,9 +234,39 @@ private struct DuoRailIconButton: View {
 }
 
 
+/// The player rail's top slot on the open Duo: the Stations rail's 44 pt now-playing thumbnail
+/// (`DuoStationsLayout.thumbnailSide`, the 38 pt mark with the accent ring). It keeps the
+/// chevron's job, Collapse: the rail folds away to the pinned column, music continues, and
+/// `folded.expandRail` brings it back. Back to Stations stays the navigation bar's Back. -Nova
+struct DuoRailNowPlayingButton: View {
+    let station: StationRef
+    let action: () -> Void
+
+    var body: some View {
+        let side = CGFloat(DuoStationsLayout.thumbnailSide)
+        let art = CGFloat(DuoStationsLayout.thumbnailArtSide)
+        let radius = CGFloat(DuoStationsLayout.thumbnailArtRadius)
+        Button(action: action) {
+            ZStack {
+                DuoStationRefMark(ref: station, side: art - 4, radius: radius - 2)
+                RoundedRectangle(cornerRadius: radius + 1, style: .continuous)
+                    .strokeBorder(DuoStationsStyle.accent, lineWidth: 2)
+                    .frame(width: art + 2, height: art + 2)
+            }
+            .frame(width: side, height: side)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Collapse")
+        .accessibilityValue(station.name.isEmpty ? "" : "Now playing \(station.name)")
+        .accessibilityHint("Shows the folded player. Music continues.")
+        .accessibilityIdentifier("folded.collapse")
+    }
+}
+
 /// The same tap policy as `TransportRow`, sized to the rail's 44 pt plate so it fits
 /// in `duoBarWidth`. Identifiers stay `transport.playPause` / `transport.skip`.
-private struct DuoRailPlayPauseButton: View {
+struct DuoRailPlayPauseButton: View {
     let transport: TransportState
     let startTimedOut: Bool
     let pause: () -> Void
@@ -438,17 +502,21 @@ private struct RailHint: ViewModifier {
 }
 
 /// Pauses with the existing pause action after the chosen duration. Off does not pause.
-private struct DuoSleepTimerButton: View {
+/// Internal (not private) so the open-Duo Stations rail (`DuoStationsRail`) uses the same timer.
+/// The timer is per rail (`DuoRailSleepTimerState`). `isShown` false (the Stations rail while
+/// the player is pushed) turns it Off, so a rail that is not on screen never pauses playback.
+/// The player's rails leave it true.
+struct DuoSleepTimerButton: View {
     let pause: () -> Void
-    @State private var minutes: Int?
-    @State private var token = UUID()
+    var isShown: Bool = true
+    @State private var timer = DuoRailSleepTimerState()
 
     var body: some View {
         Menu {
-            Button("Off") { arm(nil) }
+            Button("Off") { timer.arm(nil) }
                 .accessibilityIdentifier("folded.sleepTimer.off")
             ForEach(DuoSleepTimer.minuteChoices, id: \.self) { choice in
-                Button("\(choice) minutes") { arm(choice) }
+                Button("\(choice) minutes") { timer.arm(choice) }
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("folded.sleepTimer.\(choice)")
             }
@@ -461,26 +529,24 @@ private struct DuoSleepTimerButton: View {
         }
         .accessibilityLabel("Sleep timer")
         .accessibilityHint("Pauses playback after the time you choose. Music continues until then.")
-        .accessibilityValue(DuoSleepTimer.accessibilityValue(minutes: minutes))
+        .accessibilityValue(DuoSleepTimer.accessibilityValue(minutes: timer.minutes))
         .accessibilityIdentifier("folded.sleepTimer")
-        .task(id: token) {
-            guard let minutes else { return }
-            let armed = token
-            do { try await Task.sleep(for: .seconds(Double(minutes * 60))) } catch { return }
-            guard !Task.isCancelled, token == armed else { return }
-            pause()
-            self.minutes = nil
+        .onChange(of: isShown, initial: true) { _, shown in
+            timer.setShown(shown)
         }
-    }
-
-    private func arm(_ minutes: Int?) {
-        self.minutes = minutes
-        token = UUID()
+        .task(id: timer.generation) {
+            guard let delay = timer.delaySeconds else { return }
+            let armed = timer.generation
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            guard !Task.isCancelled, timer.expire(generation: armed) else { return }
+            pause()
+        }
     }
 }
 
 /// Lit only from `DJStudioState.onAirLabel` (`.speaking`). Not a new on-air flag.
-private struct DuoLiveDot: View {
+/// Internal (not private) so the open-Duo Stations rail (`DuoStationsRail`) shows the same dot.
+struct DuoLiveDot: View {
     let state: DJStudioState
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
@@ -537,7 +603,9 @@ private struct DuoSystemRailAttacher: ViewModifier {
             content
         }
         #else
-        // Compiled out of the Xcode 26.6 / iphoneos 26.5 build. The custom rail is the bar.
+        // Compiled out of the self-hosted Xcode 26.6 / Swift 6.3 jobs (`ios.yml`).
+        // The Release archive on Xcode 27.2 (iOS 27.2 SDK) takes the branch above;
+        // `usesSystemBar` is still false, so the custom rail is the bar either way.
         let _ = (hooks?.dj.onAirBadge, keepBehavior)
         content
         #endif

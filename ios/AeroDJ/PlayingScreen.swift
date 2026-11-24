@@ -108,16 +108,33 @@ struct PlayingScreen: View {
             let canvas = splitCanvas
             let width = canvas.map { Double($0.width) } ?? Double(geo.size.width)
             let height = canvas?.height ?? geo.size.height
-            let decision = resolvedLayout(containerWidth: width, containerHeight: Double(height))
+            // Build 51 (-Atlas): the gate reads the window-tall container, not the reader under
+            // the navigation bar, so the open Duo's 820 × 640 landscape window is the rail.
+            // Drawing still uses the reader (`height`).
+            let routeHeight = canvas?.height ?? CGFloat(FoldedColumnLayout.routingHeight(
+                readerHeight: Double(geo.size.height),
+                safeAreaTop: Double(geo.safeAreaInsets.top),
+                safeAreaBottom: Double(geo.safeAreaInsets.bottom),
+                readerMinX: Double(geo.frame(in: .global).minX),
+                readerMinY: Double(geo.frame(in: .global).minY)))
+            let decision = resolvedLayout(containerWidth: width, containerHeight: Double(routeHeight))
             let mode = DisplayContinuity.screenMode(decision)
-            layout(mode: mode, width: width, height: height, barEdge: splitBarEdge)
+            layout(mode: mode, width: width, height: height, routeHeight: routeHeight, barEdge: splitBarEdge)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: mode)
                 // Release-safe (#542): one line each time the chosen layout changes, never per
                 // body pass. Size class, container points and the layout name only.
                 .onChange(of: decision, initial: true) { _, chosen in
                     PlayingLayoutLog.chose(chosen, sizeClass: horizontalSizeClass,
-                                           width: width, height: Double(height))
+                                           width: width, height: Double(routeHeight))
                 }
+            // Open-Duo Stations' rail (Queue, Tune, Connections): open the workspace on that
+            // segment, as `openQueue` / `openTune` / `openConnections` do. Nil everywhere else.
+            .onAppear {
+                if let requested = PlayerWorkspaceRequest.take() {
+                    segment = requested
+                    if mode == .compact { showWorkspace = true }
+                }
+            }
             #if DEBUG
             .onAppear {
                 if splitCanvas != nil {
@@ -210,7 +227,7 @@ struct PlayingScreen: View {
     /// Late Night, so the next song tap looked like a station jump. Folded uses `foldedToolbar`
     /// (back + ⋯) and names the same opened station in its bottom chip.
     @ViewBuilder
-    private func layout(mode: StudioLayoutMode, width: Double, height: CGFloat,
+    private func layout(mode: StudioLayoutMode, width: Double, height: CGFloat, routeHeight: CGFloat,
                         barEdge: SplitViewLayout.BarEdge?) -> some View {
         switch mode {
         case .compact:
@@ -220,18 +237,35 @@ struct PlayingScreen: View {
             let placement = DisplayContinuity.layout(
                 hasRegularWidth: horizontalSizeClass == .regular,
                 containerWidth: width,
-                containerHeight: Double(height),
-                accessibilityTextSize: typeSize.isAccessibilitySize
+                containerHeight: Double(routeHeight),
+                accessibilityTextSize: typeSize.isAccessibilitySize,
+                isPhoneIdiom: DeviceIdiom.isPhone
             ).controlPlacement ?? .phoneBottom
+            // Build 51 (-Atlas): the Stations sidebar open on the open Duo leaves a regular,
+            // window-tall detail too narrow for the two halves. It keeps the rail: the centred
+            // column beside it (`FoldedColumnLayout.usesRailColumn`). Not in a split host.
+            let railColumn = splitCanvas == nil && placement != .duoHorizontal
+                && FoldedColumnLayout.usesRailColumn(hasRegularWidth: horizontalSizeClass == .regular,
+                                                     containerWidth: width,
+                                                     containerHeight: Double(routeHeight))
             // The 01-folded reskin draws back and ⋯ itself. FoldedPlayer.body picks its body
             // with the same rule (FoldedOuterLayout.usesOuterReskin: phone width and a track,
-            // never height), so the bar and the body cannot disagree.
-            let showsTrack: Bool = { if case .track = content { return true } else { return false } }()
+            // never height), so the bar and the body cannot disagree. #434: Idle and Starting
+            // are in the folded player too (`FoldedOuterLayout.reskinShows`).
+            let showsTrack = FoldedOuterLayout.reskinShows(content)
             // A split host draws FoldedPlayer.splitMeasured, which has no reskin, so it keeps the bar.
-            let usesOuterReskin = splitCanvas == nil
-                && FoldedOuterLayout.usesOuterReskin(containerWidth: width, showsTrack: showsTrack)
-            let showsRail = placement == .duoHorizontal && !duoCollapsed
-            let movesMoreIntoThePlayer = placement != .phoneBottom || usesOuterReskin
+            // #574 rework (owner: no compact player on the Duo's landscape split): the 320 / 410 /
+            // 500 × 640 slices are the exception. splitMeasured draws the reskin's Rail D there
+            // (`SplitViewLayout.keepsRailD`, with a track), so back and ⋯ move in as on the phone.
+            let splitKeepsRailD = showsTrack && splitCanvas != nil && splitMeasure.map {
+                SplitViewLayout.keepsRailD(containerWidth: $0.containerWidth, containerHeight: $0.containerHeight,
+                                           leadingInset: $0.leading, trailingInset: $0.trailing)
+            } == true
+            let usesOuterReskin = splitKeepsRailD || (splitCanvas == nil && !railColumn
+                && FoldedOuterLayout.usesOuterReskin(containerWidth: width, showsTrack: showsTrack))
+            let hasRail = placement == .duoHorizontal || railColumn
+            let showsRail = hasRail && !duoCollapsed
+            let movesMoreIntoThePlayer = placement != .phoneBottom || usesOuterReskin || railColumn
             let openConnections = { segment = .connections; showWorkspace = true }
             let openQueue = { segment = .queue; showWorkspace = true }
             let openTune = { segment = .tune; showWorkspace = true }
@@ -250,6 +284,9 @@ struct PlayingScreen: View {
                          onReview: { segment = .connections; showWorkspace = true },
                          showsUnfoldedRail: showsRail,
                          onCollapseRail: { duoCollapsed = true },
+                         onExpandRail: hasRail ? { duoCollapsed = false } : nil,
+                         railColumn: railColumn,
+                         placementSize: splitCanvas == nil ? CGSize(width: width, height: routeHeight) : nil,
                          stationStops: stationStops,
                          onOpenStation: onOpenStation,
                          splitBarEdge: barEdge,
@@ -302,7 +339,8 @@ struct PlayingScreen: View {
         DisplayContinuity.layout(hasRegularWidth: horizontalSizeClass == .regular,
                                  containerWidth: containerWidth,
                                  containerHeight: containerHeight,
-                                 accessibilityTextSize: typeSize.isAccessibilitySize)
+                                 accessibilityTextSize: typeSize.isAccessibilitySize,
+                                 isPhoneIdiom: DeviceIdiom.isPhone)
     }
 
     private var studioIdentity: String {

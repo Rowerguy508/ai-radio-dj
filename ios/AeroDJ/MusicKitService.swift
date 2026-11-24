@@ -40,6 +40,9 @@ final class MusicKitService: ObservableObject {
     private var stateMachine = AudioStateMachine()
     private var audioSessionConfigured = false
     private var boundaries = BoundaryInterpreter()
+    /// #526 PR A (-Echo): the AirPlay gap route's end watch (Core's `AirPlayGapEndWatch`).
+    private var gapEndWatch = AirPlayGapEndWatch()
+    private var gapEndWatchTask: Task<Void, Never>?
     private var sessionPolicy = AudioSessionPolicy()
     /// Build 10 P0: ignores only the interruption our own start causes (see the type's doc).
     private var selfStartGate = SelfStartInterruptionGate()
@@ -54,6 +57,9 @@ final class MusicKitService: ObservableObject {
     /// Called with the index of the song the user skipped, so its prepared break is discarded.
     var onSongSkipped: (@MainActor (Int) -> Void)?
     private var queueIndex = 0
+    /// #539 follow-up (-Fry; Atlas asked for it): the OnAirly session's Next uses the same
+    /// `RemoteNextCommand` rule as `nextTrackCommand` below. Read-only.
+    var remoteNextPosition: (queueIndex: Int, queueCount: Int) { (queueIndex, queue.count) }
     /// Index and queue generation of the song `startTrack` actually put in the player.
     /// Nil after a skip load fails or is cut, even if the player still holds the previous song.
     private var loadedTarget: LoadedPlayerTarget?
@@ -93,6 +99,22 @@ final class MusicKitService: ObservableObject {
     /// `StationQueuePlayer` routes it to `DJBreakSession.timeOfDayMayHaveChanged`, so a pause in the
     /// morning and a Play in the afternoon re-plan the DJ's breaks for the afternoon.
     var onUserResumed: (@MainActor () -> Void)?
+    /// #304 R1 (-Atlas): whether boundary `finishedIndex` (the end of that song) has work armed:
+    /// a DJ break preparing or ready, a talk-over, a station intro, or a station change. Set by
+    /// the composition root. Nil reads as armed, so the player keeps its one song.
+    var boundaryWorkArmed: (@MainActor (_ finishedIndex: Int) -> Bool)?
+    /// #304 R1 (-Atlas): the app adopted the queued next song (Core `BackgroundQueueTail`).
+    /// `boundaryWorkWasArmed` is true only when the app was suspended through the end of song
+    /// `finishedIndex` while work was armed for it: that boundary is gone, so its break is dropped.
+    var onQueueTailAdopted: (@MainActor (_ finishedIndex: Int, _ boundaryWorkWasArmed: Bool) -> Void)?
+    /// #304 R1 (-Atlas): what the player queue holds. One song in the foreground; in the
+    /// background, the next station song too when nothing is armed for this boundary.
+    private var queueTail = BackgroundQueueTail()
+    /// The last keep reason logged for the queue tail (logged once per change).
+    private var lastQueueTailKeep: (index: Int, reason: BackgroundQueueTail.KeepReason)?
+    /// #217 (-Atlas): the listener pressed Pause. `StationQueuePlayer` cancels any in-flight
+    /// station start so an abandoned tap cannot start playback after an explicit pause.
+    var onUserPaused: (@MainActor () -> Void)?
     private var pollTimer: Timer?
     /// Playback timing for device validation. Indices and durations only: no titles or identifiers.
     private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
@@ -101,6 +123,10 @@ final class MusicKitService: ObservableObject {
     private var sessionMonitor: AudioSessionMonitor?
     /// TEMPORARY: waits for MusicKit `.playing` after a start; cancelled on confirm or pause.
     private var playbackConfirmTask: Task<Void, Never>?
+    /// #526 S2 (-Echo): DIAG-only sampler for the AirPlay gap `musicPlaying` stamp.
+    #if DEBUG || AERODJ_P0_DIAG
+    private var airPlayGapMusicPlayingStampTask: Task<Void, Never>?
+    #endif
     /// Build 9 P0 (-Atlas): attempt and queue generations. A late result of an older start
     /// (watchdog, throw, refusal) and a stale boundary's `startNextTrack` do nothing.
     private var attempts = PlaybackAttempts()
@@ -247,6 +273,9 @@ final class MusicKitService: ObservableObject {
         // is replaced, the same as `skip()`. Nil routes to `interlude.stop()`, which cancels
         // a pending play and halts a playing clip.
         onBreakMustStop?(nil)
+        // #526: drop a stale AirPlay gap-end watch so it cannot poll after this station switch
+        // or tap, if the previous song was in its last 3 s.
+        cancelGapEndWatch()
         queue = tracks
         onQueueReplaced?()
         currentTrack = tracks.first
@@ -297,12 +326,16 @@ final class MusicKitService: ObservableObject {
         skipCoordinator.invalidate(.userPause)
         boundaries.setSkipLoadInFlight(false)
         cancelPlaybackConfirmTimeout()
+        #if DEBUG || AERODJ_P0_DIAG
+        cancelAirPlayGapMusicPlayingStamp()
+        #endif
         _ = sessionPolicy.userPause()
         boundaries.pausedByApp(.userPause)
         player.pause()
         isPlaying = false
         send(.userPaused)
         stateMachine.apply(.pause)
+        onUserPaused?()
         let duration = queue.indices.contains(queueIndex) ? queue[queueIndex].song?.duration : nil
         let nearEnd = PlaybackObservation(
             entryID: player.queue.currentEntry?.id,
@@ -409,6 +442,9 @@ final class MusicKitService: ObservableObject {
 
     /// Pauses the player for a DJ break. Not a user action: the user's intent is unchanged.
     func pausePlayerForBreak() {
+        #if DEBUG || AERODJ_P0_DIAG
+        cancelAirPlayGapMusicPlayingStamp()
+        #endif
         boundaries.pausedByApp()
         player.pause()
         isPlaying = false
@@ -468,6 +504,7 @@ final class MusicKitService: ObservableObject {
     /// chain so a stored advance or a reload cannot clear that hold.
     func skip() async throws {
         installSkipGate()
+        boundaries.noteUserSkip()
         await startSkip(skipCoordinator.requestAdvance())
     }
 
@@ -538,6 +575,9 @@ final class MusicKitService: ObservableObject {
             guard queue.indices.contains(next) else {
                 boundaries.setSkipLoadInFlight(false)
                 noteLoadedTargetStale()
+                #if DEBUG || AERODJ_P0_DIAG
+                cancelAirPlayGapMusicPlayingStamp()
+                #endif
                 player.stop()
                 isPlaying = false
                 send(.queueFinished)
@@ -645,6 +685,9 @@ final class MusicKitService: ObservableObject {
         noteLoadedTargetStale()
         // The MusicKit queue may still be the song we left. Stop it so that song is not audible
         // under the new index, and so the next poll cannot treat it as the song that failed.
+        #if DEBUG || AERODJ_P0_DIAG
+        cancelAirPlayGapMusicPlayingStamp()
+        #endif
         player.pause()
         isPlaying = false
         boundaries.pausedByApp(.userPause)
@@ -660,8 +703,10 @@ final class MusicKitService: ObservableObject {
         for event in effect.events { send(event) }
     }
 
-    /// Loads one song into the player. Only the current song is ever queued, so it ends on
-    /// its own and the next one starts only through `startNextTrack` or a user action.
+    /// Loads one song into the player. Only the current song is queued, so it ends on its own and
+    /// the next one starts only through `startNextTrack` or a user action. #304 R1: in the
+    /// background the next station song may be queued behind it (`queueNextSongIfAllowed`); this
+    /// load replaces that tail too.
     /// With `autoplay` false (the user paused during a break) the song waits, loaded and paused.
     /// `attempt` is the start this load belongs to. After the await, a superseded attempt throws
     /// `MusicKitError.superseded` and changes nothing: no UI event, no song-start report.
@@ -687,6 +732,8 @@ final class MusicKitService: ObservableObject {
         // a natural end of the entry just replaced, and advance again: the auto-skip chain.
         boundaries.userRequestedChange()
         player.queue = ApplicationMusicPlayer.Queue(for: [song])
+        // #304 R1: a new one-song queue. A tail queued behind the previous song went with it.
+        queueTail.queueReplaced()
         finishedEntryID = nil
         noteLoadedTarget(index)
         guard autoplay else {
@@ -741,6 +788,11 @@ final class MusicKitService: ObservableObject {
         #if AERODJ_P0_DIAG
         P0EventTraceHost.shared.startTrack(.started, index: index, queueCount: queue.count, userInitiated: userInitiated, gates: p0Gates)
         #endif
+        #if DEBUG || AERODJ_P0_DIAG
+        // After nextPlay is recorded: stamp `.playing` now if MusicKit already shows it,
+        // otherwise keep reading the real status until it does, without waiting for beginPoll.
+        armAirPlayGapMusicPlayingStamp(for: attempt)
+        #endif
         noteSongStarted(index: index, duration: song.duration)
     }
 
@@ -775,6 +827,9 @@ final class MusicKitService: ObservableObject {
                 result: result, generationBefore: generationBefore, generationNow: attempts.queueGeneration,
                 next: next, oldQueueCount: oldQueue.count) else { return }
             logPlayback(PlaybackLog.stationHandOffFallback(next: next))
+            // The app queue is replaced (the failed hand-off already ended the previous song's
+            // watch in the usual case; cancel anyway so a stale watch cannot poll this restore).
+            cancelGapEndWatch()
             queue = oldQueue
             send(.queueStarted(tracks: oldQueue.map(\.info), startIndex: next, station: snapshot.station))
             fellBackToOldQueue = true
@@ -861,6 +916,187 @@ final class MusicKitService: ObservableObject {
         stateMachine.apply(.noInterlude)
     }
 
+    // MARK: - #304 R1: the next song behind the playing one while in the background
+
+    /// #304 R1 (-Atlas): the app went to the background. When Core's `BackgroundQueueTail` allows
+    /// it, the next station song is queued behind the playing one, so MusicKit advances on its own
+    /// if iOS suspends the app (and its 1 Hz poll) before the song ends. Each background poll asks
+    /// again, so a song that starts there (or is still settling) gets its tail too.
+    func sceneEnteredBackground() {
+        queueTail.sceneEnteredBackground()
+        queueNextSongIfAllowed(headPlaying: player.state.playbackStatus == .playing,
+                               headPosition: player.playbackTime)
+    }
+
+    /// #304 R1 (-Atlas): back in the foreground. One poll now: it adopts the next song if MusicKit
+    /// already moved to it, and otherwise trims the tail so the player holds one song again.
+    func sceneBecameActive() {
+        queueTail.sceneBecameActive()
+        lastQueueTailKeep = nil
+        guard pollTimer != nil else { return }
+        pollPlaybackPosition()
+    }
+
+    /// #304 R1 (-Atlas): boundary work was just armed for song `finishedIndex`: a DJ break began
+    /// preparing or is ready (PlayerView's DJ state stream), or a talk-over claimed the boundary
+    /// and is about to duck (TalkoverCoordinator). The queued tail is trimmed now, before any duck
+    /// or voice; the poll's trim stays as the backstop.
+    func boundaryWorkWasArmed(afterTrack finishedIndex: Int) {
+        guard case let .trim(reason) = queueTail.workArmed(afterIndex: finishedIndex,
+                                                             entryID: player.queue.currentEntry?.id) else { return }
+        trimQueueTail(reason)
+    }
+
+    /// Armed when a break is running, or the composition root reports work for that boundary.
+    private func boundaryIsArmed(_ finishedIndex: Int) -> Bool {
+        isBreakActive || (boundaryWorkArmed?(finishedIndex) ?? true)
+    }
+
+    private func queueNextSongIfAllowed(headPlaying: Bool, headPosition: TimeInterval?) {
+        let index = queueIndex
+        let loaded = loadedTarget.flatMap { $0.generation == attempts.queueGeneration ? $0.index : nil }
+        let decision = queueTail.widen(queueIndex: index, queueCount: queue.count,
+                                       loadedIndex: skipCoordinator.hasPendingSkipWork ? nil : loaded,
+                                       headPlaying: headPlaying, headPosition: headPosition,
+                                       boundaryWorkArmed: boundaryIsArmed(index))
+        guard case let .queueNext(afterIndex, nextIndex) = decision else {
+            if case let .keepOneSong(reason) = decision { noteQueueTailKept(index: index, reason: reason) }
+            return
+        }
+        // A transient current entry makes MusicKit insert at the head of the queue, not behind it.
+        guard let song = queue[nextIndex].song, let head = player.queue.currentEntry, !head.isTransient else {
+            noteQueueTailKept(index: index, reason: .notLoaded)
+            return
+        }
+        lastQueueTailKeep = nil
+        let generation = attempts.queueGeneration
+        let songID = song.id.rawValue
+        // Recorded before the await, so a poll during the insert already knows the tail (and no
+        // second insert starts).
+        queueTail.noteQueued(afterIndex: afterIndex, generation: generation, headEntryID: head.id, nextSongID: songID)
+        Task { @MainActor [weak self] in
+            await self?.insertQueueTail(song, afterIndex: afterIndex, nextIndex: nextIndex, generation: generation)
+        }
+    }
+
+    private func insertQueueTail(_ song: Song, afterIndex: Int, nextIndex: Int, generation: Int) async {
+        let songID = song.id.rawValue
+        do {
+            try await player.queue.insert(song, position: .tail)
+        } catch {
+            if queueTail.pending?.generation == generation, queueTail.pending?.afterIndex == afterIndex {
+                queueTail.clear()
+            }
+            logPlaybackError("queueTailInsert", error)
+            logPlayback(PlaybackLog.queueTailInsertFailed(after: afterIndex))
+            return
+        }
+        guard queueTail.pending?.generation == generation, queueTail.pending?.afterIndex == afterIndex,
+              attempts.queueGeneration == generation, queueIndex == afterIndex else {
+            // A new queue load, a trim or an adoption happened during the await. If the insert
+            // landed behind a newer song, remove it: only entries after the current one are touched.
+            if queueTail.pending?.nextSongID != songID { removeEntriesAfterCurrent(songID: songID) }
+            return
+        }
+        logPlayback(PlaybackLog.queueTailQueued(after: afterIndex, next: nextIndex))
+    }
+
+    /// The keep reason is logged once per change, not on every background poll.
+    private func noteQueueTailKept(index: Int, reason: BackgroundQueueTail.KeepReason) {
+        guard reason != .foreground, reason != .alreadyQueued else { return }
+        if let last = lastQueueTailKeep, last.index == index, last.reason == reason { return }
+        lastQueueTailKeep = (index, reason)
+        logPlayback(PlaybackLog.queueTailKept(index: index, reason: reason))
+    }
+
+    private func queueTailStep(_ observation: PlaybackObservation) -> BackgroundQueueTail.Step {
+        let tail = queueTail.pending
+        let appNextSongID = tail.flatMap { pending in
+            queue.indices.contains(pending.nextIndex) ? queue[pending.nextIndex].song?.id.rawValue : nil
+        }
+        let entrySongID = tail == nil ? nil : player.queue.currentEntry.flatMap(Self.songID(of:))
+        return queueTail.observe(entryID: observation.entryID, entrySongID: entrySongID,
+                                 queueIndex: queueIndex, generation: attempts.queueGeneration,
+                                 appNextSongID: appNextSongID,
+                                 boundaryWorkArmed: tail.map { boundaryIsArmed($0.afterIndex) } ?? false,
+                                 uptime: observation.uptime)
+    }
+
+    /// Still on the playing song: the player goes back to holding it alone.
+    private func trimQueueTail(_ reason: BackgroundQueueTail.TrimReason) {
+        guard let tail = queueTail.pending else { return }
+        removeEntriesAfterCurrent(songID: tail.nextSongID)
+        queueTail.trimmed()
+        logPlayback(PlaybackLog.queueTailTrimmed(after: tail.afterIndex, reason: reason))
+    }
+
+    /// MusicKit moved to the queued song on its own: song `next` is playing. The app's own
+    /// change (the detector is told first), with no break, no skip and no natural-end boundary.
+    private func adoptQueueTail(finished: Int, next: Int, woke: Bool) {
+        let armed = boundaryIsArmed(finished)
+        boundaries.userRequestedChange()
+        finishedEntryID = nil
+        queueIndex = next
+        currentTrack = queue[next]
+        noteLoadedTarget(next)
+        send(.naturalBoundary(nextIndex: next))
+        // The state machine passes the boundary with no interlude, as a break-less boundary does.
+        stateMachine.apply(.trackEnded)
+        stateMachine.apply(.noInterlude)
+        logPlayback(PlaybackLog.queueTailAdopted(finished: finished, next: next, woke: woke))
+        onQueueTailAdopted?(finished, woke && armed)
+        noteSongStarted(index: next, duration: queue[next].song?.duration)
+    }
+
+    /// MusicKit moved to the queued song while the app was awake, but that boundary has work armed
+    /// (or the app's next song changed). Stop the queued song and run the normal boundary: the break,
+    /// then `startNextTrack`, which loads the next song alone, as today.
+    private func handBackQueueTail(finished: Int, headEntryID: String, tailEntryID: String?) {
+        logPlayback(PlaybackLog.queueTailHandedBack(finished: finished))
+        #if DEBUG || AERODJ_P0_DIAG
+        cancelAirPlayGapMusicPlayingStamp()
+        #endif
+        // The entry change is the app's; the detector must not judge it again.
+        boundaries.userRequestedChange()
+        boundaries.pausedByApp()
+        player.pause()
+        isPlaying = false
+        // The stopped queued entry must not be resumed after the break (`resumeIfAllowed`):
+        // `startNextTrack` loads that song again, alone, from its start.
+        finishedEntryID = tailEntryID
+        attempts.armNext(after: finished)
+        send(.naturalBoundary(nextIndex: finished + 1))
+        stateMachine.apply(.trackEnded)
+        onBoundary?(.naturalEnd(finishedEntryID: headEntryID), finished)
+    }
+
+    /// Removes the entries after the player's current one whose song is `songID`, in place on the
+    /// live queue, highest index first. Fry's #617 condition: the queue is never reassigned (a
+    /// reset restarts or gaps the playing song), and the current entry and everything before it
+    /// are never touched.
+    private func removeEntriesAfterCurrent(songID: String) {
+        let entries = player.queue.entries
+        guard let current = player.queue.currentEntry,
+              let at = entries.firstIndex(where: { $0.id == current.id }) else { return }
+        let doomed = entries.indices.filter { index in
+            guard index > at else { return false }
+            let entry = entries[index]
+            if case let .song(song)? = entry.item { return song.id.rawValue == songID }
+            if let song = entry.transientItem as? Song { return song.id.rawValue == songID }
+            return false
+        }
+        for index in doomed.reversed() {
+            player.queue.entries.remove(at: index)
+        }
+    }
+
+    /// The catalog song of a queue entry, also while the entry is still transient.
+    private static func songID(of entry: ApplicationMusicPlayer.Queue.Entry) -> String? {
+        if case let .song(song)? = entry.item { return song.id.rawValue }
+        if let song = entry.transientItem as? Song { return song.id.rawValue }
+        return nil
+    }
+
     // MARK: - Track-boundary observation
 
     /// Poll the player once a second. The boundary detector turns queue-entry
@@ -891,16 +1127,68 @@ final class MusicKitService: ObservableObject {
         }
     }
 
-    private func pollPlaybackPosition() {
+    /// One read of the player for the boundary detector (and the AirPlay gap end watch).
+    private func playbackObservation() -> PlaybackObservation {
         // Position and duration let the detector see a finish even if the queue keeps its last entry.
         let currentDuration = queue.indices.contains(queueIndex) ? queue[queueIndex].song?.duration : nil
-        let observation = PlaybackObservation(
+        return PlaybackObservation(
             entryID: player.queue.currentEntry?.id,
             isPlaying: player.state.playbackStatus == .playing,
             position: player.playbackTime,
             duration: currentDuration,
             uptime: ProcessInfo.processInfo.systemUptime
         )
+    }
+
+    /// #526 PR A (-Echo): drop a stale AirPlay gap-end watch. Called when the app queue is
+    /// replaced (`play`, or the failed station hand-off restore) so a watch armed in a song's
+    /// last 3 s cannot fire `pollPlaybackPosition` after a station switch. Disarm first, then
+    /// cancel: an in-flight `step` then returns `.stop` and does not poll.
+    private func cancelGapEndWatch() {
+        gapEndWatch.disarm()
+        gapEndWatchTask?.cancel()
+        gapEndWatchTask = nil
+    }
+
+    /// #526 PR A (-Echo): AirPlay gap route only. In the song's last seconds, read the player at
+    /// 10 Hz and run the regular poll below as soon as MusicKit shows an unambiguous end (Core's
+    /// `AirPlayGapEndWatch`). It only calls `pollPlaybackPosition`; it never pauses, plays or
+    /// touches the session. Any other route, or the #525 kill switch off: never armed.
+    private func updateGapEndWatch(_ observation: PlaybackObservation) {
+        let armed = gapEndWatch.regularSample(observation,
+                                              airPlayGapRoute: !DJLongFormRouteState.shared.talkoverAllowed)
+        guard armed else {
+            gapEndWatchTask?.cancel()
+            gapEndWatchTask = nil
+            return
+        }
+        guard gapEndWatchTask == nil else { return }
+        let nanos = UInt64(AirPlayGapEndWatch.watchPollSeconds * 1_000_000_000)
+        gapEndWatchTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: nanos)
+                guard let self, !Task.isCancelled else { return }
+                switch self.gapEndWatch.step(self.playbackObservation()) {
+                case .keepWatching:
+                    continue
+                case .stop:
+                    self.gapEndWatch.disarm()
+                    self.gapEndWatchTask = nil
+                    return
+                case .pollNow:
+                    self.gapEndWatch.disarm()
+                    self.gapEndWatchTask = nil
+                    self.logPlayback("airPlayGapEndWatch pollNow")
+                    self.pollPlaybackPosition()
+                    return
+                }
+            }
+        }
+    }
+
+    private func pollPlaybackPosition() {
+        var observation = playbackObservation()
+        updateGapEndWatch(observation)
         #if AERODJ_P0_DIAG
         P0EventTraceHost.shared.beginPoll(observation, before: P0DetectorState(boundaries), queueIndex: queueIndex, queueCount: queue.count)
         #endif
@@ -926,6 +1214,23 @@ final class MusicKitService: ObservableObject {
                 // timeout confirms it and clears that error.
                 confirmStart(attempt)
             }
+        }
+        // #304 R1 (-Atlas): before the detector, so a song MusicKit advanced to from the queued
+        // tail is the app's own change: never a natural end, a remote skip or a skip-load cut.
+        switch queueTailStep(observation) {
+        case .unchanged, .forget:
+            if queueTail.phase == .background, queueTail.pending == nil {
+                queueNextSongIfAllowed(headPlaying: observation.isPlaying, headPosition: observation.position)
+            }
+        case let .trim(reason):
+            trimQueueTail(reason)
+        case let .adopt(finishedIndex, nextIndex, woke):
+            adoptQueueTail(finished: finishedIndex, next: nextIndex, woke: woke)
+            // The detector baselines on the adopted song, with that song's duration.
+            observation = playbackObservation()
+        case let .handBack(finishedIndex, headEntryID):
+            handBackQueueTail(finished: finishedIndex, headEntryID: headEntryID, tailEntryID: observation.entryID)
+            return
         }
         let interpreted = boundaries.interpret(observation, queueIndex: queueIndex, queueCount: queue.count)
         if boundaries.takeSkipLoadProgress() {
@@ -1088,6 +1393,9 @@ final class MusicKitService: ObservableObject {
     private func confirmStart(_ attempt: PlaybackAttemptID) {
         guard attempts.isCurrent(attempt) else { return }
         // MusicKit is playing: a deferred .began was our own start's, so it is discarded. -Atlas
+        #if DEBUG || AERODJ_P0_DIAG
+        stampAirPlayGapMusicPlayingIfReady(attempt: attempt)
+        #endif
         selfStartGate.startConfirmed(attempt)
         send(.playbackConfirmed)
         isPlaying = true
@@ -1099,11 +1407,84 @@ final class MusicKitService: ObservableObject {
         }
     }
 
+    // MARK: #526 S2 (-Echo): DIAG-only musicPlaying stamp (Atlas reviews this hunk)
+
+#if DEBUG || AERODJ_P0_DIAG
+    /// Stamps MusicKit `.playing` as soon as the real status is visible, before and
+    /// independently of `beginPoll`. Synchronous; at most once per start (first stamp
+    /// wins). No playback, session or confirm change, and no async work. Bails when
+    /// `attempt` is no longer current, so a pause and resume cannot stamp the resume.
+    private func stampAirPlayGapMusicPlayingIfReady(attempt: PlaybackAttemptID) {
+        switch AirPlayGapMusicPlayingSampler.step(
+            isCurrent: attempts.isCurrent(attempt),
+            playbackIsPlaying: player.state.playbackStatus == .playing
+        ) {
+        case .cancel:
+            cancelAirPlayGapMusicPlayingStamp()
+        case .wait:
+            return
+        case .stamp:
+            #if AERODJ_P0_DIAG
+            P0EventTraceHost.shared.talkover { trace, t in
+                _ = trace.airPlayGapHandoffMark(.musicPlaying, at: t)
+            }
+            #endif
+            cancelAirPlayGapMusicPlayingStamp()
+        }
+    }
+
+    /// Called after `startTrack(.started)` records `nextPlay`. Captures this start's
+    /// attempt and, if MusicKit is not yet `.playing`, keeps reading the same status
+    /// until it is, or for at most two seconds, so the gap path does not wait for
+    /// the 1 s playback poll. The task is cancelled and replaced on the next start,
+    /// and cancelled on pause or stop. Each sample bails if the attempt is no
+    /// longer current. It never calls `confirmStart`, never touches the session,
+    /// and is compiled out of Release.
+    private func armAirPlayGapMusicPlayingStamp(for attempt: PlaybackAttemptID) {
+        cancelAirPlayGapMusicPlayingStamp()
+        stampAirPlayGapMusicPlayingIfReady(attempt: attempt)
+        guard AirPlayGapMusicPlayingSampler.step(
+            isCurrent: attempts.isCurrent(attempt),
+            playbackIsPlaying: player.state.playbackStatus == .playing
+        ) == .wait else { return }
+        #if AERODJ_P0_DIAG
+        airPlayGapMusicPlayingStampTask = Task { @MainActor [weak self] in
+            let nanos: UInt64 = 50_000_000
+            for _ in 0..<40 {
+                try? await Task.sleep(nanoseconds: nanos)
+                guard let self, !Task.isCancelled else { return }
+                switch AirPlayGapMusicPlayingSampler.step(
+                    isCurrent: self.attempts.isCurrent(attempt),
+                    playbackIsPlaying: self.player.state.playbackStatus == .playing
+                ) {
+                case .cancel:
+                    self.cancelAirPlayGapMusicPlayingStamp()
+                    return
+                case .wait:
+                    continue
+                case .stamp:
+                    self.stampAirPlayGapMusicPlayingIfReady(attempt: attempt)
+                    return
+                }
+            }
+        }
+        #endif
+    }
+
+    private func cancelAirPlayGapMusicPlayingStamp() {
+        airPlayGapMusicPlayingStampTask?.cancel()
+        airPlayGapMusicPlayingStampTask = nil
+    }
+#endif
+
     private func beginAttempt(userChangedQueue: Bool) -> PlaybackAttemptID {
         if userChangedQueue { attempts.userChangedQueue() }
         let attempt = attempts.beginStart()
         selfStartGate.startBegan(attempt)
         confirmReportedAttempt = nil
+        #if DEBUG || AERODJ_P0_DIAG
+        cancelAirPlayGapMusicPlayingStamp()
+        #endif
         return attempt
     }
 
@@ -1322,6 +1703,9 @@ final class MusicKitService: ObservableObject {
     /// The selected song cannot be played, and the player may still hold the previous one.
     private func reportResumeTargetFailure(_ attempt: PlaybackAttemptID) {
         cancelPlaybackConfirmTimeout()
+        #if DEBUG || AERODJ_P0_DIAG
+        cancelAirPlayGapMusicPlayingStamp()
+        #endif
         player.pause()
         isPlaying = false
         let failure: SkipTerminalFailure = (queue.indices.contains(queueIndex) && queue[queueIndex].song == nil)
@@ -1464,6 +1848,9 @@ final class MusicKitService: ObservableObject {
     /// goes through `seek(to:trackID:)` for the same reason.
     private func installRemoteCommands() {
         guard !remoteCommandsInstalled else { return }
+        // #539 follow-up (-Fry; Atlas's OK needed): on iOS 27 the OnAirly NowPlaying session owns
+        // these commands with the same gates. Apple: don't mix it with MPRemoteCommandCenter.
+        guard OnAirlyNowPlayingPolicy.installsMediaPlayerRemoteCommands(usesSession: OnAirlyNowPlaying.usesSession) else { return }
         remoteCommandsInstalled = true
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.isEnabled = true

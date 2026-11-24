@@ -217,6 +217,16 @@ public enum LiveActivityAction: Equatable, Sendable {
 }
 
 public enum LiveActivityPlan {
+    /// #539 (owner call, Nov 23): the lock screen shows exactly one player, and that player is
+    /// system Now Playing (`ApplicationMusicPlayer`'s card). It is up from the first `.playing`
+    /// until the show stops: through pauses, through a resume or next-song load (`.starting`),
+    /// and through a DJ ready line or On Air. Build 54 kept a Live Activity next to it, and on
+    /// every resume (`.paused` -> `.starting`) that activity drew the full song card again, so
+    /// the owner saw two full players. No display state wants a Live Activity now. A running
+    /// one (this launch, or left over from an earlier launch) is ended on the next display, and
+    /// `LiveActivityReconciler.startupCommands` ends them at launch.
+    public static func wantsActivity(for display: NowPlayingDisplay) -> Bool { false }
+
     /// - Parameters:
     ///   - previous: the last display sent to the activity (nil if none is running).
     ///   - isActive: a Live Activity from this app is running.
@@ -224,13 +234,12 @@ public enum LiveActivityPlan {
     ///   - activitiesEnabled: `ActivityAuthorizationInfo().areActivitiesEnabled`.
     public static func action(for display: NowPlayingDisplay, previous: NowPlayingDisplay?, isActive: Bool,
                               appInForeground: Bool, activitiesEnabled: Bool) -> LiveActivityAction {
-        let wantsActivity = !display.isEmpty && (display.state == .playing || display.state == .paused
-                                                 || display.state == .starting)
+        let wanted = wantsActivity(for: display)
         if isActive {
-            guard wantsActivity, activitiesEnabled else { return .end }
+            guard wanted, activitiesEnabled else { return .end }
             return display == previous ? .none : .update(display)
         }
-        guard wantsActivity, activitiesEnabled, appInForeground, display.state == .playing else { return .none }
+        guard wanted, activitiesEnabled, appInForeground, display.state == .playing else { return .none }
         return .start(display)
     }
 }

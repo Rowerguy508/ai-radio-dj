@@ -49,6 +49,10 @@ jobs:
             core:
               - 'ios/**'
               - '.github/workflows/ios.yml'
+              # Voice-gate test reads testflight.yml. A workflow-only edit must still run
+              # it. Kept off the ios filter so a dispatch-policy change does not rebuild
+              # the Release archive.
+              - '.github/workflows/testflight.yml'
               - 'docs/site/privacy.md'
               - 'docs/site/HOLD-pro.md'
               - 'docs/site/DRAFT-privacy-tester-voice.md'
@@ -64,6 +68,14 @@ jobs:
         with:
           # Self-hosted Mac persists between jobs: do not leave the job token in .git/config (#517 N1, -Sentinel).
           persist-credentials: false
+      - name: Self-hosted prep fails closed under 8 GiB
+        run: ios/scripts/ci-selfhosted-prep-test.sh
+      - name: Self-hosted disk check
+        if: runner.environment == 'self-hosted'
+        timeout-minutes: 3
+        run: ios/scripts/ci-selfhosted-prep.sh --check-disk
+      - name: TestFlight voice gate refuses a default device-speech upload
+        run: bash ios/scripts/check-testflight-voice-dispatch-test.sh
       - name: Check Xcode 26.6 and Swift 6.3
         if: runner.environment == 'self-hosted'
         run: |
@@ -122,6 +134,8 @@ jobs:
     container: swift:6.2
     steps:
       - uses: actions/checkout@v4
+      - name: TestFlight voice gate refuses a default device-speech upload
+        run: bash ios/scripts/check-testflight-voice-dispatch-test.sh
       - name: Build tests
         run: swift build --build-tests
         working-directory: ios/AeroDJCore
@@ -300,6 +314,10 @@ jobs:
         with:
           # Self-hosted Mac persists between jobs: do not leave the job token in .git/config (#517 N1, -Sentinel).
           persist-credentials: false
+      - name: Self-hosted disk check
+        if: runner.environment == 'self-hosted'
+        timeout-minutes: 3
+        run: ios/scripts/ci-selfhosted-prep.sh --check-disk
       - name: Check Xcode 26.6 and Swift 6.3
         if: runner.environment == 'self-hosted'
         run: |
@@ -518,8 +536,10 @@ jobs:
         working-directory: ios
       - name: Archive (Release, unsigned)
         # testflight.yml's archive command with signing switched off. The conditions script runs
-        # as for a plain TestFlight build (no p0_diag, owner_ab or tester_voice), so this compiles
-        # exactly what a default 2.0 upload compiles.
+        # as for an explicit device-speech upload (no p0_diag, owner_ab or tester_voice):
+        # confirm_device_voice=true and tester_voice left false. A dispatch that sets neither
+        # is refused before archive, so this is the plain Release those opt-in uploads compile,
+        # not an unattended default upload.
         run: |
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/release-archive-logs"
@@ -598,7 +618,7 @@ jobs:
               exit 1
               ;;
           esac
-      - name: Self-hosted prep (volume check, DerivedData on the internal disk)
+      - name: Self-hosted prep (volume and disk checks, DerivedData on the internal disk)
         # See the script: simulator services stall or are denied on the removable work volume. -Orion
         if: runner.environment == 'self-hosted'
         timeout-minutes: 3
@@ -681,7 +701,7 @@ jobs:
     # Mini when AERODJ_SELF_HOSTED=1 (all-mini) or AERODJ_MINI_STUDIO=1 (this job only),
     # and only on a same-repo pull_request. Otherwise macos-latest.
     runs-on: ${{ ((vars.AERODJ_SELF_HOSTED == '1' || vars.AERODJ_MINI_STUDIO == '1') && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
-    timeout-minutes: ${{ ((vars.AERODJ_SELF_HOSTED == '1' || vars.AERODJ_MINI_STUDIO == '1') && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 360 }}
+    timeout-minutes: ${{ ((vars.AERODJ_SELF_HOSTED == '1' || vars.AERODJ_MINI_STUDIO == '1') && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 150 }}
     env:
       XCODEGEN_VERSION: 2.46.0
       DERIVED_DATA: ios/build/DerivedData-ui
@@ -734,7 +754,7 @@ jobs:
               exit 1
               ;;
           esac
-      - name: Self-hosted prep (volume check, DerivedData on the internal disk)
+      - name: Self-hosted prep (volume and disk checks, DerivedData on the internal disk)
         # See the script: simulator services stall or are denied on the removable work volume. -Orion
         if: runner.environment == 'self-hosted'
         timeout-minutes: 3
@@ -792,7 +812,10 @@ jobs:
           xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$PHONE_UDID" -b
       - name: UI tests on iPhone (closed, compact player)
-        timeout-minutes: ${{ runner.environment == 'self-hosted' && 25 || 360 }}
+        # Hosted caps from green runs (integration e3aa2f68, a87bcb30, 31417238): iPhone 19-22 min,
+        # walkthrough 2 min, iPad 34-43 min. Each test also gets a 10 min allowance
+        # (slowest green test about 7 min), so a stuck test fails by name. A stall now fails here instead of at 6 h (#577's hang). -Atlas
+        timeout-minutes: ${{ runner.environment == 'self-hosted' && 25 || 40 }}
         run: |
           mkdir -p "$SHOTS"
           xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
@@ -801,12 +824,14 @@ jobs:
             env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJStudioUI \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 600 \
             -destination "id=$PHONE_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
             -resultBundlePath "$RUNNER_TEMP/phone.xcresult" \
             CODE_SIGNING_ALLOWED=NO
       - name: Record a tapped walkthrough on iPhone (XCUITest + simctl recordVideo)
-        timeout-minutes: ${{ runner.environment == 'self-hosted' && 25 || 360 }}
+        # Hosted cap: see the iPhone UI step. -Atlas
+        timeout-minutes: ${{ runner.environment == 'self-hosted' && 25 || 10 }}
         env:
           RUNNER_ENV: ${{ runner.environment }}
         run: |
@@ -824,17 +849,31 @@ jobs:
           REC=$!
           sleep 2
           # The recorder must still be running before the walkthrough starts.
-          kill -0 "$REC" 2>/dev/null || { echo "::error::simctl recordVideo exited before the walkthrough started (see its error above)"; exit 1; }
+          # A recorder that dies here is the Mac (disk, volume, simctl), not a Studio assertion.
+          kill -0 "$REC" 2>/dev/null || {
+            echo "::error::RUNNER INFRA: simctl recordVideo exited before writing a walkthrough video (see its error above). This is not a code failure. Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner; do not change product code."
+            exit 1
+          }
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
             env TEST_RUNNER_STUDIO_WALKTHROUGH=1 xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJStudioUI \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 600 \
             -destination "id=$PHONE_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
             -only-testing:AeroDJUITests/StudioScreenTests/testRecordedWalkthrough \
             CODE_SIGNING_ALLOWED=NO || STATUS=$?
           # The recorder may already have exited; that must not fail the step under bash -e.
-          # A missing or empty video still fails below and in "Require screenshots".
+          # A failed walkthrough is a Studio failure even when the video is also empty.
+          # RUNNER INFRA only when that test passed and the capture is missing or empty.
+          capture_or_test_failure() {
+            if [ "${STATUS:-0}" -ne 0 ]; then
+              echo "::error::walkthrough test failed (exit ${STATUS})"
+              exit "${STATUS}"
+            fi
+            echo "::error::RUNNER INFRA: $* This is not a code failure. Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner; do not change product code."
+            exit 1
+          }
           kill -INT "$REC" 2>/dev/null || true
           wait "$REC" || true
           if [ "$OUT" != "$SHOTS/walkthrough-closed.mp4" ]; then
@@ -859,20 +898,17 @@ jobs:
               sleep 3
             done
             if [ "$stable" -ne 1 ]; then
-              echo "::error::Walkthrough recording at $OUT never became a stable non-empty file within 30s (source size: ${size} bytes)"
-              exit 1
+              capture_or_test_failure "walkthrough-closed.mp4 is missing or empty (source size: ${size} bytes)."
             fi
             echo "Walkthrough recording stable at ${size} bytes: $OUT"
             ls -la "$OUT"
-            cp "$OUT" "$SHOTS/walkthrough-closed.mp4" || {
-              echo "::error::Could not copy the walkthrough video into \$SHOTS (walkthrough test exit status: ${STATUS:-0})"
-              exit 1
-            }
+            cp "$OUT" "$SHOTS/walkthrough-closed.mp4" || capture_or_test_failure "could not copy walkthrough-closed.mp4 into $SHOTS (source size: ${size} bytes)."
           fi
-          ls -la "$SHOTS"/*.mp4
+          ls -la "$SHOTS"/*.mp4 || capture_or_test_failure "walkthrough-closed.mp4 is missing or empty (source size: 0 bytes)."
           exit ${STATUS:-0}
       - name: UI tests on iPad (open, two-zone Studio)
-        timeout-minutes: ${{ runner.environment == 'self-hosted' && 25 || 360 }}
+        # Hosted cap: see the iPhone UI step. -Atlas
+        timeout-minutes: ${{ runner.environment == 'self-hosted' && 25 || 70 }}
         run: |
           # One simulator at a time: the iPhone stays booted after its steps, and a cold iPad
           # booted by xcodebuild mid-run made launches, terminations and accessibility
@@ -885,6 +921,7 @@ jobs:
             env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJStudioUI \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 600 \
             -destination "id=$PAD_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
             -resultBundlePath "$RUNNER_TEMP/pad.xcresult" \
@@ -920,11 +957,34 @@ jobs:
                       duo-continuity-folded duo-continuity-unfolded; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
+          # #454: a station tap (and the Duo dial tap) lands on that station starting, never search (StudioScreenTests). -Nova
+          for shot in iphone-station-tap ipad-station-tap ipad-station-tap-dial; do
+            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
+          done
           # #542: the regular-width Duo draws the rail, not the two-pane arrangement (ArrangementPaneTests). -Atlas
           ls "$SHOTS" | grep -q '^duo-regular-rail_' || { echo "missing duo-regular-rail screenshot"; exit 1; }
           # #465 item 3: the tent pose, required like duo-wide-ready (TentPoseTests). -Nova
           ls "$SHOTS" | grep -q '^duo-tent_' || { echo "missing duo-tent screenshot"; exit 1; }
-          test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
+          # Mockup D: the full trailing rail with the vertical song-position bar, one shot per
+          # frame of the mock (RailDLayoutTests), required as in #551's pattern. -Nova
+          for shot in rail-d-iphone rail-d-duo-closed rail-d-duo-open-portrait rail-d-duo-open-portrait-sidebar \
+                      rail-d-duo-open-landscape-spread rail-d-duo-open-landscape-centred \
+                      rail-d-duo-open-landscape-sidebar; do
+            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
+          done
+          # Open-Duo Stations (owner, 2026-11-17): the three designs in the book pose and upright,
+          # and Settings > Stations layout on the iPhone and the Duo (StationsLayoutTests). -Nova
+          for shot in stations-layout-a-duo-open-book stations-layout-a-duo-open-portrait \
+                      stations-layout-b-duo-open-book stations-layout-b-duo-open-portrait \
+                      stations-layout-c-duo-open-book stations-layout-c-duo-open-portrait \
+                      settings-stations-layout-iphone settings-stations-layout-duo; do
+            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
+          done
+          if [ ! -s "$SHOTS/walkthrough-closed.mp4" ]; then
+            size=$(stat -f%z "$SHOTS/walkthrough-closed.mp4" 2>/dev/null || echo 0)
+            echo "::error::RUNNER INFRA: walkthrough-closed.mp4 is missing or empty (source size: ${size} bytes). This is not a code failure. Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner; do not change product code."
+            exit 1
+          fi
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -934,19 +994,48 @@ jobs:
             studio-screenshots/*.png
             studio-screenshots/*.mp4
           if-no-files-found: warn
+      - name: Collect filtered simulator logs (failure or cancel)
+        # The repo is public, so artifacts are downloadable: no full `log collect` archive.
+        # Only SpringBoard, testmanagerd and our own subsystem, last 2 h, as text. No secrets
+        # are in this job's env. Each `log show` is capped at 120 s and never fails the job,
+        # so a wedged simulator can't hang cleanup (#577's SpringBoard idle stall). -Atlas
+        if: (failure() || cancelled()) && runner.environment != 'self-hosted'
+        timeout-minutes: 6
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/sim-logs"
+          for pair in "phone:$PHONE_UDID" "pad:$PAD_UDID"; do
+            name="${pair%%:*}"; udid="${pair#*:}"
+            [ -n "$udid" ] || continue
+            perl -e 'alarm shift; exec @ARGV' 120 \
+              xcrun simctl spawn "$udid" log show --last 2h --style compact \
+              --predicate 'process == "SpringBoard" OR process == "testmanagerd" OR subsystem == "com.aerodj.app"' \
+              > "$RUNNER_TEMP/sim-logs/$name.log" 2>&1 || echo "log show for $name exited $?" >> "$RUNNER_TEMP/sim-logs/$name.log"
+          done
+          ls -la "$RUNNER_TEMP/sim-logs" || true
+      - name: Upload filtered simulator logs
+        if: (failure() || cancelled()) && runner.environment != 'self-hosted'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-logs-filtered
+          path: ${{ runner.temp }}/sim-logs
+          retention-days: 5
+          if-no-files-found: ignore
       - name: Upload iPhone UI result
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: phone-xcresult
           path: ${{ runner.temp }}/phone.xcresult
+          retention-days: 5
           if-no-files-found: warn
       - name: Upload iPad UI result
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: pad-xcresult
           path: ${{ runner.temp }}/pad.xcresult
+          retention-days: 5
           if-no-files-found: warn
       - name: Self-hosted cleanup (stop tests and simulators)
         if: always() && runner.environment == 'self-hosted'

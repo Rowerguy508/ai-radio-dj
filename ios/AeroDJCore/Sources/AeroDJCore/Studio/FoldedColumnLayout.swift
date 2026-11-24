@@ -48,6 +48,12 @@ public enum FoldedColumnLayout {
         return (min(art, column), column)
     }
 
+    /// What the centred column keeps under its art (iPhone landscape, and the collapsed-rail
+    /// pinned column): title, DJ status, the scrubber and transport (`metrics`). Larger at
+    /// accessibility text sizes.
+    public static let centredColumnReserveBelowArt: Double = 380
+    public static let centredColumnReserveBelowArtAccessibility: Double = 620
+
     /// Shortest container that gets the horizontal Duo split.
     ///
     /// The split uses the full width, so controls sit at both edges. A wide compact
@@ -126,6 +132,95 @@ public enum FoldedColumnLayout {
             return .duoHorizontal
         }
         return .centredColumn
+    }
+
+    /// Longest side an open-Duo window may have (build 54 fix, -Nova). The sim bands are 820 pt
+    /// on the long side (640 × 820, 820 × 640); the owner's build 54 shots (2853 × 2007 px, the
+    /// 44 pt sidebar button ≈ 140 px, so @3x) are a ≈ 951 × 669 pt window. Every full-screen
+    /// iPad is at least 1133 pt (iPad mini) on its long side. Used only where the regular width class used
+    /// to switch the open Duo off; compact containers never read it.
+    public static let openDuoMaxSide: Double = 1000
+
+    /// The open Duo's window, measured, whatever the width class: wide and tall enough for the
+    /// Duo layout (`controlPlacement == .duoHorizontal`) and no longer than `openDuoMaxSide` on
+    /// either side. False for every iPhone and the closed Duo (they are never `.duoHorizontal`:
+    /// under 500 pt wide upright, at most 440 pt tall sideways) and for a full-screen iPad.
+    public static func isOpenDuoWindow(containerWidth: Double, containerHeight: Double) -> Bool {
+        guard containerWidth.isFinite, containerHeight.isFinite,
+              containerWidth > 0, containerHeight > 0 else { return false }
+        guard max(containerWidth, containerHeight) <= openDuoMaxSide else { return false }
+        return controlPlacement(containerWidth: containerWidth, containerHeight: containerHeight) == .duoHorizontal
+    }
+
+    /// The player's open-Duo rail treatment (build 54 follow-up, -Nova): the rail 8 pt from the
+    /// window's trailing edge, its top level with the Stations rail, the now-playing thumbnail
+    /// in Collapse's place, no day-wash panel. Called only on a `.duoHorizontal` body (never an
+    /// iPhone or the closed Duo); the size cap keeps full-screen iPads on today's rail. The
+    /// player's reader is shorter than the window (the navigation bar), so this checks the
+    /// long side only, not `isOpenDuoWindow`.
+    public static func usesOpenDuoRail(containerWidth: Double, containerHeight: Double) -> Bool {
+        guard containerWidth.isFinite, containerHeight.isFinite,
+              containerWidth >= wideMinWidth, containerHeight > 0 else { return false }
+        return max(containerWidth, containerHeight) <= openDuoMaxSide
+    }
+
+    /// Narrowest container that gets the rail column (`usesRailColumn`): a 320 pt column is the
+    /// art, the title and the scrubber beside the 56 pt rail.
+    public static let railColumnMinWidth: Double = 320
+
+    /// Build 51 (#542 follow-up, -Atlas): the open Duo with the Stations sidebar open. The
+    /// detail column is regular width and as tall as the open window, but the sidebar leaves it
+    /// too narrow for the two halves (820 − sidebar ≈ 500 pt), so `controlPlacement` gave the
+    /// phone column or the centred column, with the old Playing-from bar, Queue and Tune, and no
+    /// rail. The owner's rule is that every wide-layout control lives in the rail, so this
+    /// container gets the centred column beside the rail. Needs the regular width class and a
+    /// `landscapeDuoMinHeight` tall container, so iPhone landscape (430 pt tall at most) and every
+    /// compact-class phone window keep their layouts. Never true where `controlPlacement` already
+    /// gives `.duoHorizontal`.
+    public static func usesRailColumn(hasRegularWidth: Bool, containerWidth: Double,
+                                      containerHeight: Double) -> Bool {
+        guard hasRegularWidth, containerWidth.isFinite, containerHeight.isFinite else { return false }
+        guard controlPlacement(containerWidth: containerWidth, containerHeight: containerHeight) != .duoHorizontal
+        else { return false }
+        return containerWidth >= railColumnMinWidth && containerHeight >= landscapeDuoMinHeight
+    }
+
+    /// What the rail column keeps under its art: title, DJ status, the pinned scrubber and the
+    /// station chip (`railColumnMetrics`). Larger at accessibility text sizes.
+    public static let railColumnReserveBelowArt: Double = 260
+    public static let railColumnReserveBelowArtAccessibility: Double = 500
+
+    /// The art side and column width for the rail column (the sidebar-open detail): the
+    /// container less `duoEdgeInset` at both edges, the rail (`barWidth`, 0 when the system
+    /// draws it) and one `duoEdgeInset` gutter. The art fits the column and the height less
+    /// `railColumnReserveBelowArt`, within `artMin`…`artMax`, never wider than the column.
+    public static func railColumnMetrics(containerWidth: Double, containerHeight: Double, barWidth: Double,
+                                         accessibilityTextSize: Bool,
+                                         artMin: Double, artMax: Double) -> (artSide: Double, column: Double) {
+        let column = max(0, containerWidth - duoEdgeInset * 3 - barWidth)
+        let reserve = accessibilityTextSize ? railColumnReserveBelowArtAccessibility : railColumnReserveBelowArt
+        let art = max(artMin, min(column, containerHeight - reserve, artMax))
+        return (min(art, column), column)
+    }
+
+    /// The height the layout gate should read: the reader's height plus its vertical safe-area
+    /// insets (status bar, navigation bar, home indicator). Build 51: the open Duo's 820 × 640
+    /// landscape window measured about 566 pt under its navigation bar, below
+    /// `landscapeDuoMinHeight`, so it got the centred column (transport off the bottom) instead
+    /// of the rail. The navigation bar is transparent over the player, so the window is the container.
+    ///
+    /// Only a reader that starts on screen (global origin not left of or above the window) counts
+    /// its insets. A reader whose origin is off screen to the left or above keeps the reader
+    /// height: those insets are the parts hidden under the bars, not room it can use.
+    ///
+    /// The Studio resize probe (`LayoutResizeProbe` in StudioCapture) is a fixed-size
+    /// `NavigationStack` drawn in an overlay (alignment `.topLeading`) on a window-sized
+    /// `Color.clear` base, so a column wider than an iPhone window cannot widen the capture
+    /// root. That column starts on screen, so `routingHeight` still adds its safe-area insets.
+    public static func routingHeight(readerHeight: Double, safeAreaTop: Double, safeAreaBottom: Double,
+                                     readerMinX: Double = 0, readerMinY: Double = 0) -> Double {
+        guard readerMinX >= -1, readerMinY >= -1 else { return readerHeight }
+        return readerHeight + max(0, safeAreaTop) + max(0, safeAreaBottom)
     }
 
     /// Horizontal Duo metrics. Phone widths do not call this.
@@ -222,6 +317,50 @@ public enum DuoSleepTimer {
     public static func accessibilityValue(minutes: Int?) -> String {
         guard let minutes else { return "Off" }
         return "\(minutes) minutes"
+    }
+}
+
+/// One rail's sleep timer (per rail: the player's Rail D and the open-Duo Stations rail each
+/// own one). `DuoSleepTimerButton` keeps it in `@State`, waits `minutes` under a task keyed by
+/// `generation`, then asks `expire(generation:)` whether to pause.
+///
+/// A rail that is not on screen cannot pause playback: hiding it (the Stations rail while the
+/// player is pushed over it) turns its timer Off, and an expiry that arrives while it is hidden,
+/// or after a re-arm or Off, is ignored. Off never pauses.
+public struct DuoRailSleepTimerState: Equatable, Sendable {
+    /// Nil is Off.
+    public private(set) var minutes: Int?
+    /// Bumped by every arm, Off and hide that cancels, so a stale wait cannot fire.
+    public private(set) var generation: Int = 0
+    public private(set) var isShown: Bool
+
+    public init(isShown: Bool = true) {
+        self.isShown = isShown
+    }
+
+    /// The wait for the current arm, or nil when Off.
+    public var delaySeconds: Double? { minutes.map { Double($0 * 60) } }
+
+    /// A menu choice: minutes, or nil for Off. Restarts the wait.
+    public mutating func arm(_ minutes: Int?) {
+        self.minutes = isShown ? minutes : nil
+        generation &+= 1
+    }
+
+    /// The rail went off or on screen. Going off screen cancels an armed timer (back to Off).
+    public mutating func setShown(_ shown: Bool) {
+        isShown = shown
+        if !shown, minutes != nil {
+            minutes = nil
+            generation &+= 1
+        }
+    }
+
+    /// The wait armed at `armed` finished. True means pause now; the timer is then Off.
+    public mutating func expire(generation armed: Int) -> Bool {
+        guard armed == generation, minutes != nil, isShown else { return false }
+        minutes = nil
+        return true
     }
 }
 

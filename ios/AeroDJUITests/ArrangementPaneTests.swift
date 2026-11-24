@@ -45,9 +45,9 @@ final class ArrangementPaneTests: XCTestCase {
         XCTAssertFalse(any["arrangement.primary"].exists)
         XCTAssertFalse(any["arrangement.secondary"].exists)
         XCTAssertFalse(any["layout.studio"].exists)
-        XCTAssertGreaterThanOrEqual(play.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(play.frame.height, 44)
-        XCTAssertGreaterThanOrEqual(skip.frame.width, 44)
+        assertAtLeastPoints(play.frame.width, 44)
+        assertAtLeastPoints(play.frame.height, 44)
+        assertAtLeastPoints(skip.frame.width, 44)
         save(app, "duo-regular-rail")
     }
 
@@ -79,7 +79,7 @@ final class ArrangementPaneTests: XCTestCase {
         XCTAssertTrue(either.waitForExistence(timeout: 15), app.debugDescription)
         // #542: a wide iPad window is the rail layout (`folded.systemBar`), or the Studio.
         let wide = any["layout.studio"].exists || any["folded.systemBar"].waitForExistence(timeout: 5)
-        app.terminate()
+        app.terminateIfRunning()
         Self.probedWide = wide
         return wide
     }
@@ -90,7 +90,7 @@ final class ArrangementPaneTests: XCTestCase {
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
         if let scenario { app.launchArguments += ["-AeroDJStudioCaptureScenario", scenario] }
         if let contentSize { app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSize] }
-        app.launch()
+        app.launchAfterLeftoverExits()
         let loading = app.descendants(matching: .any)["capture.loading"]
         let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: loading)
         XCTAssertEqual(XCTWaiter().wait(for: [done], timeout: 20), .completed,
