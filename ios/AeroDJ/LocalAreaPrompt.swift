@@ -51,7 +51,8 @@ struct LocalAreaPrompt: View {
         }
         .modifier(WideTargets(isOn: appWide != nil))
         .padding(24)
-        .padding(.horizontal, CGFloat(appWide?.sideInset ?? 0))
+        .padding(.leading, CGFloat(appWide?.leadingInset ?? 0))
+        .padding(.trailing, CGFloat(appWide?.trailingInset ?? 0))
     }
 
     /// #461 PR 4 (-Nova): Open-Duo Landscape (`820 × 640 pt`) horizontal two-pane onboarding
