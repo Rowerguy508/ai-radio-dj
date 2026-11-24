@@ -5,15 +5,31 @@ import XCTest
 /// layout only. The copy, the consent version and the actions stay byte-identical, because
 /// #509 and the v3 notice quote this copy word for word. These pins fail on any wording change.
 final class LocalAreaPromptCopyTests: XCTestCase {
+    /// #625 (-Echo): copy v2 discloses Apple geocoding and says only what each build does
+    /// (`LocalAreaConsentCopyBuildTests`). These pins are the owner-reviewed wording.
     func testConsentCopyAndVersionAreUnchanged() {
-        XCTAssertEqual(LocalAreaConsentCopy.version, 1)
+        XCTAssertEqual(LocalAreaConsentCopy.version, 2)
         XCTAssertEqual(LocalAreaConsentCopy.title, "Local weather and news?")
-        XCTAssertEqual(LocalAreaConsentCopy.body,
+        XCTAssertEqual(LocalAreaConsentCopy.body(for: .appStore),
+                       "OnAirly can mention your local weather between songs. It uses your approximate "
+                       + "location only, while the app is open. To find your city or region, Apple's geocoding "
+                       + "service gets your approximate location, rounded, or the city or ZIP you type. "
+                       + "Apple Weather gets an approximate point.")
+        XCTAssertEqual(LocalAreaConsentCopy.body(for: .ownerAB),
+                       "OnAirly can mention your local weather between songs. It uses your approximate "
+                       + "location only, while the app is open. To find your city or region, Apple's geocoding "
+                       + "service gets your approximate location, rounded, or the city or ZIP you type. "
+                       + "Apple Weather gets an approximate point. Your coordinates and your location itself "
+                       + "are never sent to the voice service. If you turn on the cloud voice, the words of "
+                       + "weather lines are sent to it.")
+        XCTAssertEqual(LocalAreaConsentCopy.body(for: .tester),
                        "OnAirly can mention your local weather and headlines between songs. It uses your approximate "
-                       + "location only, while the app is open. Your city or region is sent to the news source, and "
-                       + "Apple Weather gets an approximate point. Your coordinates and your location itself are never "
-                       + "sent to the voice service. If you turn on the cloud voice, the words of weather and news "
-                       + "lines are sent to it, and a local headline can name your city or area.")
+                       + "location only, while the app is open. To find your city or region, Apple's geocoding "
+                       + "service gets your approximate location, rounded, or the city or ZIP you type. "
+                       + "Your city or region is sent to the news source, and Apple Weather gets an approximate "
+                       + "point. Your coordinates and your location itself are never sent to the voice service. "
+                       + "If you turn on the cloud voice, the words of weather and news lines are sent to it, "
+                       + "and a local headline can name your city or area.")
         XCTAssertEqual(LocalAreaConsentCopy.useApproximate, "Use approximate location")
         XCTAssertEqual(LocalAreaConsentCopy.enterPlace, "Enter a city or ZIP instead")
         XCTAssertEqual(LocalAreaConsentCopy.notNow, "Not now")
