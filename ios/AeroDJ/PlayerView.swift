@@ -162,7 +162,10 @@ enum PlaybackSessionBinder {
                     #if AERODJ_P0_DIAG
                     P0EventTraceHost.shared.naturalBoundary(.breakPrepared, afterTrack: finishedIndex)
                     #endif
-                    switch BreakHandoffPolicy.decide(prepared: prepared) {
+                    switch BreakHandoffPolicy.decide(
+                        prepared: prepared,
+                        unplayableNextTrackID: music.unplayableNextTrackID(after: finishedIndex)
+                    ) {
                     case let .play(breakToPlay):
                         let line = breakToPlay.cues.map(\.text).joined(separator: " ")
                         let clips = breakToPlay.clips.map(\.audio.data)
