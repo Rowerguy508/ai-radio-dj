@@ -199,9 +199,14 @@ enum PlaybackSessionBinder {
             }
         }
         // A song really started: the DJ session plans its break with the catalog duration.
-        // Without a duration nothing is planned, so the DJ stays quiet rather than guessing.
-        music.onSongStarted = { [djSession, talkover] index, duration in
+        // Without a usable duration nothing is planned, so the DJ stays quiet rather than guessing,
+        // and logs the skip so the silent boundary is visible in release logs (#304 R3).
+        music.onSongStarted = { [djSession, talkover, weak music] index, duration in
             talkover.songStarted(index: index, duration: duration)
+            if let skip = PlaybackLog.songStartSkipReason(duration: duration) {
+                music?.logBreakSkipped(after: index, reason: skip)
+                return
+            }
             guard let duration else { return }
             Task { await djSession.songStarted(index: index, remaining: .seconds(duration)) }
         }
