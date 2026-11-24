@@ -158,6 +158,15 @@ public enum DuoStationsLayout {
         return min(24, max(RailDLayout.trailingInset, centered))
     }
 
+    /// Build 58 follow-up (-Nova): the window's trailing system inset (on the device, the status
+    /// column), read at the window root. The player's reader is laid out inside the safe area, so
+    /// its own trailing inset is 0 there. No device or orientation detection (owner): the inset
+    /// when it is finite and more than half a point, otherwise 0.
+    public static func trailingSystemInset(trailing: Double) -> Double {
+        guard trailing.isFinite, trailing > 0.5 else { return 0 }
+        return trailing
+    }
+
     /// `foldMinX` / `foldMaxX`: a reported vertical division, if any. Otherwise the book pose
     /// keeps the centred `defaultFoldWidth` band clear anyway, so a flat open Duo never puts a
     /// tile under the hinge either.

@@ -2914,9 +2914,22 @@ private struct OpenDuoWindowKey: EnvironmentKey {
     static let defaultValue: OpenDuoWindowMetrics? = nil
 }
 
+private struct TrailingSystemInsetKey: EnvironmentKey {
+    static let defaultValue: Double = 0
+}
+
 extension EnvironmentValues {
     var openDuoWindow: OpenDuoWindowMetrics? {
         get { self[OpenDuoWindowKey.self] }
         set { self[OpenDuoWindowKey.self] = newValue }
+    }
+
+    /// Build 58 follow-up (-Nova): the window's trailing system inset in points
+    /// (`DuoStationsLayout.trailingSystemInset`), set at the window root by `StationSplitRoot`.
+    /// 0 by default and wherever the window has none. Nothing reads it yet: the layout that uses
+    /// it is on hold until the owner settles the rail's target.
+    var trailingSystemInset: Double {
+        get { self[TrailingSystemInsetKey.self] }
+        set { self[TrailingSystemInsetKey.self] = newValue }
     }
 }
