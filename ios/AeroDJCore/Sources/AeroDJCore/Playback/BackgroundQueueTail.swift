@@ -167,6 +167,15 @@ public struct BackgroundQueueTail: Equatable, Sendable {
         return .adopt(finishedIndex: tail.afterIndex, nextIndex: tail.nextIndex, woke: !awake)
     }
 
+    /// Boundary work was just armed for song `afterIndex` (a DJ break preparing or ready, a
+    /// talk-over claiming the boundary, right before its duck). Event-driven: the trim runs now,
+    /// not on the next poll, which stays the backstop. Only while the player is still on the
+    /// playing song; once it is on the tail, the poll hands it back.
+    public func workArmed(afterIndex: Int, entryID: String?) -> Step {
+        guard let tail = pending, tail.afterIndex == afterIndex, entryID == tail.headEntryID else { return .unchanged }
+        return .trim(.boundaryWorkArmed)
+    }
+
     /// A trim of the player queue finished (or found nothing to trim).
     public mutating func trimmed() { pending = nil }
 }

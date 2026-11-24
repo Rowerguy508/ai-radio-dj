@@ -164,6 +164,48 @@ final class BackgroundQueueTailTests: XCTestCase {
         XCTAssertNil(tail.pending)
     }
 
+    /// Fry's #617 follow-up: arming the boundary trims at once (event-driven), not on the next poll.
+    func testArmingTheBoundaryTrimsImmediately() {
+        var tail = backgrounded()
+        queued(&tail)
+        XCTAssertEqual(tail.workArmed(afterIndex: 2, entryID: "e2"), .trim(.boundaryWorkArmed),
+                       "no poll needed: the arm itself trims")
+        XCTAssertEqual(tail.workArmed(afterIndex: 1, entryID: "e2"), .unchanged, "another boundary's work")
+        XCTAssertEqual(tail.workArmed(afterIndex: 2, entryID: "e3"), .unchanged,
+                       "already on the tail: the poll hands it back instead")
+        tail.trimmed()
+        XCTAssertEqual(tail.workArmed(afterIndex: 2, entryID: "e2"), .unchanged, "nothing left to trim")
+        XCTAssertEqual(BackgroundQueueTail().workArmed(afterIndex: 2, entryID: "e2"), .unchanged)
+    }
+
+    /// The trim comes before the talk-over's duck: the claim trims, and the last gate before the duck
+    /// finds nothing left, so no duck step ever runs with the next song still queued.
+    func testTheTrimRunsBeforeTheBreaksDuckStarts() {
+        var tail = backgrounded()
+        queued(&tail)
+        var events: [String] = []
+        func arm() {
+            if case let .trim(reason) = tail.workArmed(afterIndex: 2, entryID: "e2") {
+                tail.trimmed()
+                events.append("trim:\(reason.logCode)")
+            }
+        }
+        arm()                                   // TalkoverCoordinator.tick: right after the claim
+        arm()                                   // TalkoverCoordinator.take: right before the duck
+        for step in TalkoverSessionSequence.duck {
+            XCTAssertNil(tail.pending, "no queued next song while the duck runs")
+            events.append("duck:\(step)")
+        }
+        XCTAssertEqual(events.first, "trim:boundaryWorkArmed")
+        XCTAssertEqual(events.filter { $0.hasPrefix("trim") }.count, 1, "trimmed once")
+        XCTAssertGreaterThan(events.count, 1, "the duck has steps")
+        // The poll backstop then sees no tail and keeps one song while the break is armed.
+        XCTAssertEqual(tail.observe(entryID: "e2", entrySongID: "s2", queueIndex: 2, generation: 7, appNextSongID: "s3",
+                                    boundaryWorkArmed: true, uptime: 100), .unchanged)
+        XCTAssertEqual(tail.widen(queueIndex: 2, queueCount: 6, loadedIndex: 2, headPlaying: true, headPosition: 40,
+                                  boundaryWorkArmed: true), .keepOneSong(.boundaryWorkArmed))
+    }
+
     func testTrimsBackToOneSongInTheForeground() {
         var tail = backgrounded()
         queued(&tail)
@@ -301,6 +343,56 @@ final class BackgroundQueueTailTests: XCTestCase {
         XCTAssertLessThan(told.lowerBound, started.lowerBound)
         XCTAssertFalse(body.contains("onBoundary?("), "an adopted song is not a natural-end boundary")
         XCTAssertFalse(body.contains("onSongSkipped?("), "an adopted song is not a skip")
+    }
+
+    /// Fry's #617 condition 1: widen and trim work in place on the live queue. Only `startTrack`'s
+    /// load assigns the queue.
+    func testTailHelpersNeverReassignTheQueue() throws {
+        let service = try source("AeroDJ/MusicKitService.swift")
+        let start = try XCTUnwrap(service.range(of: "// MARK: - #304 R1: the next song behind the playing one"))
+        let end = try XCTUnwrap(service.range(of: "// MARK: - Track-boundary observation"))
+        let helpers = service[start.lowerBound..<end.lowerBound]
+        XCTAssertFalse(helpers.contains("player.queue ="), "no queue reset in the tail helpers")
+        XCTAssertFalse(helpers.contains("player.queue.entries ="), "no entries reassignment in the tail helpers")
+        XCTAssertTrue(helpers.contains("player.queue.entries.remove(at: index)"), "in-place removal")
+        XCTAssertTrue(helpers.contains("for index in doomed.reversed()"), "highest index first")
+        XCTAssertTrue(helpers.contains("guard index > at else { return false }"), "never the current entry or before")
+        XCTAssertEqual(service.components(separatedBy: "player.queue = ").count - 1, 1, "only the load line")
+        XCTAssertTrue(service.contains("player.queue = ApplicationMusicPlayer.Queue(for: [song])"))
+        XCTAssertFalse(service.contains("player.queue.entries = "))
+    }
+
+    /// Fry's #617 follow-up (a): the handed-back song is paused before the boundary (and its break) runs.
+    func testHandBackPausesBeforeTheBoundary() throws {
+        let service = try source("AeroDJ/MusicKitService.swift")
+        let fn = try XCTUnwrap(service.range(of: "private func handBackQueueTail("))
+        let body = service[fn.lowerBound...].prefix(1400)
+        let pause = try XCTUnwrap(body.range(of: "player.pause()"))
+        let boundary = try XCTUnwrap(body.range(of: "onBoundary?("))
+        XCTAssertLessThan(pause.lowerBound, boundary.lowerBound)
+    }
+
+    /// The talk-over trims at its claim and again right before `duckForTalkover`, which is where the
+    /// duck starts (`TalkoverAudioSession.duck`: `.duckOthers`, then the activation).
+    func testTalkoverTrimsBeforeTheDuck() throws {
+        let talkover = try source("AeroDJ/TalkoverCoordinator.swift")
+        let claim = try XCTUnwrap(talkover.range(of: "book.claim(key(k))"))
+        let afterClaim = talkover[claim.upperBound...].prefix(200)
+        XCTAssertTrue(afterClaim.contains("music.boundaryWorkWasArmed(afterTrack: k)"), "trimmed at the claim")
+        let take = try XCTUnwrap(talkover.range(of: "private func take(_ k: Int, token: Int) async {"))
+        let body = talkover[take.lowerBound...]
+        let trim = try XCTUnwrap(body.range(of: "music.boundaryWorkWasArmed(afterTrack: k)"))
+        let duck = try XCTUnwrap(body.range(of: "interlude.duckForTalkover(afterTrack: k)"))
+        XCTAssertLessThan(trim.lowerBound, duck.lowerBound, "the trim precedes the duck")
+        let adapter = try source("AeroDJ/InterludePlaybackAdapter.swift")
+        XCTAssertTrue(adapter.contains("guard TalkoverAudioSession.duck(afterTrack: afterTrack) else { return false }"),
+                      "the duck starts inside duckForTalkover")
+    }
+
+    func testABreakArmingTrimsAtOnce() throws {
+        let player = try source("AeroDJ/PlayerView.swift")
+        XCTAssertTrue(player.contains("for await state in dj.updates() {"))
+        XCTAssertTrue(player.contains("case let .preparing(k, _), let .ready(k, _, _): music.boundaryWorkWasArmed(afterTrack: k)"))
     }
 
     func testTheCompositionRootReportsArmedWork() throws {

@@ -933,6 +933,16 @@ final class MusicKitService: ObservableObject {
         pollPlaybackPosition()
     }
 
+    /// #304 R1 (-Atlas): boundary work was just armed for song `finishedIndex`: a DJ break began
+    /// preparing or is ready (PlayerView's DJ state stream), or a talk-over claimed the boundary
+    /// and is about to duck (TalkoverCoordinator). The queued tail is trimmed now, before any duck
+    /// or voice; the poll's trim stays as the backstop.
+    func boundaryWorkWasArmed(afterTrack finishedIndex: Int) {
+        guard case let .trim(reason) = queueTail.workArmed(afterIndex: finishedIndex,
+                                                             entryID: player.queue.currentEntry?.id) else { return }
+        trimQueueTail(reason)
+    }
+
     /// Armed when a break is running, or the composition root reports work for that boundary.
     private func boundaryIsArmed(_ finishedIndex: Int) -> Bool {
         isBreakActive || (boundaryWorkArmed?(finishedIndex) ?? true)
@@ -1056,22 +1066,24 @@ final class MusicKitService: ObservableObject {
         onBoundary?(.naturalEnd(finishedEntryID: headEntryID), finished)
     }
 
-    /// Removes the entries after the player's current one whose song is `songID`. The current
-    /// entry is never touched.
+    /// Removes the entries after the player's current one whose song is `songID`, in place on the
+    /// live queue, highest index first. Fry's #617 condition: the queue is never reassigned (a
+    /// reset restarts or gaps the playing song), and the current entry and everything before it
+    /// are never touched.
     private func removeEntriesAfterCurrent(songID: String) {
         let entries = player.queue.entries
         guard let current = player.queue.currentEntry,
               let at = entries.firstIndex(where: { $0.id == current.id }) else { return }
-        let after = entries.index(after: at)
-        guard after < entries.endIndex else { return }
-        let kept = entries[after...].filter { entry in
-            if case let .song(song)? = entry.item { return song.id.rawValue != songID }
-            if let song = entry.transientItem as? Song { return song.id.rawValue != songID }
-            return true
+        let doomed = entries.indices.filter { index in
+            guard index > at else { return false }
+            let entry = entries[index]
+            if case let .song(song)? = entry.item { return song.id.rawValue == songID }
+            if let song = entry.transientItem as? Song { return song.id.rawValue == songID }
+            return false
         }
-        var trimmed = entries
-        trimmed.replaceSubrange(after..<trimmed.endIndex, with: kept)
-        player.queue.entries = trimmed
+        for index in doomed.reversed() {
+            player.queue.entries.remove(at: index)
+        }
     }
 
     /// The catalog song of a queue entry, also while the entry is still transient.

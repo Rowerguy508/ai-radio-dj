@@ -227,6 +227,16 @@ enum PlaybackSessionBinder {
                                                   talkoverOwnsBoundary: talkover.ownsBoundary(k),
                                                   stationWorkPending: stationQueue?.boundaryWorkPending ?? false)
         }
+        // A break that starts preparing or becomes ready arms its boundary: trim the queued next
+        // song now (event-driven), not on the next poll. The poll's trim stays as the backstop.
+        Task { @MainActor [dj, music] in
+            for await state in dj.updates() {
+                switch state {
+                case let .preparing(k, _), let .ready(k, _, _): music.boundaryWorkWasArmed(afterTrack: k)
+                case .idle, .speaking, .unavailable: break
+                }
+            }
+        }
         // The app was suspended through song k's end and MusicKit played the queued next song: a
         // break armed for k is dropped (that boundary is gone), never played over the next song.
         music.onQueueTailAdopted = { @MainActor [djSession] finishedIndex, workWasArmed in
