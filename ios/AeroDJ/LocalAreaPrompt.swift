@@ -60,7 +60,8 @@ struct LocalAreaPrompt: View {
         }
         .modifier(WideTargets(isOn: appWide != nil))
         .padding(24)
-        .padding(.horizontal, CGFloat(appWide?.sideInset ?? 0))
+        .padding(.leading, CGFloat(appWide?.leadingInset ?? 0))
+        .padding(.trailing, CGFloat(appWide?.trailingInset ?? 0))
         .interactiveDismissDisabled(false)
     }
 

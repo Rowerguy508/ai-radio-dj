@@ -221,26 +221,145 @@ final class AppWideLayoutTests: XCTestCase {
         }
     }
 
-    /// Item 2 plugs in here. Until it lands, the slot defaults to nil and a value in it
-    /// changes nothing, on the phone path or the wide one. The unused item 4 arrangement
-    /// input is gone; see `testDecideInputHasNoArrangementSlot`.
-    func testFoldSlotDefaultsToNilAndChangesNothingYet() {
-        XCTAssertNil(AppWideLayout.duoWide.foldDivision)
-        // Same shape as #510's `FoldAwareness.Division`, so the forward-merge is a typealias.
+    func testFoldDivisionIsTypealiasedToFoldAwarenessDivision() {
+        let division: FoldAwareness.Division = AppWideLayout.FoldDivision(
+            minX: 306, minY: 0, width: 28, height: 820, isActive: true)
+        XCTAssertTrue(division.isVertical)
+        XCTAssertEqual(division.maxX, 334)
+        XCTAssertEqual(division.maxY, 820)
+    }
+
+    /// #465 item 2: single-column screens (Settings, onboarding, and AX text sizes) move off a
+    /// centred vertical fold onto the leading side on a tie, or the wider side when asymmetric.
+    func testSingleColumnScreensKeepOffVerticalFold() {
+        let centredFold = AppWideLayout.FoldDivision(minX: 306, minY: 0, width: 28, height: 820, isActive: true)
+        var duo = AppWideLayout.duoWide
+        duo.foldDivision = centredFold
+
+        for screen in [AppWideLayout.Screen.settings, .onboarding] {
+            let d = AppWideLayout.decide(duo, for: screen)
+            XCTAssertEqual(d.mode, .wide, "\(screen)")
+            XCTAssertEqual(d.columns, 1, "\(screen)")
+            XCTAssertEqual(d.gutter, 0, "\(screen)")
+            XCTAssertEqual(d.leadingInset + d.readableWidth + d.trailingInset, duo.containerWidth, accuracy: 0.001)
+            XCTAssertLessThanOrEqual(d.leadingInset + d.readableWidth, centredFold.minX,
+                                     "\(screen) tie picks leading side strictly before the fold")
+            XCTAssertEqual(d.readableWidth, 306, accuracy: 0.001)
+            XCTAssertEqual(d.leadingInset, 0, accuracy: 0.001)
+            XCTAssertEqual(d.trailingInset, 334, accuracy: 0.001)
+        }
+
+        // Accessibility text size turns Library and Stations single-column and keeps them off the fold.
+        var axDuo = duo
+        axDuo.accessibilityTextSize = true
+        for screen in AppWideLayout.Screen.allCases {
+            let d = AppWideLayout.decide(axDuo, for: screen)
+            XCTAssertEqual(d.columns, 1, "\(screen)")
+            XCTAssertLessThanOrEqual(d.leadingInset + d.readableWidth, centredFold.minX, "\(screen)")
+        }
+
+        // Asymmetric fold with a wider trailing side puts Settings on the trailing side.
+        var offCentre = AppWideLayout.duoWide
+        let leftFold = AppWideLayout.FoldDivision(minX: 220, minY: 0, width: 24, height: 820, isActive: true)
+        offCentre.foldDivision = leftFold
+        let trailingSettings = AppWideLayout.decide(offCentre, for: .settings)
+        XCTAssertEqual(trailingSettings.columns, 1)
+        XCTAssertGreaterThanOrEqual(trailingSettings.leadingInset, leftFold.maxX)
+        XCTAssertEqual(trailingSettings.readableWidth, 640 - 244, accuracy: 0.001)
+        XCTAssertEqual(trailingSettings.leadingInset + trailingSettings.readableWidth + trailingSettings.trailingInset,
+                       640, accuracy: 0.001)
+    }
+
+    /// #465 item 2: multi-column screens (Library, Stations) place 2 equal columns straddling
+    /// the fold so the column gap covers `[fold.minX, fold.maxX]` and no card enters the crease.
+    func testMultiColumnScreensPlaceColumnGapAcrossFold() {
         let fold = AppWideLayout.FoldDivision(minX: 306, minY: 0, width: 28, height: 820, isActive: true)
-        XCTAssertTrue(fold.isVertical)
-        XCTAssertEqual(fold.maxX, 334)
-        XCTAssertEqual(fold.maxY, 820)
-        XCTAssertFalse(AppWideLayout.FoldDivision(minX: 0, minY: 400, width: 640, height: 20, isActive: true).isVertical,
-                       "a horizontal band is the laptop crease, not a book fold")
-        for base in [AppWideLayout.duoWide, AppWideLayout.splitNarrow] {
-            var seamed = base
-            seamed.foldDivision = AppWideLayout.FoldDivision(minX: 306, minY: 0, width: 28, height: 820, isActive: true)
+        var duo = AppWideLayout.duoWide
+        duo.foldDivision = fold
+
+        for screen in [AppWideLayout.Screen.library, .stations] {
+            let d = AppWideLayout.decide(duo, for: screen)
+            XCTAssertEqual(d.mode, .wide, "\(screen)")
+            XCTAssertEqual(d.columns, 2, "\(screen)")
+            XCTAssertGreaterThanOrEqual(d.gutter, fold.width, "\(screen)")
+            XCTAssertEqual(d.leadingInset + d.readableWidth + d.trailingInset, duo.containerWidth, accuracy: 0.001)
+
+            let pad = AppWideLayout.screenGutter(screen)
+            let inner = d.readableWidth - 2 * pad
+            let colWidth = (inner - d.gutter) / 2
+            let col1End = d.leadingInset + pad + colWidth
+            let col2Start = col1End + d.gutter
+            XCTAssertGreaterThanOrEqual(colWidth, AppWideLayout.minColumnWidth(screen), "\(screen)")
+            XCTAssertLessThanOrEqual(col1End, fold.minX + 0.001, "\(screen) column 1 clears fold")
+            XCTAssertGreaterThanOrEqual(col2Start, fold.maxX - 0.001, "\(screen) column 2 clears fold")
+        }
+
+        // Narrower fold than columnGutter (16 pt) still keeps the 16 pt gutter centred on the fold.
+        var thinDuo = AppWideLayout.duoWide
+        let thinFold = AppWideLayout.FoldDivision(minX: 315, minY: 0, width: 10, height: 820, isActive: true)
+        thinDuo.foldDivision = thinFold
+        let thinLib = AppWideLayout.decide(thinDuo, for: .library)
+        XCTAssertEqual(thinLib.columns, 2)
+        XCTAssertEqual(thinLib.gutter, AppWideLayout.columnGutter)
+        let pad = AppWideLayout.screenGutter(.library)
+        let colWidth = (thinLib.readableWidth - 2 * pad - thinLib.gutter) / 2
+        XCTAssertLessThanOrEqual(thinLib.leadingInset + pad + colWidth, thinFold.minX + 0.001)
+        XCTAssertGreaterThanOrEqual(thinLib.leadingInset + pad + colWidth + thinLib.gutter, thinFold.maxX - 0.001)
+
+        // Asymmetric fold where the narrower side can't fit a Library column (240 pt) falls back
+        // to 1 column on the wider side, still strictly off the fold.
+        var asym = AppWideLayout.duoWide
+        let asymFold = AppWideLayout.FoldDivision(minX: 220, minY: 0, width: 24, height: 820, isActive: true)
+        asym.foldDivision = asymFold
+        let asymLib = AppWideLayout.decide(asym, for: .library)
+        XCTAssertEqual(asymLib.columns, 1)
+        XCTAssertGreaterThanOrEqual(asymLib.leadingInset, asymFold.maxX)
+        XCTAssertEqual(asymLib.leadingInset + asymLib.readableWidth + asymLib.trailingInset, 640, accuracy: 0.001)
+    }
+
+    func testInactiveHorizontalAndPhoneFoldsLeaveLayoutUnchanged() {
+        let inactive = AppWideLayout.FoldDivision(minX: 306, minY: 0, width: 28, height: 820, isActive: false)
+        let laptop = AppWideLayout.FoldDivision(minX: 0, minY: 400, width: 640, height: 20, isActive: true)
+        let short = AppWideLayout.FoldDivision(minX: 306, minY: 0, width: 28, height: 100, isActive: true)
+
+        for fold in [inactive, laptop, short] {
+            var input = AppWideLayout.duoWide
+            input.foldDivision = fold
             for screen in AppWideLayout.Screen.allCases {
-                XCTAssertEqual(AppWideLayout.decide(seamed, for: screen), AppWideLayout.decide(base, for: screen),
-                               "\(screen): TODO(#465 item 2) is a no-op until that PR lands")
+                XCTAssertEqual(AppWideLayout.decide(input, for: screen),
+                               AppWideLayout.decide(AppWideLayout.duoWide, for: screen),
+                               "\(fold) \(screen)")
             }
         }
+
+        // Phone path always ignores foldDivision.
+        var narrow = AppWideLayout.splitNarrow
+        narrow.foldDivision = AppWideLayout.FoldDivision(minX: 160, minY: 0, width: 20, height: 760, isActive: true)
+        for screen in AppWideLayout.Screen.allCases {
+            XCTAssertEqual(AppWideLayout.decide(narrow, for: screen),
+                           AppWideLayout.decide(AppWideLayout.splitNarrow, for: screen))
+        }
+    }
+
+    func testActiveBookFoldRespectsHingeStatusAndSpan() {
+        let fold = AppWideLayout.FoldDivision(minX: 306, minY: 0, width: 28, height: 820, isActive: true)
+        XCTAssertEqual(
+            AppWideLayout.activeBookFold(in: [fold],
+                                         hinge: .init(status: .partiallyOpen, angleDegrees: 110),
+                                         containerWidth: 640, containerHeight: 820),
+            fold)
+        XCTAssertEqual(
+            AppWideLayout.activeBookFold(in: [fold], hinge: nil,
+                                         containerWidth: 640, containerHeight: 820),
+            fold)
+        XCTAssertNil(
+            AppWideLayout.activeBookFold(in: [fold],
+                                         hinge: .init(status: .fullyOpen, angleDegrees: 180),
+                                         containerWidth: 640, containerHeight: 820))
+        XCTAssertNil(
+            AppWideLayout.activeBookFold(in: [fold],
+                                         hinge: .init(status: .closed, angleDegrees: 0),
+                                         containerWidth: 640, containerHeight: 820))
     }
 
     /// Pins today's `decide` output across the containers item 10 covers: iPhone,
