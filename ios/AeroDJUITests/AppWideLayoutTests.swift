@@ -8,6 +8,7 @@ import UIKit
 /// and `duo-wide-settings` (required in ios.yml, like `duo-wide-ready`) plus the narrow shots.
 final class AppWideLayoutTests: XCTestCase {
     private static let duo = CGSize(width: 640, height: 820)
+    private static let duoLandscape = CGSize(width: 820, height: 640)
     private static let narrow = CGSize(width: 340, height: 760)
 
     override func setUp() {
@@ -15,11 +16,12 @@ final class AppWideLayoutTests: XCTestCase {
     }
 
     @MainActor
-    private func launch(_ scenario: String, size: CGSize) throws -> (XCUIApplication, CGRect) {
+    private func launch(_ scenario: String, size: CGSize,
+                        orientation: UIDeviceOrientation = .portrait) throws -> (XCUIApplication, CGRect) {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
                                "-AeroDJStudioCaptureScenario", scenario]
-        XCUIDevice.shared.orientation = .portrait
+        XCUIDevice.shared.orientation = orientation
         app.launchAfterLeftoverExits()
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10), "no window\n\(app.debugDescription)")
@@ -169,6 +171,53 @@ final class AppWideLayoutTests: XCTestCase {
         let title = app.staticTexts["Local weather and news?"]
         XCTAssertGreaterThanOrEqual(title.frame.minX, box.minX + 63, "title \(title.frame)")
         save(app, "duo-wide-localarea")
+    }
+
+    /// #461 PR 3 (-Nova): Open-Duo Landscape (`820 × 640 pt`) horizontal two-pane Library picker.
+    @MainActor
+    func testDuoLandscapeLibraryTwoPane() throws {
+        let (app, box) = try launch("duoLandscapeLibrary", size: Self.duoLandscape, orientation: .landscapeLeft)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["library.twoPane"].waitForExistence(timeout: 10),
+                      "two-pane library missing\n\(app.debugDescription)")
+        let controls = any["library.pane.controls"]
+        let results = any["library.pane.results"]
+        let rail = any["library.rail"]
+        XCTAssertTrue(controls.exists && results.exists && rail.exists,
+                      "expected controls, results, and rail\n\(app.debugDescription)")
+
+        openLibraryTab(app)
+        let first = libraryRow(app, 0)
+        let second = libraryRow(app, 1)
+        XCTAssertTrue(first.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(second.exists, app.debugDescription)
+        XCTAssertFalse(any["addStation.results.grid"].exists,
+                       "two-pane right column uses a single-column list, never a nested grid")
+
+        // Fold gutter centered on box.midX (x = 410 pt on 820 × 640).
+        XCTAssertLessThanOrEqual(controls.frame.maxX, box.midX - 15,
+                                 "left controls pane crossed fold gutter: \(controls.frame) midX=\(box.midX)")
+        XCTAssertGreaterThanOrEqual(results.frame.minX, box.midX + 15,
+                                    "right results pane crossed fold gutter: \(results.frame) midX=\(box.midX)")
+        XCTAssertGreaterThanOrEqual(rail.frame.minX, results.frame.maxX - 1,
+                                    "rail must trail right pane: rail=\(rail.frame) results=\(results.frame)")
+
+        // Single-column results in the right pane, ≥ 44 pt hit targets.
+        XCTAssertGreaterThan(second.frame.minY, first.frame.maxY - 1, "one column in right pane")
+        assertTarget(first, in: box, "row 1")
+        assertTarget(second, in: box, "row 2")
+
+        let cancel = app.buttons["addStation.cancel"]
+        let next = app.buttons["addStation.next"]
+        XCTAssertTrue(cancel.exists && next.exists, "rail buttons missing\n\(app.debugDescription)")
+        assertTarget(cancel, in: box, "cancel")
+        assertTarget(next, in: box, "next")
+        XCTAssertGreaterThanOrEqual(cancel.frame.width, 43.5, "cancel target width \(cancel.frame)")
+        XCTAssertGreaterThanOrEqual(next.frame.width, 43.5, "next target width \(next.frame)")
+        XCTAssertGreaterThanOrEqual(cancel.frame.minX, rail.frame.minX - 1, "cancel lives in rail")
+        XCTAssertGreaterThanOrEqual(next.frame.minX, rail.frame.minX - 1, "next lives in rail")
+
+        save(app, "duo-landscape-library")
     }
 
     // MARK: Narrow Split View: the phone path, unchanged
