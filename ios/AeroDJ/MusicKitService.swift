@@ -99,6 +99,19 @@ final class MusicKitService: ObservableObject {
     /// `StationQueuePlayer` routes it to `DJBreakSession.timeOfDayMayHaveChanged`, so a pause in the
     /// morning and a Play in the afternoon re-plan the DJ's breaks for the afternoon.
     var onUserResumed: (@MainActor () -> Void)?
+    /// #304 R1 (-Atlas): whether boundary `finishedIndex` (the end of that song) has work armed:
+    /// a DJ break preparing or ready, a talk-over, a station intro, or a station change. Set by
+    /// the composition root. Nil reads as armed, so the player keeps its one song.
+    var boundaryWorkArmed: (@MainActor (_ finishedIndex: Int) -> Bool)?
+    /// #304 R1 (-Atlas): the app adopted the queued next song (Core `BackgroundQueueTail`).
+    /// `boundaryWorkWasArmed` is true only when the app was suspended through the end of song
+    /// `finishedIndex` while work was armed for it: that boundary is gone, so its break is dropped.
+    var onQueueTailAdopted: (@MainActor (_ finishedIndex: Int, _ boundaryWorkWasArmed: Bool) -> Void)?
+    /// #304 R1 (-Atlas): what the player queue holds. One song in the foreground; in the
+    /// background, the next station song too when nothing is armed for this boundary.
+    private var queueTail = BackgroundQueueTail()
+    /// The last keep reason logged for the queue tail (logged once per change).
+    private var lastQueueTailKeep: (index: Int, reason: BackgroundQueueTail.KeepReason)?
     /// #217 (-Atlas): the listener pressed Pause. `StationQueuePlayer` cancels any in-flight
     /// station start so an abandoned tap cannot start playback after an explicit pause.
     var onUserPaused: (@MainActor () -> Void)?
@@ -690,8 +703,10 @@ final class MusicKitService: ObservableObject {
         for event in effect.events { send(event) }
     }
 
-    /// Loads one song into the player. Only the current song is ever queued, so it ends on
-    /// its own and the next one starts only through `startNextTrack` or a user action.
+    /// Loads one song into the player. Only the current song is queued, so it ends on its own and
+    /// the next one starts only through `startNextTrack` or a user action. #304 R1: in the
+    /// background the next station song may be queued behind it (`queueNextSongIfAllowed`); this
+    /// load replaces that tail too.
     /// With `autoplay` false (the user paused during a break) the song waits, loaded and paused.
     /// `attempt` is the start this load belongs to. After the await, a superseded attempt throws
     /// `MusicKitError.superseded` and changes nothing: no UI event, no song-start report.
@@ -717,6 +732,8 @@ final class MusicKitService: ObservableObject {
         // a natural end of the entry just replaced, and advance again: the auto-skip chain.
         boundaries.userRequestedChange()
         player.queue = ApplicationMusicPlayer.Queue(for: [song])
+        // #304 R1: a new one-song queue. A tail queued behind the previous song went with it.
+        queueTail.queueReplaced()
         finishedEntryID = nil
         noteLoadedTarget(index)
         guard autoplay else {
@@ -899,6 +916,187 @@ final class MusicKitService: ObservableObject {
         stateMachine.apply(.noInterlude)
     }
 
+    // MARK: - #304 R1: the next song behind the playing one while in the background
+
+    /// #304 R1 (-Atlas): the app went to the background. When Core's `BackgroundQueueTail` allows
+    /// it, the next station song is queued behind the playing one, so MusicKit advances on its own
+    /// if iOS suspends the app (and its 1 Hz poll) before the song ends. Each background poll asks
+    /// again, so a song that starts there (or is still settling) gets its tail too.
+    func sceneEnteredBackground() {
+        queueTail.sceneEnteredBackground()
+        queueNextSongIfAllowed(headPlaying: player.state.playbackStatus == .playing,
+                               headPosition: player.playbackTime)
+    }
+
+    /// #304 R1 (-Atlas): back in the foreground. One poll now: it adopts the next song if MusicKit
+    /// already moved to it, and otherwise trims the tail so the player holds one song again.
+    func sceneBecameActive() {
+        queueTail.sceneBecameActive()
+        lastQueueTailKeep = nil
+        guard pollTimer != nil else { return }
+        pollPlaybackPosition()
+    }
+
+    /// #304 R1 (-Atlas): boundary work was just armed for song `finishedIndex`: a DJ break began
+    /// preparing or is ready (PlayerView's DJ state stream), or a talk-over claimed the boundary
+    /// and is about to duck (TalkoverCoordinator). The queued tail is trimmed now, before any duck
+    /// or voice; the poll's trim stays as the backstop.
+    func boundaryWorkWasArmed(afterTrack finishedIndex: Int) {
+        guard case let .trim(reason) = queueTail.workArmed(afterIndex: finishedIndex,
+                                                             entryID: player.queue.currentEntry?.id) else { return }
+        trimQueueTail(reason)
+    }
+
+    /// Armed when a break is running, or the composition root reports work for that boundary.
+    private func boundaryIsArmed(_ finishedIndex: Int) -> Bool {
+        isBreakActive || (boundaryWorkArmed?(finishedIndex) ?? true)
+    }
+
+    private func queueNextSongIfAllowed(headPlaying: Bool, headPosition: TimeInterval?) {
+        let index = queueIndex
+        let loaded = loadedTarget.flatMap { $0.generation == attempts.queueGeneration ? $0.index : nil }
+        let decision = queueTail.widen(queueIndex: index, queueCount: queue.count,
+                                       loadedIndex: skipCoordinator.hasPendingSkipWork ? nil : loaded,
+                                       headPlaying: headPlaying, headPosition: headPosition,
+                                       boundaryWorkArmed: boundaryIsArmed(index))
+        guard case let .queueNext(afterIndex, nextIndex) = decision else {
+            if case let .keepOneSong(reason) = decision { noteQueueTailKept(index: index, reason: reason) }
+            return
+        }
+        // A transient current entry makes MusicKit insert at the head of the queue, not behind it.
+        guard let song = queue[nextIndex].song, let head = player.queue.currentEntry, !head.isTransient else {
+            noteQueueTailKept(index: index, reason: .notLoaded)
+            return
+        }
+        lastQueueTailKeep = nil
+        let generation = attempts.queueGeneration
+        let songID = song.id.rawValue
+        // Recorded before the await, so a poll during the insert already knows the tail (and no
+        // second insert starts).
+        queueTail.noteQueued(afterIndex: afterIndex, generation: generation, headEntryID: head.id, nextSongID: songID)
+        Task { @MainActor [weak self] in
+            await self?.insertQueueTail(song, afterIndex: afterIndex, nextIndex: nextIndex, generation: generation)
+        }
+    }
+
+    private func insertQueueTail(_ song: Song, afterIndex: Int, nextIndex: Int, generation: Int) async {
+        let songID = song.id.rawValue
+        do {
+            try await player.queue.insert(song, position: .tail)
+        } catch {
+            if queueTail.pending?.generation == generation, queueTail.pending?.afterIndex == afterIndex {
+                queueTail.clear()
+            }
+            logPlaybackError("queueTailInsert", error)
+            logPlayback(PlaybackLog.queueTailInsertFailed(after: afterIndex))
+            return
+        }
+        guard queueTail.pending?.generation == generation, queueTail.pending?.afterIndex == afterIndex,
+              attempts.queueGeneration == generation, queueIndex == afterIndex else {
+            // A new queue load, a trim or an adoption happened during the await. If the insert
+            // landed behind a newer song, remove it: only entries after the current one are touched.
+            if queueTail.pending?.nextSongID != songID { removeEntriesAfterCurrent(songID: songID) }
+            return
+        }
+        logPlayback(PlaybackLog.queueTailQueued(after: afterIndex, next: nextIndex))
+    }
+
+    /// The keep reason is logged once per change, not on every background poll.
+    private func noteQueueTailKept(index: Int, reason: BackgroundQueueTail.KeepReason) {
+        guard reason != .foreground, reason != .alreadyQueued else { return }
+        if let last = lastQueueTailKeep, last.index == index, last.reason == reason { return }
+        lastQueueTailKeep = (index, reason)
+        logPlayback(PlaybackLog.queueTailKept(index: index, reason: reason))
+    }
+
+    private func queueTailStep(_ observation: PlaybackObservation) -> BackgroundQueueTail.Step {
+        let tail = queueTail.pending
+        let appNextSongID = tail.flatMap { pending in
+            queue.indices.contains(pending.nextIndex) ? queue[pending.nextIndex].song?.id.rawValue : nil
+        }
+        let entrySongID = tail == nil ? nil : player.queue.currentEntry.flatMap(Self.songID(of:))
+        return queueTail.observe(entryID: observation.entryID, entrySongID: entrySongID,
+                                 queueIndex: queueIndex, generation: attempts.queueGeneration,
+                                 appNextSongID: appNextSongID,
+                                 boundaryWorkArmed: tail.map { boundaryIsArmed($0.afterIndex) } ?? false,
+                                 uptime: observation.uptime)
+    }
+
+    /// Still on the playing song: the player goes back to holding it alone.
+    private func trimQueueTail(_ reason: BackgroundQueueTail.TrimReason) {
+        guard let tail = queueTail.pending else { return }
+        removeEntriesAfterCurrent(songID: tail.nextSongID)
+        queueTail.trimmed()
+        logPlayback(PlaybackLog.queueTailTrimmed(after: tail.afterIndex, reason: reason))
+    }
+
+    /// MusicKit moved to the queued song on its own: song `next` is playing. The app's own
+    /// change (the detector is told first), with no break, no skip and no natural-end boundary.
+    private func adoptQueueTail(finished: Int, next: Int, woke: Bool) {
+        let armed = boundaryIsArmed(finished)
+        boundaries.userRequestedChange()
+        finishedEntryID = nil
+        queueIndex = next
+        currentTrack = queue[next]
+        noteLoadedTarget(next)
+        send(.naturalBoundary(nextIndex: next))
+        // The state machine passes the boundary with no interlude, as a break-less boundary does.
+        stateMachine.apply(.trackEnded)
+        stateMachine.apply(.noInterlude)
+        logPlayback(PlaybackLog.queueTailAdopted(finished: finished, next: next, woke: woke))
+        onQueueTailAdopted?(finished, woke && armed)
+        noteSongStarted(index: next, duration: queue[next].song?.duration)
+    }
+
+    /// MusicKit moved to the queued song while the app was awake, but that boundary has work armed
+    /// (or the app's next song changed). Stop the queued song and run the normal boundary: the break,
+    /// then `startNextTrack`, which loads the next song alone, as today.
+    private func handBackQueueTail(finished: Int, headEntryID: String, tailEntryID: String?) {
+        logPlayback(PlaybackLog.queueTailHandedBack(finished: finished))
+        #if DEBUG || AERODJ_P0_DIAG
+        cancelAirPlayGapMusicPlayingStamp()
+        #endif
+        // The entry change is the app's; the detector must not judge it again.
+        boundaries.userRequestedChange()
+        boundaries.pausedByApp()
+        player.pause()
+        isPlaying = false
+        // The stopped queued entry must not be resumed after the break (`resumeIfAllowed`):
+        // `startNextTrack` loads that song again, alone, from its start.
+        finishedEntryID = tailEntryID
+        attempts.armNext(after: finished)
+        send(.naturalBoundary(nextIndex: finished + 1))
+        stateMachine.apply(.trackEnded)
+        onBoundary?(.naturalEnd(finishedEntryID: headEntryID), finished)
+    }
+
+    /// Removes the entries after the player's current one whose song is `songID`, in place on the
+    /// live queue, highest index first. Fry's #617 condition: the queue is never reassigned (a
+    /// reset restarts or gaps the playing song), and the current entry and everything before it
+    /// are never touched.
+    private func removeEntriesAfterCurrent(songID: String) {
+        let entries = player.queue.entries
+        guard let current = player.queue.currentEntry,
+              let at = entries.firstIndex(where: { $0.id == current.id }) else { return }
+        let doomed = entries.indices.filter { index in
+            guard index > at else { return false }
+            let entry = entries[index]
+            if case let .song(song)? = entry.item { return song.id.rawValue == songID }
+            if let song = entry.transientItem as? Song { return song.id.rawValue == songID }
+            return false
+        }
+        for index in doomed.reversed() {
+            player.queue.entries.remove(at: index)
+        }
+    }
+
+    /// The catalog song of a queue entry, also while the entry is still transient.
+    private static func songID(of entry: ApplicationMusicPlayer.Queue.Entry) -> String? {
+        if case let .song(song)? = entry.item { return song.id.rawValue }
+        if let song = entry.transientItem as? Song { return song.id.rawValue }
+        return nil
+    }
+
     // MARK: - Track-boundary observation
 
     /// Poll the player once a second. The boundary detector turns queue-entry
@@ -989,7 +1187,7 @@ final class MusicKitService: ObservableObject {
     }
 
     private func pollPlaybackPosition() {
-        let observation = playbackObservation()
+        var observation = playbackObservation()
         updateGapEndWatch(observation)
         #if AERODJ_P0_DIAG
         P0EventTraceHost.shared.beginPoll(observation, before: P0DetectorState(boundaries), queueIndex: queueIndex, queueCount: queue.count)
@@ -1020,6 +1218,23 @@ final class MusicKitService: ObservableObject {
                 // leaves transport `.playing`, so a reported attempt confirms here too, once.
                 confirmStart(attempt)
             }
+        }
+        // #304 R1 (-Atlas): before the detector, so a song MusicKit advanced to from the queued
+        // tail is the app's own change: never a natural end, a remote skip or a skip-load cut.
+        switch queueTailStep(observation) {
+        case .unchanged, .forget:
+            if queueTail.phase == .background, queueTail.pending == nil {
+                queueNextSongIfAllowed(headPlaying: observation.isPlaying, headPosition: observation.position)
+            }
+        case let .trim(reason):
+            trimQueueTail(reason)
+        case let .adopt(finishedIndex, nextIndex, woke):
+            adoptQueueTail(finished: finishedIndex, next: nextIndex, woke: woke)
+            // The detector baselines on the adopted song, with that song's duration.
+            observation = playbackObservation()
+        case let .handBack(finishedIndex, headEntryID):
+            handBackQueueTail(finished: finishedIndex, headEntryID: headEntryID, tailEntryID: observation.entryID)
+            return
         }
         let interpreted = boundaries.interpret(observation, queueIndex: queueIndex, queueCount: queue.count)
         if boundaries.takeSkipLoadProgress() {

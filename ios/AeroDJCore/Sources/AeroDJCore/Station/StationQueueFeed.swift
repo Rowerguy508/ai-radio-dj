@@ -710,6 +710,14 @@ public final class StationQueueFeed<Item: Sendable> {
     /// active station's music settings changed since the playing queue started and its queue is
     /// staged; `nil` keeps the current queue (today's behavior). `playbackMayStart` false (a held
     /// start) always keeps the current queue: the existing deferral rules run unchanged.
+    /// #304 R1 (-Atlas): whether `takeForBoundary` would try a station switch at the next natural
+    /// boundary (the active station is not the playing queue's). Read-only: no build, no log, and
+    /// it does not adopt a key the way `take` does for a queue whose start was never reported.
+    public func stationSwitchPending(active: StationConfiguration) -> Bool {
+        guard let key = StationQueueKey(active), key != playingKey else { return false }
+        return playingKey != nil || queueStartReported
+    }
+
     public func takeForBoundary(active: StationConfiguration, playbackMayStart: Bool) -> [Item]? {
         take(.songBoundary, active: active, playbackMayStart: playbackMayStart, requireChange: true)
     }
