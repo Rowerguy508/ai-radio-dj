@@ -998,7 +998,8 @@ final class StudioScreenTests: XCTestCase {
     /// (Sound left, DJ + Briefings + Recipes right) with a 32 pt center gutter straddling the
     /// device midpoint (x = 410 pt) and a 56 pt trailing rail holding Close and Save (>= 44 pt).
     @MainActor
-    func testDuoLandscapeStationTunerTwoPane() {
+    func testDuoLandscapeStationTunerTwoPane() throws {
+        try XCTSkipUnless(isOpenLayout, "The 820 × 640 pt container needs an iPad-size simulator window")
         let app = launch(scenario: "duoLandscapeTune")
         let any = app.descendants(matching: .any)
         guard let (_, box) = openDuoContainer(app) else { return }
