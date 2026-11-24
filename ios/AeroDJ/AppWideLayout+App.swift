@@ -41,19 +41,14 @@ private struct AppWideHost: ViewModifier {
     @State private var size: CGSize = .zero
 
     private var decision: AppWideLayout.Decision? {
-        // #465 item 4: the arrangement `ArrangementPaneLayout` resolves for this container,
-        // mapped onto #512's seam. `decide` does not read it yet, so nothing changes.
-        let arrangement = ArrangementPaneLayout.resolve(
-            hasRegularWidth: horizontalSizeClass == .regular,
-            containerWidth: size.width, containerHeight: size.height,
-            accessibilityTextSize: typeSize.isAccessibilitySize).appWideArrangement
+        // #465 item 4: `decide` never read the arrangement this host used to compute
+        // every pass, so that call is gone. Layout output is unchanged on every device.
         let input = AppWideLayout.Input(hasRegularWidth: horizontalSizeClass == .regular,
                                         containerWidth: size.width, containerHeight: size.height,
                                         accessibilityTextSize: typeSize.isAccessibilitySize,
                                         hasRegularHeight: verticalSizeClass.map { $0 == .regular },
                                         // Onboarding is a content-sized sheet; see `heightIsContent`.
-                                        heightIsContent: screen == .onboarding,
-                                        arrangement: arrangement)
+                                        heightIsContent: screen == .onboarding)
         let decision = AppWideLayout.decide(input, for: screen)
         return decision.adapts ? decision : nil
     }
