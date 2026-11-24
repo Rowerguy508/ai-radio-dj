@@ -46,6 +46,8 @@ public struct SharedReviewStore: Sendable {
     public let file: URL
     let backupExclusion: any BackupExclusionMarking
     let backupExclusionLog: @Sendable (String) -> Void
+    /// #593 (-Echo): file operations behind `removeSavedChoices`, injectable so tests can fail each step.
+    var fileOps: SharedReviewFileOps = .live
 
     public init(file: URL, backupExclusion: any BackupExclusionMarking = FoundationBackupExclusion(),
                 backupExclusionLog: @escaping @Sendable (String) -> Void = SharedReviewStore.emitBackupExclusionFailure) {
@@ -101,8 +103,15 @@ public struct SharedReviewStore: Sendable {
     /// `.unreadable` copies are never loaded and are left alone.
     public func removeSavedChoices() throws {
         guard FileManager.default.fileExists(atPath: file.path) else { return }
-        try FileManager.default.removeItem(at: file)
+        try fileOps.remove(file)
     }
+
+    /// #593 (-Echo): zero-byte marker next to the store, `<file>.revoked`. While it exists the file is
+    /// never loaded. It holds nothing.
+    public var revokedMarker: URL { file.appendingPathExtension("revoked") }
+
+    /// #593 (-Echo): the only line logged when the saved choices could not be removed. No path, no error text.
+    public static let savedChoicesNotRemovedMessage = "AeroDJ.review saved choices not removed, ignored until next save"
 
     private func decodedFile() -> [String: SharedReviewRecord]? {
         guard let data = try? Data(contentsOf: file) else { return nil }
@@ -137,4 +146,35 @@ public struct SharedReviewStore: Sendable {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
         return names.filter { $0 == base || $0.hasPrefix(base + "-") }.map { dir.appendingPathComponent($0) }
     }
+}
+
+/// #593 (-Echo): the file steps `SharedReviewStore.removeSavedChoices` and `save` take, so a test can
+/// make any one of them fail. `live` uses `FileManager` and `FileHandle`.
+struct SharedReviewFileOps: Sendable {
+    var remove: @Sendable (URL) throws -> Void
+    var overwriteEmpty: @Sendable (URL) throws -> Void
+    var writeMarker: @Sendable (URL) throws -> Void
+    var clearMarker: @Sendable (URL) throws -> Void
+
+    static let live = SharedReviewFileOps(
+        remove: { try FileManager.default.removeItem(at: $0) },
+        overwriteEmpty: { url in
+            // In place, not atomic: an atomic write needs a rename in the same folder, which is what
+            // a failed remove suggests won't work. Truncate first, so a failed write leaves an empty
+            // (unreadable, so pending) file rather than the old approvals.
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+            try handle.truncate(atOffset: 0)
+            try handle.write(contentsOf: Data("{}".utf8))
+            try handle.synchronize()
+        },
+        writeMarker: { url in
+            guard FileManager.default.createFile(atPath: url.path, contents: Data()) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        },
+        clearMarker: { url in
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
+            try FileManager.default.removeItem(at: url)
+        })
 }
