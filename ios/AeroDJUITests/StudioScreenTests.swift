@@ -1960,9 +1960,21 @@ final class StudioScreenTests: XCTestCase {
     @MainActor
     private func assertCallsStayZero(_ app: XCUIApplication, _ message: String) {
         let badge = app.descendants(matching: .any)["playback.calls"]
-        let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != %@", "0/0"), object: badge)
+        XCTAssertTrue(badge.waitForExistence(timeout: 10), "\(message): playback call counter")
+        // An empty label means the badge is mid re-layout, not that a call happened.
+        let changed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND label != %@ AND label != %@", "0/0", ""),
+            object: badge
+        )
         let result = XCTWaiter().wait(for: [changed], timeout: 1)
         XCTAssertEqual(result, .timedOut, "\(message): \(badge.label)")
+        // The window must end on a real reading, so an empty label the whole time cannot pass.
+        let readable = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND label != %@", ""),
+            object: badge
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [readable], timeout: 10), .completed, "\(message): playback call counter label")
+        XCTAssertEqual(badge.label, "0/0", "\(message): \(badge.label)")
     }
 
     /// The selectable list row, not the title text inside it.
