@@ -148,6 +148,8 @@ struct FoldedPlayer: View {
     /// Build 54 follow-up: the open-Duo window as `StationSplitRoot` measured it (nil elsewhere,
     /// including every capture without the split).
     @Environment(\.openDuoWindow) private var openDuoWindow
+    /// Build 58 follow-up: the window's trailing system inset, read at the root (0 where none).
+    @Environment(\.trailingSystemInset) private var trailingSystemInset
 
     private var effectiveFoldHinge: FoldAwareness.HingeSample? {
         foldPoseOverride.map { $0.hinge } ?? foldHinge
@@ -211,11 +213,18 @@ struct FoldedPlayer: View {
                     // rule to hide the system back and move ⋯ in. Other states keep compactBody.
                     if FoldedOuterLayout.usesOuterReskin(containerWidth: Double(geo.size.width),
                                                          showsTrack: FoldedOuterLayout.reskinShows(content)) {
-                        // Build 58 (-Nova): on physical closed Duo (`safeAreaInsets.trailing > 0`),
-                        // extend into the trailing status column so the rail sits flush on the right
-                        // edge directly below the status cluster (matching `closed-duo-stations`).
-                        // On iPhone (`safeAreaInsets.trailing == 0`), `extend == 0` (byte-identical).
-                        let trailingUnsafe = Double(geo.safeAreaInsets.trailing)
+                        // Build 58 (-Nova): on physical closed Duo, extend into the trailing status
+                        // column so the rail sits directly below the status cluster (matching
+                        // `closed-duo-stations`). This reader is laid out inside the safe area, so on
+                        // the device its own trailing inset is 0 and the column comes from the window
+                        // (`trailingSystemInset`, ≈ 73 pt), read at the window root. Owner's call: a
+                        // deliberate exception wherever there is a trailing system inset. The reader
+                        // ends where the inset starts, so widening by `extend` and pulling the trailing
+                        // edge out by `extend` puts the outer body's trailing edge on the window edge.
+                        // iPhone portrait and every simulator portrait window: both 0, `extend == 0`
+                        // (byte-identical). iPhone landscape never reaches this branch: its reader is
+                        // at least 500 pt wide (`FoldedColumnLayout.isWide`), so not `.phoneBottom`.
+                        let trailingUnsafe = max(Double(geo.safeAreaInsets.trailing), trailingSystemInset)
                         if trailingUnsafe > 0.5 {
                             let extend = CGFloat(trailingUnsafe)
                             let outerSize = CGSize(width: geo.size.width + extend, height: geo.size.height)
@@ -1310,10 +1319,14 @@ extension FoldedPlayer {
     private func foldedOuterBody(in size: CGSize, trailingUnsafeWidth: Double = 0) -> some View {
         let inset = CGFloat(FoldedOuterLayout.contentInset)
         let accessibilityText = typeSize.isAccessibilitySize
-        let art = outerArtSide(in: size)
         let railInset = CGFloat(RailDLayout.closedVerticalInset)
         let railTop = CGFloat(DuoStationsLayout.railTopInset(trailingUnsafeWidth: trailingUnsafeWidth))
         let railTrailing = CGFloat(DuoStationsLayout.closedRailTrailingInset(trailingUnsafeWidth: trailingUnsafeWidth))
+        // The art's width budget assumes the stock 8 pt rail inset. Centred in a status column the
+        // inset is wider (14.5 pt at 73), so take the difference off, or a width-bound art card
+        // would overrun its column by that much. 0 on iPhone and every simulator (byte-identical).
+        let railExtra = max(0, railTrailing - CGFloat(RailDLayout.trailingInset))
+        let art = outerArtSide(in: CGSize(width: max(0, size.width - railExtra), height: size.height))
         return HStack(alignment: .top, spacing: 0) {
             VStack(spacing: 0) {
                 FoldedOuterHeader(heading: heading, dismiss: { dismiss() })
@@ -2926,8 +2939,8 @@ extension EnvironmentValues {
 
     /// Build 58 follow-up (-Nova): the window's trailing system inset in points
     /// (`DuoStationsLayout.trailingSystemInset`), set at the window root by `StationSplitRoot`.
-    /// 0 by default and wherever the window has none. Nothing reads it yet: the layout that uses
-    /// it is on hold until the owner settles the rail's target.
+    /// 0 by default and wherever the window has none. `FoldedPlayer.phoneBody` tucks the closed
+    /// rail into it (owner's call: a deliberate exception, wherever there is a trailing inset).
     var trailingSystemInset: Double {
         get { self[TrailingSystemInsetKey.self] }
         set { self[TrailingSystemInsetKey.self] = newValue }

@@ -30,6 +30,21 @@ struct RailDCaptureContainer: View {
     static let deviceWindowKey = "AeroDJRailDDeviceWindow"
     static let deviceWindowSize = CGSize(width: 951, height: 669)
 
+    /// Build 58 follow-up (-Nova): `-AeroDJCaptureClosedStatusColumn YES` gives the closed-Duo frame
+    /// the device's trailing status column: the container's trailing safe area grows by this much
+    /// (so the player's reader ends where the column starts, as on the device, and its own inset
+    /// reads 0), and the player gets the same width through `trailingSystemInset`, the value
+    /// `StationSplitRoot` derives from the window. Other frames and launches are unchanged.
+    static let closedStatusColumnKey = "AeroDJCaptureClosedStatusColumn"
+    static let closedStatusColumnWidth: Double = 73
+
+    /// The injected column width for this scenario: 0 unless the launch asks for it on the closed Duo.
+    static func closedStatusColumn(for scenario: StudioCaptureScenario) -> Double {
+        guard scenario.railDFrame == .railDDuoClosed,
+              UserDefaults.standard.bool(forKey: closedStatusColumnKey) else { return 0 }
+        return closedStatusColumnWidth
+    }
+
     static func frame(for scenario: StudioCaptureScenario) -> Frame {
         let frame = baseFrame(for: scenario)
         guard UserDefaults.standard.bool(forKey: deviceWindowKey),
@@ -98,6 +113,7 @@ struct RailDCaptureContainer: View {
                     .navigationSplitViewStyle(.balanced)
                 } else {
                     NavigationStack { player }
+                        .modifier(ClosedStatusColumnCapture(width: Self.closedStatusColumn(for: scenario)))
                 }
             }
             .environment(\.horizontalSizeClass, frame.sizeClass)
@@ -122,6 +138,39 @@ struct RailDCaptureContainer: View {
                           DuoStationSwitch.Stop(id: "late-night", name: "Late Night"),
                       ],
                       onOpenStation: { _ in })
+    }
+}
+
+/// The closed Duo's status column in a capture (`RailDCaptureContainer.closedStatusColumnKey`):
+/// a trailing safe-area band of `width` with a stand-in for the device's time and battery ring at
+/// its top, and the same width in `trailingSystemInset`. `width == 0` returns the content as is,
+/// so every other capture keeps its pixels.
+private struct ClosedStatusColumnCapture: ViewModifier {
+    let width: Double
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if width > 0.5 {
+            content
+                .safeAreaPadding(.trailing, CGFloat(width))
+                .environment(\.trailingSystemInset, width)
+                .overlay(alignment: .topTrailing) {
+                    VStack(spacing: 6) {
+                        Text(verbatim: "12:58")
+                            .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                        Image(systemName: "battery.75percent")
+                            .font(.system(size: 17))
+                    }
+                    .foregroundStyle(.white)
+                    .frame(width: CGFloat(width))
+                    .padding(.top, 12)
+                    .ignoresSafeArea(.container, edges: .trailing)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
+        } else {
+            content
+        }
     }
 }
 #endif

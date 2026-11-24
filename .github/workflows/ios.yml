@@ -965,7 +965,8 @@ jobs:
           ls "$SHOTS" | grep -q '^duo-tent_' || { echo "missing duo-tent screenshot"; exit 1; }
           # Mockup D: the full trailing rail with the vertical song-position bar, one shot per
           # frame of the mock (RailDLayoutTests), required as in #551's pattern. -Nova
-          for shot in rail-d-iphone rail-d-duo-closed rail-d-duo-open-portrait rail-d-duo-open-portrait-sidebar \
+          for shot in rail-d-iphone rail-d-duo-closed rail-d-duo-closed-status-column \
+                      rail-d-duo-open-portrait rail-d-duo-open-portrait-sidebar \
                       rail-d-duo-open-landscape-spread rail-d-duo-open-landscape-centred \
                       rail-d-duo-open-landscape-sidebar; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
