@@ -169,6 +169,18 @@ public struct TemplatePool: Sendable {
         self.last = last.flatMap { valid.contains($0) ? $0 : nil }
     }
 
+    /// Marks `template` unused again when a planned line never airs (#319: replanned-away
+    /// breaks, cap-trimmed optional lines, or over-cap skipped breaks). Clears `last` only
+    /// when `template` was the most recent draw.
+    mutating func release(_ template: String) {
+        guard let index = templates.firstIndex(of: template) else { return }
+        used.remove(index)
+        if last == index { last = nil }
+    }
+
+    /// Test hook (#319): how many templates in this pool are currently marked used in the cycle.
+    var testUsedCount: Int { used.count }
+
     /// Cycles `candidates` (a subset of `usable`) without repeats, never repeating the last pick
     /// across a reset. With `candidates == usable` this is the original selection, draw for draw.
     mutating func pickIndex(from candidates: [Int], usable: [Int], using rng: inout SeededGenerator) -> Int? {
@@ -610,6 +622,7 @@ public struct DJScriptWriter: Sendable {
             if !isBriefing { planned.optionalCueIDs = optionalCueIDs }
             if !isBriefing, planned.mainSeconds > Double(cadence.maxTransitionSeconds)
                 || Self.wholeSeconds(planned) > Double(cadence.maxOrdinaryBreakSeconds) {
+                for use in uses { releasePoolUse(pool: use.pool, template: use.template) }
                 capReport.trimmedOptionalLines[boundary] = nil
                 capReport.skippedOverCap.append(boundary)
                 continue
@@ -617,6 +630,9 @@ public struct DJScriptWriter: Sendable {
             breaks.append(planned)
             lastBreak = boundary
             let keptCues = Set(cues.map(\.id))
+            for use in uses where !keptCues.contains(use.cue) {
+                releasePoolUse(pool: use.pool, template: use.template)
+            }
             remember(break: cues.first?.id, uses.filter { keptCues.contains($0.cue) && !$0.template.isEmpty })
             if shapes != nil {
                 // Natural shapes on: the classic and briefing breaks' own lines (never personal
@@ -698,14 +714,23 @@ public struct DJScriptWriter: Sendable {
     }
 
     /// A replan discarded these planned breaks before they aired: they leave the cross-pool
-    /// memory and the shape history, so the next plan follows what actually aired (or is kept).
+    /// memory, the shape history, and `TemplatePool` cycling (#319), so the next plan follows
+    /// what actually aired (or is kept) without shrinking the effective pool size.
     /// The shape half is a no-op with natural shapes off. Either way the discarded lines are not
-    /// recorded for the next session. Pool cycling (`TemplatePool`) is not rewound.
+    /// recorded for the next session.
     /// A discarded show opener never aired, so the next plan opens the show again.
     public mutating func forgetPlannedBreaks(_ discarded: [DJBreak]) {
-        // Unaired lines are not recorded, shapes or not. Pool cycling stays unwound, as before.
         let ids = Set(discarded.compactMap { $0.cues.first?.id })
-        for id in ids { plannedUses[id] = nil }
+        var discardedUses: [SpokenUse] = []
+        for id in ids {
+            if let uses = plannedUses.removeValue(forKey: id) { discardedUses.append(contentsOf: uses) }
+        }
+        if !discardedUses.isEmpty {
+            let stillPlanned = Set(plannedUses.values.flatMap { $0.map { "\($0.pool)\0\($0.template)" } })
+            for use in discardedUses where !stillPlanned.contains("\(use.pool)\0\(use.template)") {
+                releasePoolUse(pool: use.pool, template: use.template)
+            }
+        }
         guard shapes != nil, var picker = shapePicker else { return }
         if discarded.contains(where: { $0.shape == .showOpener }) { hasGreeted = false }
         guard !ids.isEmpty else { return }
@@ -940,10 +965,14 @@ public struct DJScriptWriter: Sendable {
                 || lines.count > config.maxCuesPerBreak
         }
         while overCap(), let drop = lines.indices.reversed().first(where: { lines[$0].optional }) {
-            lines.remove(at: drop)
+            let removed = lines.remove(at: drop)
+            if let pool = removed.pool { releasePoolUse(pool: pool, template: removed.template) }
             if let index = closingIndex, drop < index { closingIndex = index - 1 }
         }
-        if overCap() { return .musicOnly }
+        if overCap() {
+            for line in lines { if let pool = line.pool { releasePoolUse(pool: pool, template: line.template) } }
+            return .musicOnly
+        }
 
         var attributions: [UUID: SpokenAttribution] = [:]
         var cues: [NarrationCue] = []
@@ -1142,7 +1171,10 @@ public struct DJScriptWriter: Sendable {
         func overCap() -> Bool { total() > cap || main() > cap || lines.count > config.maxCuesPerBreak }
         for kind in [Line.Kind.setup, .timeCheck] where overCap() {
             guard let index = lines.firstIndex(where: { $0.kind == kind }) else { continue }
-            lines.remove(at: index)
+            let removed = lines.remove(at: index)
+            for (pool, template) in zip(removed.pools, removed.templates) {
+                releasePoolUse(pool: pool, template: template)
+            }
             if kind == .timeCheck {
                 timeCheck = nil
                 report.omittedOpenerTimeChecks[boundary] = .overCap
@@ -1151,6 +1183,11 @@ public struct DJScriptWriter: Sendable {
             }
         }
         guard !overCap() else {
+            for line in lines {
+                for (pool, template) in zip(line.pools, line.templates) {
+                    releasePoolUse(pool: pool, template: template)
+                }
+            }
             let unspeakable = report.omittedOpenerTimeChecks[boundary] == .notOnTheClock
             report.trimmedOptionalLines[boundary] = nil
             report.omittedOpenerTimeChecks[boundary] = unspeakable ? .notOnTheClock : nil
@@ -1271,6 +1308,45 @@ public struct DJScriptWriter: Sendable {
         let memory = lineMemory.load()
         restorePools(memory)
         restoreRecent(memory)
+    }
+
+    /// Returns an unaired template to its `TemplatePool` (#319).
+    private mutating func releasePoolUse(pool key: String, template: String) {
+        guard !template.isEmpty else { return }
+        switch key {
+        case SpokenLinePool.backAnnounce: backAnnounce.release(template)
+        case SpokenLinePool.closing: closing.release(template)
+        case SpokenLinePool.artistFocus: artistFocus.release(template)
+        case SpokenLinePool.stationID: stationIDs.release(template)
+        case SpokenLinePool.continuation: continuation.release(template)
+        case SpokenLinePool.briefingLead: briefingLead.release(template)
+        case SpokenLinePool.briefingOutro: briefingOutro.release(template)
+        case SpokenLinePool.combined: combined.release(template)
+        case SpokenLinePool.catalogFact: catalogFactPool.release(template)
+        case SpokenLinePool.openerStation: openerStation.release(template)
+        default:
+            for part in DayPart.allCases {
+                if key == SpokenLinePool.greeting(part) { greetings[part]?.release(template); return }
+                if key == SpokenLinePool.atmosphere(part) { atmosphere[part]?.release(template); return }
+                if key == SpokenLinePool.openerSetup(part) { openerSetup[part]?.release(template); return }
+            }
+            for relation in DJTimeCheckRelation.allCases {
+                if key == SpokenLinePool.timeCheck(relation) { timeCheckPools[relation]?.release(template); return }
+            }
+        }
+    }
+
+    /// Test hook (#319): total used templates across all `TemplatePool` instances on this writer.
+    var testTotalPoolUsedCount: Int {
+        var total = backAnnounce.testUsedCount + closing.testUsedCount + artistFocus.testUsedCount
+            + stationIDs.testUsedCount + continuation.testUsedCount + briefingLead.testUsedCount
+            + briefingOutro.testUsedCount + combined.testUsedCount + catalogFactPool.testUsedCount
+            + openerStation.testUsedCount
+        for pool in greetings.values { total += pool.testUsedCount }
+        for pool in atmosphere.values { total += pool.testUsedCount }
+        for pool in openerSetup.values { total += pool.testUsedCount }
+        for pool in timeCheckPools.values { total += pool.testUsedCount }
+        return total
     }
 
     private mutating func restorePools(_ memory: SpokenLineMemory) {

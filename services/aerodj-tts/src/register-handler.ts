@@ -159,9 +159,12 @@ function parseAttestationObject(value: unknown): Buffer | null {
  * no category and so would get the tester tier. Acceptable while OnAirly ships on TestFlight
  * only; every cap (per-install, tester pool, owner share, global) still applies unchanged.
  *
- * TODO(#407 N2, before public App Store launch): set `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK=false`
- * or remove the `no_category_fallback` branch (or gate it on another TestFlight signal) so
- * iOS 26 App Store installs cannot reach the tester tier.
+ * TODO(#407, App Store release gate): no attestation signal separates an iOS 26 TestFlight copy
+ * from an iOS 26 App Store copy (both use the production aaguid; the category extension is
+ * iOS 27+ only), so the fallback is closed by config, not code. Launch-checklist step (README
+ * "Before App Store submission"): set `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK=false` on production
+ * aerodj-tts and redeploy before submitting. Pinned by the `#407 launch state` test in
+ * test/install-token.test.ts.
  */
 export function testerTier(validationCategory: number | undefined, env: Env): TesterReason | null {
   if (validationCategory === TESTFLIGHT_VALIDATION_CATEGORY) return 'testflight_category';
