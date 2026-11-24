@@ -57,6 +57,9 @@ final class MusicKitService: ObservableObject {
     /// Called with the index of the song the user skipped, so its prepared break is discarded.
     var onSongSkipped: (@MainActor (Int) -> Void)?
     private var queueIndex = 0
+    /// #539 follow-up (-Fry; Atlas asked for it): the OnAirly session's Next uses the same
+    /// `RemoteNextCommand` rule as `nextTrackCommand` below. Read-only.
+    var remoteNextPosition: (queueIndex: Int, queueCount: Int) { (queueIndex, queue.count) }
     /// Index and queue generation of the song `startTrack` actually put in the player.
     /// Nil after a skip load fails or is cut, even if the player still holds the previous song.
     private var loadedTarget: LoadedPlayerTarget?
@@ -1630,6 +1633,9 @@ final class MusicKitService: ObservableObject {
     /// goes through `seek(to:trackID:)` for the same reason.
     private func installRemoteCommands() {
         guard !remoteCommandsInstalled else { return }
+        // #539 follow-up (-Fry; Atlas's OK needed): on iOS 27 the OnAirly NowPlaying session owns
+        // these commands with the same gates. Apple: don't mix it with MPRemoteCommandCenter.
+        guard OnAirlyNowPlayingPolicy.installsMediaPlayerRemoteCommands(usesSession: OnAirlyNowPlaying.usesSession) else { return }
         remoteCommandsInstalled = true
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.isEnabled = true
