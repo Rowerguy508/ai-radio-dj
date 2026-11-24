@@ -12,9 +12,10 @@ import Foundation
 /// `.phone`. Callers render the screen exactly as before for `.phone`: no inset, one column,
 /// nothing measured differently. Narrow Split View (340 pt) is the phone path too.
 ///
-/// **Seams.** `foldDivision` (item 2, fold awareness) and `arrangement` (item 4, the
-/// `ArrangementView` two-pane layout) are slots that default to nil and change nothing yet,
-/// so those PRs plug in here instead of each screen growing its own check.
+/// **Seams.** `foldDivision` (item 2, fold awareness) is a slot that defaults to nil and
+/// changes nothing yet, so that PR plugs in here instead of each screen growing its own
+/// check. The unused item 4 `arrangement` input was removed: Rail D owns the open Duo,
+/// and `decide` never read it, so layout output is unchanged on every device.
 ///
 /// Pure and UI-free so it is unit tested on Linux. Points of the container, never a device.
 public enum AppWideLayout {
@@ -31,15 +32,6 @@ public enum AppWideLayout {
     /// points, aliased directly to `FoldAwareness.Division` so `FoldDivisionProbe` feeds
     /// `Input.foldDivision` with no conversion.
     public typealias FoldDivision = FoldAwareness.Division
-
-    /// What `ArrangementView` gives the screen (#465 item 4): `ArrangementPaneLayout.Decision`
-    /// maps onto it with `appWideArrangement` (`.split` is `.twoPane`, `.singleColumn` is
-    /// `.single`, `.unchanged` is nil). Carried, not read yet: every screen ignores it, and
-    /// nil (the default) is today's behaviour.
-    public enum Arrangement: Equatable, Sendable {
-        case single
-        case twoPane
-    }
 
     /// Everything the decision reads. Build one per screen from the environment and the
     /// container's measured size.
@@ -61,13 +53,11 @@ public enum AppWideLayout {
         public var heightIsContent: Bool
         /// #465 item 2: active vertical fold division from `FoldDivisionProbe`, or nil.
         public var foldDivision: FoldDivision?
-        /// `ArrangementPaneLayout.Decision.appWideArrangement` for this container. Ignored today.
-        public var arrangement: Arrangement?
 
         public init(hasRegularWidth: Bool, containerWidth: Double, containerHeight: Double,
                     accessibilityTextSize: Bool = false, hasRegularHeight: Bool? = nil,
                     heightIsContent: Bool = false,
-                    foldDivision: FoldDivision? = nil, arrangement: Arrangement? = nil) {
+                    foldDivision: FoldDivision? = nil) {
             self.hasRegularWidth = hasRegularWidth
             self.containerWidth = containerWidth
             self.containerHeight = containerHeight
@@ -75,7 +65,6 @@ public enum AppWideLayout {
             self.hasRegularHeight = hasRegularHeight
             self.heightIsContent = heightIsContent
             self.foldDivision = foldDivision
-            self.arrangement = arrangement
         }
     }
 
@@ -238,7 +227,6 @@ public enum AppWideLayout {
         let columns = input.accessibilityTextSize ? 1 : columnCount(inner: inner, minColumn: minColumnWidth(screen))
         let ordinary = Decision(mode: .wide, sideInset: inset, readableWidth: readable, columns: columns,
                                 gutter: columns > 1 ? columnGutter : 0)
-        // TODO(#465 item 4): with `.twoPane`, Stations shows the grid beside the detail.
         guard let fold = input.foldDivision,
               validFold(fold, containerWidth: width, containerHeight: height, heightIsContent: input.heightIsContent) else {
             return ordinary
@@ -311,6 +299,7 @@ public enum AppWideLayout {
         let trailing = max(0, width - leading - readable)
         return Decision(mode: .wide, leadingInset: leading, trailingInset: trailing,
                         readableWidth: readable, columns: 1, gutter: 0)
+
     }
 
     static func columnCount(inner: Double, minColumn: Double) -> Int {

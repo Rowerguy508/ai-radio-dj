@@ -42,19 +42,14 @@ private struct AppWideHost: ViewModifier {
     @State private var foldDivisions: [FoldAwareness.Division] = []
 
     private var baseInput: AppWideLayout.Input {
-        // #465 item 4: the arrangement `ArrangementPaneLayout` resolves for this container,
-        // mapped onto #512's seam. `decide` does not read it yet, so nothing changes.
-        let arrangement = ArrangementPaneLayout.resolve(
-            hasRegularWidth: horizontalSizeClass == .regular,
-            containerWidth: size.width, containerHeight: size.height,
-            accessibilityTextSize: typeSize.isAccessibilitySize).appWideArrangement
-        return AppWideLayout.Input(hasRegularWidth: horizontalSizeClass == .regular,
-                                   containerWidth: size.width, containerHeight: size.height,
-                                   accessibilityTextSize: typeSize.isAccessibilitySize,
-                                   hasRegularHeight: verticalSizeClass.map { $0 == .regular },
-                                   // Onboarding is a content-sized sheet; see `heightIsContent`.
-                                   heightIsContent: screen == .onboarding,
-                                   arrangement: arrangement)
+        // #465 item 4: `decide` never read the arrangement this host used to compute
+        // every pass, so that call is gone. Layout output is unchanged on every device.
+        AppWideLayout.Input(hasRegularWidth: horizontalSizeClass == .regular,
+                            containerWidth: size.width, containerHeight: size.height,
+                            accessibilityTextSize: typeSize.isAccessibilitySize,
+                            hasRegularHeight: verticalSizeClass.map { $0 == .regular },
+                            // Onboarding is a content-sized sheet; see `heightIsContent`.
+                            heightIsContent: screen == .onboarding)
     }
 
     private var isWideContainer: Bool {

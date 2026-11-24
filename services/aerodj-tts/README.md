@@ -396,13 +396,16 @@ that uses the stored key is PR 4.
 
 Off unless **both** `AERODJ_TTS_ATTEST_ENABLED` and `AERODJ_TTS_TESTER_VOICE_ENABLED` are
 exactly `true` (503 `disabled`, Retry-After 3600, before any store call). TestFlight
-installs only: register sets `tier: "tester"` on the key record for
-`apple_validation_category_01 == 2` (iOS 27+, log `tester_reason: testflight_category`), or,
-while `AERODJ_TTS_TESTER_VOICE_ENABLED` is `true`, for an attestation with **no** category
-field (iOS 26 and older, log `tester_reason: no_category_fallback`; owner 2026-11-03). Any
-other present category (e.g. 4 App Store) is 403 `no_entitlement`. **TODO before public App
-Store launch:** remove or tighten the no-category fallback, since an iOS 26 App Store install
-also carries no category.
+installs only: register sets `tier: "tester"` and persists `tierReason` on the key record for
+`apple_validation_category_01 == 2` (iOS 27+, `tierReason: "testflight_category"`), or,
+while `AERODJ_TTS_TESTER_VOICE_ENABLED` is `true` and `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK`
+is unset or `true`, for an attestation with **no** category field (iOS 26 and older,
+`tierReason: "no_category_fallback"`; owner 2026-11-03). Any other present category (e.g. 4
+App Store) is 403 `no_entitlement`. `/api/attest/token` enforces `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK`
+on every mint for `no_category_fallback` (and legacy un-reasoned) tester keys while leaving
+`testflight_category` keys unaffected. **TODO(#407 N2, before public App Store launch):** set
+`AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK=false` or remove the no-category fallback, since an
+iOS 26 App Store install also carries no category.
 
 1. `POST /api/attest/challenge {purpose:"tok"}` + `X-OnAirly-Key` → key-bound challenge.
 2. `POST /api/attest/token {challenge}` + `X-OnAirly-Key` + `X-OnAirly-Assertion` (base64
@@ -482,6 +485,7 @@ either (`test/install-token.test.ts`); refusals log enum reasons only.
 | `AERODJ_TTS_APP_ATTEST_ENV` | no | Unset or `production`: only the production `aaguid`. `development` also accepts `appattestdevelop` (and validation category 3), **only** on a Preview/Development deployment with no `ELEVENLABS_API_KEY`; anywhere else, or any other value → 500 `misconfig`. |
 | `AERODJ_TTS_ENROLL_DAILY_CAP` | no | Verified enrollments per UTC day overall (default 20, owner decision 2026-10-29). Plain integer 1-100000; anything else uses the default. |
 | `AERODJ_TTS_TESTER_VOICE_ENABLED` | no | Tester voice kill switch (#378). Only exactly `true` (and `AERODJ_TTS_ATTEST_ENABLED=true`) enables `/api/attest/token` and install tokens on `/api/tts`; anything else (`TRUE`, `1`, empty) is off: 503 `disabled`. **Leave unset until the owner OKs it at deploy.** |
+| `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK` | no | iOS 26 no-category TestFlight fallback switch (#407 N1/N2). Unset or `true` (with `AERODJ_TTS_TESTER_VOICE_ENABLED=true`) allows no-category installs to register and mint; any other value (including `false` or a typo) fails closed: new no-category registrations get no tier, and `/api/attest/token` returns 403 `no_entitlement` for `no_category_fallback` and legacy un-reasoned tester keys while `testflight_category` keys stay unaffected. **Set `false` before public App Store launch (#407 N2).** |
 | `AERODJ_DJ_AIRPLAY_LONGFORM` | no | iOS #525 **kill switch**, served by `GET /api/flags` as `djAirPlayLongForm`. **On by default:** unset or any value except exactly `false` (including `FALSE`, `0`, empty) answers `true`. Set exactly `false` to turn off the DJ voice's long-form AirPlay gap-break session if the Build 10 hold comes back; unset (or any other value) turns it back on. |
 | `AERODJ_ONAIRLY_NOW_PLAYING_SESSION` | no | iOS #600 **kill switch**, served by `GET /api/flags` as `onAirlyNowPlayingSession`. **On by default:** unset or any value except exactly `false` answers `true`. Set exactly `false` to turn off the iOS 27 OnAirly lock-screen Now Playing session (the lock screen falls back to MusicKit's own card). The app caches it at one launch and applies it at the next. |
 | `AERODJ_TTS_INSTALL_TOKEN_HMAC_KEY` | before tester voice is enabled | Server-only. Dedicated key for install tokens, at least 32 bytes, **created by the owner**, pasted directly into Vercel (Production). Must differ from the challenge key; missing, short or equal → 500 `misconfig` on the install paths. Rotating it invalidates every live token (30 min max). |
