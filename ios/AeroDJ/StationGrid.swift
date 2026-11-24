@@ -10,7 +10,8 @@ import SwiftUI
 /// A tap is the split root's existing selection (`onSelect`), the same path as a carousel
 /// card: it opens that station and starts it (#454). Nothing else selects.
 ///
-/// TODO(#465 item 4): with `arrangement == .twoPane`, show this grid beside the detail.
+/// TODO(#465 item 4): showing this grid beside the detail still needs owner mockups first.
+/// The unused arrangement seam on `decide` is gone; this PR does not change that UI.
 /// TODO(#465 item 2): with a `foldDivision`, keep the column gap on the fold.
 /// Same SceneStorage key as `StationCarousel`: a fold destroys the compact
 /// carousel and this grid must restore the focused card before falling back

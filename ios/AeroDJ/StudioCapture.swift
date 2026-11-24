@@ -78,7 +78,8 @@ enum StudioCaptureScenario: String {
     /// The same 640 × 820 pt container with nothing playing, so Search Apple Music is the
     /// content column's first control.
     case duoWideEmpty
-    /// A side-by-side split. `AeroDJSplitExample` is `narrow`, `half` or `wide`.
+    /// A side-by-side split. `AeroDJSplitExample` is `narrow`, `half`, `wide`, `full`, or a
+    /// Duo-landscape slice (`duoLandscape320`, `duoLandscape410`, `duoLandscape500`).
     case splitView
     /// Folded phone container, then the unfolded Duo, in one launch. Playback, the
     /// scroll anchor and the selected station must survive the size-class change.
@@ -142,6 +143,10 @@ enum StudioCaptureScenario: String {
     /// Echo (#558): the three landscape frames with the DJ on air (`breakReady` then
     /// `playbackStarted`, the pill's timer frozen as in `onAir`) and with the voice unavailable
     /// (the `speechFailed` caption, music playing). Debug-only extra shots, not required in CI.
+    /// #434: the open Duo upright with the DJ on air. The art hides and the orb takes its
+    /// frame, as on iPhone. The capture reports a flat hinge so the player takes the open-Duo
+    /// path the device takes (an iPad simulator reports none). -Nova
+    case railDPortraitOnAir
     case railDLandscapeSpreadOnAir
     case railDLandscapeCentredOnAir
     case railDLandscapeSidebarOnAir
@@ -160,7 +165,8 @@ enum StudioCaptureScenario: String {
 
     var isRailDOnAir: Bool {
         switch self {
-        case .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir: true
+        case .railDPortraitOnAir,
+             .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir: true
         default: false
         }
     }
@@ -176,6 +182,7 @@ enum StudioCaptureScenario: String {
     /// The mock frame an On Air or voice-unavailable variant is drawn in.
     var railDFrame: StudioCaptureScenario {
         switch self {
+        case .railDPortraitOnAir: .railDPortrait
         case .railDLandscapeSpreadOnAir, .railDLandscapeSpreadVoiceUnavailable: .railDLandscapeSpread
         case .railDLandscapeCentredOnAir, .railDLandscapeCentredVoiceUnavailable: .railDLandscapeCentred
         case .railDLandscapeSidebarOnAir, .railDLandscapeSidebarVoiceUnavailable: .railDLandscapeSidebar
@@ -206,7 +213,8 @@ enum StudioCaptureScenario: String {
             var playing = PlaybackFixtures.playing
             playing.canSeek = true
             return playing
-        case .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir:
+        case .railDPortraitOnAir,
+             .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir:
             var playing = PlaybackFixtures.playing
             playing.canSeek = true
             return playing
@@ -371,7 +379,7 @@ struct StudioCaptureView: View {
                  .railDPhone, .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
                  .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
-            case .duoWideSpeaking, .onAir, .duoWideOnAir,
+            case .duoWideSpeaking, .onAir, .duoWideOnAir, .railDPortraitOnAir,
                  .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir:
                 // Freeze the pill's timer before it appears, so the PNG is deterministic.
                 StudioCaptureOnAir.frozenElapsed = StudioCaptureOnAir.capturedElapsed
@@ -1040,23 +1048,55 @@ private struct SplitViewCapture: View {
         return SplitViewLayout.sample(named: name)
     }
 
+    /// #574 review: `AeroDJSplitPre499Guard` draws the "before" shot with the old landscape
+    /// guard. Only the Duo-landscape slices use it.
+    private var pre499Guard: Bool {
+        UserDefaults.standard.bool(forKey: "AeroDJSplitPre499Guard")
+    }
+
+    private func isDuoLandscape(_ sample: SplitViewLayout.Sample) -> Bool {
+        SplitViewLayout.duoLandscapeSamples.contains(sample)
+    }
+
     var body: some View {
         if let sample {
             let measure = SplitMeasure(containerWidth: sample.width, containerHeight: sample.height,
                                        leading: sample.leading, trailing: sample.trailing)
+            let before = pre499Guard && isDuoLandscape(sample)
             ZStack {
                 Color(white: 0.14).ignoresSafeArea().accessibilityHidden(true)
-                splitScreen
-                    .environment(\.horizontalSizeClass, sample.hasRegularWidth ? .regular : .compact)
-                    .environment(\.splitMeasure, measure)
-                    .frame(width: CGFloat(sample.width), height: CGFloat(sample.height))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-                            .allowsHitTesting(false)
+                VStack(spacing: 8) {
+                    splitScreen
+                        .environment(\.splitPre499Guard, before)
+                        .environment(\.horizontalSizeClass, sample.hasRegularWidth ? .regular : .compact)
+                        .environment(\.splitMeasure, measure)
+                        // Before #499 the host did not adapt, and the system's own safe area
+                        // was the only inset. This container is the window, so that inset is
+                        // drawn here for the "before" shot only.
+                        .modifier(CaptureSystemInset(enabled: before, leading: sample.leading,
+                                                     trailing: sample.trailing))
+                        .frame(width: CGFloat(sample.width), height: CGFloat(sample.height))
+                        .overlay(alignment: .leading) {
+                            if isDuoLandscape(sample) { insetStrip(width: sample.leading) }
+                        }
+                        .overlay(alignment: .trailing) {
+                            if isDuoLandscape(sample) { insetStrip(width: sample.trailing) }
+                        }
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                                .allowsHitTesting(false)
+                        }
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("split.container")
+                    if isDuoLandscape(sample) {
+                        Text("\(Int(sample.width))×\(Int(sample.height)) · outer edge leading · "
+                             + (before ? "BEFORE (pre-#499 guard)" : "AFTER (#499, Rail D kept)"))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .accessibilityIdentifier("split.captureCaption")
                     }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("split.container")
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .overlay(alignment: .top) { switcher }
@@ -1096,6 +1136,18 @@ private struct SplitViewCapture: View {
                              studio: studio, isTestStation: true, timeSource: .fixture)
     }
 
+    /// Marks the window's inset on its side so the shot shows which edge is outer.
+    @ViewBuilder
+    private func insetStrip(width: Double) -> some View {
+        if width > 0.5 {
+            Rectangle()
+                .fill(Color.orange.opacity(0.28))
+                .frame(width: CGFloat(width))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+
     private var switcher: some View {
         HStack(spacing: 8) {
             ForEach(SplitCaptureScreen.allCases) { item in
@@ -1118,6 +1170,29 @@ private struct SplitViewCapture: View {
         .padding(6)
         .background(.regularMaterial, in: Capsule())
         .padding(.top, 8)
+    }
+}
+
+/// The system safe area a pre-#499 window had: content inset on each side, with
+/// backgrounds that ignore the safe area still drawn under it.
+private struct CaptureSystemInset: ViewModifier {
+    var enabled: Bool
+    var leading: Double
+    var trailing: Double
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .safeAreaInset(edge: .leading, spacing: 0) {
+                    Color.clear.frame(width: CGFloat(leading)).allowsHitTesting(false).accessibilityHidden(true)
+                }
+                .safeAreaInset(edge: .trailing, spacing: 0) {
+                    Color.clear.frame(width: CGFloat(trailing)).allowsHitTesting(false).accessibilityHidden(true)
+                }
+        } else {
+            content
+        }
     }
 }
 
