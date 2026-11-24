@@ -75,6 +75,21 @@ final class RailDLayoutTests: XCTestCase {
         save(app, "rail-d-duo-open-portrait")
     }
 
+    /// #434 (owner, Nov 23 2026): on the open Duo the art hides while the DJ talks, as on
+    /// iPhone. The orb takes the art's frame; the content-column orb is gone (one orb). -Nova
+    @MainActor
+    func testOpenPortraitOnAirHidesTheArt() throws {
+        let app = try launch("railDPortraitOnAir", container: Self.portrait, orientation: .portrait)
+        let box = try settledContainer(app, size: Self.portrait)
+        let any = app.descendants(matching: .any)
+        let rail = try assertRail(app, id: "folded.systemBar", hasCollapse: true)
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail))
+        XCTAssertTrue(any["dj.onAir"].waitForExistence(timeout: 10), "On Air missing\n\(app.debugDescription)")
+        assertOrbOnlyArtCard(app)
+        save(app, "rail-d-duo-open-portrait-onair",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
+    }
+
     @MainActor
     func testOpenPortraitWithTheSidebar() throws {
         let app = try launch("railDPortraitSidebar", container: Self.portrait, orientation: .portrait)
@@ -376,12 +391,25 @@ final class RailDLayoutTests: XCTestCase {
             let foldMin = box.minX + Self.foldMinX
             let foldMax = box.minX + Self.foldMaxX
             XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin, "DJ state \(frame) sits on the fold")
+            // #434: the open Duo's landscape is the L1 spread (#577); the art hides on air.
+            if onAir { assertOrbOnlyArtCard(app) }
         }
         save(app, shot,
              container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
     // MARK: Checks
+
+    /// #434: the art card shows only the orb (the on-air captures expose its layer id) and the
+    /// content column draws no second orb.
+    @MainActor
+    private func assertOrbOnlyArtCard(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["folded.artCard.orb"].waitForExistence(timeout: 5),
+                      "the art card shows the orb while on air\n\(app.debugDescription)", file: file, line: line)
+        XCTAssertFalse(any["folded.artCard.artwork"].exists, "the art is hidden while on air", file: file, line: line)
+        XCTAssertFalse(any["folded.visualizer"].exists, "one orb: no content-column orb", file: file, line: line)
+    }
 
     /// Echo (#558): the closed rail keeps the DJ chip in the content column, lined up with the
     /// title, one line, leading of the rail.
