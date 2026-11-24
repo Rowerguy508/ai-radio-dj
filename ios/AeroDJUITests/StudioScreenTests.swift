@@ -663,6 +663,11 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(any["continuity.scroller"].waitForExistence(timeout: 5),
                       "the rail layout has no continuity scroller\n\(app.debugDescription)")
         XCTAssertTrue(row.waitForExistence(timeout: 5), "row 4 is missing from the rail layout")
+        // #578 (-Nova): the stored id surviving is not enough. The unfolded shot on run
+        // 45339925855 showed rows 0-1 under the hero, so the rail column must scroll row 4 on.
+        let rowBack = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: row)
+        XCTAssertEqual(XCTWaiter().wait(for: [rowBack], timeout: 5), .completed,
+                       "row 4 is not on screen after unfolding: \(row.frame)\n\(app.debugDescription)")
         XCTAssertEqual(readout(app, "continuity.station"), "morning-calm")
         XCTAssertTrue(any["station.title"].label.contains("Morning Calm"))
         XCTAssertEqual(readout(app, "continuity.playback"), playback)
