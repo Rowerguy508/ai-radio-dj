@@ -427,7 +427,9 @@ struct StudioCaptureView: View {
             }
             // Build 54 (5), -Nova: the open-Duo device-window player shows the rating star, so
             // the UI test can check it sits beside the title.
-            if captureRating == nil, defaults.bool(forKey: RailDCaptureContainer.deviceWindowKey) {
+            if captureRating == nil,
+               defaults.bool(forKey: RailDCaptureContainer.deviceWindowKey)
+                || chosen == .railDLandscapeSpreadReportedFold {
                 captureRating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id,
                                                                     labelSeen: true)
             }
