@@ -59,6 +59,11 @@ struct RailDCaptureContainer: View {
     private static func baseFrame(for scenario: StudioCaptureScenario) -> Frame {
         let portrait = StudioCapture.duoWideContainerSize
         let landscape = StudioCapture.duoTentContainerSize
+        if scenario == .railDPortraitOnAir {
+            // #434: a flat hinge, so the player takes the open-Duo path (portrait stays portrait).
+            return Frame(size: portrait, sizeClass: .compact, sidebar: nil,
+                         fold: FoldPoseOverride(hinge: .init(status: .fullyOpen, angleDegrees: 180), divisions: []))
+        }
         switch scenario.railDFrame {
         case .railDDuoClosed:
             return Frame(size: CGSize(width: 390, height: 844), sizeClass: .compact, sidebar: nil, fold: nil)

@@ -72,6 +72,13 @@ export const USED_TTL_FOR_MINT = 300;
 /** The enroll counters (global, per network and per install) outlive their UTC day. */
 export const ENROLL_TTL_SECONDS = 2 * 86_400;
 
+/**
+ * Why `tier: 'tester'` was granted at register (#407 N1):
+ * - `testflight_category`: `apple_validation_category_01 == 2` (iOS 27+ TestFlight).
+ * - `no_category_fallback`: no category field at all (iOS 26 and older) while fallback is allowed.
+ */
+export type TesterReason = 'testflight_category' | 'no_category_fallback';
+
 export interface KeyRecord {
   pubKeySpki: string; // base64 DER SPKI
   counter: 0;
@@ -79,11 +86,16 @@ export interface KeyRecord {
   createdDay: string;
   revoked: false;
   /**
-   * `tester` (#378 design §1.5) only when the attestation carried
-   * `apple_validation_category_01 == 2` (TestFlight). Absent otherwise (App Store, or iOS 26
-   * and older with no category): such a key can never mint an install token.
+   * `tester` (#378 design §1.5) when the attestation carried `apple_validation_category_01 == 2`
+   * (TestFlight), or had no category while the iOS 26 fallback was allowed. Absent otherwise
+   * (App Store or any other present category): such a key can never mint an install token.
    */
   tier?: 'tester';
+  /**
+   * Persisted reason `tier: 'tester'` was granted (#407 N1). Absent on non-tester keys and on
+   * legacy tester records written before #407 (treated by `/api/attest/token` as fallback-only).
+   */
+  tierReason?: TesterReason;
 }
 
 /** `ctr:{aerodj-tts}:<b64url keyId>`: the last committed assertion counter (#378 §1.2). */
