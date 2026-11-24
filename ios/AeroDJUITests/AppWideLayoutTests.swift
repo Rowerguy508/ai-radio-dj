@@ -217,7 +217,7 @@ final class AppWideLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(cancel.frame.minX, rail.frame.minX - 1, "cancel lives in rail")
         XCTAssertGreaterThanOrEqual(next.frame.minX, rail.frame.minX - 1, "next lives in rail")
 
-        save(app, "duo-landscape-library")
+        save(app, "duo-landscape-library", container: any["capture.appWideContainer"])
     }
 
     // MARK: Narrow Split View: the phone path, unchanged
@@ -262,8 +262,11 @@ final class AppWideLayoutTests: XCTestCase {
     }
 
     @MainActor
-    private func save(_ app: XCUIApplication, _ name: String) {
-        let shot = app.screenshot()
+    /// A landscape app screenshot comes back sideways and cropped on the iPad lane, so the
+    /// open-Duo landscape shot saves the container element instead (like StationsLayoutTests).
+    /// Every other caller keeps the app screenshot, so those PNGs do not change.
+    private func save(_ app: XCUIApplication, _ name: String, container: XCUIElement? = nil) {
+        let shot = container.map { $0.screenshot() } ?? app.screenshot()
         let attachment = XCTAttachment(screenshot: shot)
         attachment.name = name
         attachment.lifetime = .keepAlways
