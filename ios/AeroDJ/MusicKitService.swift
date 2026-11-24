@@ -112,6 +112,9 @@ final class MusicKitService: ObservableObject {
     private var queueTail = BackgroundQueueTail()
     /// The last keep reason logged for the queue tail (logged once per change).
     private var lastQueueTailKeep: (index: Int, reason: BackgroundQueueTail.KeepReason)?
+    /// #217 (-Atlas): the listener pressed Pause. `StationQueuePlayer` cancels any in-flight
+    /// station start so an abandoned tap cannot start playback after an explicit pause.
+    var onUserPaused: (@MainActor () -> Void)?
     private var pollTimer: Timer?
     /// Playback timing for device validation. Indices and durations only: no titles or identifiers.
     private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
@@ -332,6 +335,7 @@ final class MusicKitService: ObservableObject {
         isPlaying = false
         send(.userPaused)
         stateMachine.apply(.pause)
+        onUserPaused?()
         let duration = queue.indices.contains(queueIndex) ? queue[queueIndex].song?.duration : nil
         let nearEnd = PlaybackObservation(
             entryID: player.queue.currentEntry?.id,
