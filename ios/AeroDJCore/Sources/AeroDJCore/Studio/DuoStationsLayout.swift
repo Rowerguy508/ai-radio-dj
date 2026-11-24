@@ -160,10 +160,11 @@ public enum DuoStationsLayout {
 
     /// Build 58 follow-up (-Nova): the window's trailing system inset (on the device, the status
     /// column), read at the window root. The player's reader is laid out inside the safe area, so
-    /// its own trailing inset is 0 there. No device or orientation detection (owner): the inset
-    /// when it is finite and more than half a point, otherwise 0.
-    public static func trailingSystemInset(trailing: Double) -> Double {
-        guard trailing.isFinite, trailing > 0.5 else { return 0 }
+    /// its own trailing inset is 0 there. No device or orientation detection (owner): the trailing
+    /// inset when it is finite, more than half a point, and the leading inset is about 0 (#626:
+    /// an inset on both sides, as on iPhone landscape, is not a status column). Otherwise 0.
+    public static func trailingSystemInset(leading: Double, trailing: Double) -> Double {
+        guard leading.isFinite, trailing.isFinite, trailing > 0.5, leading <= 0.5 else { return 0 }
         return trailing
     }
 

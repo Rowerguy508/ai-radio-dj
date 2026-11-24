@@ -343,7 +343,7 @@ struct StationSplitRoot<Detail: View>: View {
 
     /// Build 58 follow-up (-Nova): `DuoStationsLayout.trailingSystemInset` on the measured window.
     private var trailingSystemInset: Double {
-        DuoStationsLayout.trailingSystemInset(trailing: windowInsets.trailing)
+        DuoStationsLayout.trailingSystemInset(leading: windowInsets.leading, trailing: windowInsets.trailing)
     }
 
     /// The window the player's open-Duo rail lines up with: the trailing unsafe column and the
