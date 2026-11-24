@@ -448,7 +448,9 @@ describe('POST /api/attest/token', () => {
     };
     const tester = await register(cbor(cmap(['apple_validation_category_01', 2])));
     assert.equal(tester.res.status, 204, JSON.stringify(regLogs));
-    assert.equal(JSON.parse(redis.data.get(keyRecordKey('nonprod', tester.inst.keyId))!).tier, 'tester');
+    const testerRecord = JSON.parse(redis.data.get(keyRecordKey('nonprod', tester.inst.keyId))!);
+    assert.equal(testerRecord.tier, 'tester');
+    assert.equal(testerRecord.tierReason, 'testflight_category');
     const h = tokenHarness({}, redis);
     assert.equal((await handleToken(tokenRequest(tester.inst), h.deps)).status, 200);
 
@@ -458,14 +460,18 @@ describe('POST /api/attest/token', () => {
     const plain = await register();
     assert.equal(plain.res.status, 204);
     assert.equal(regLogs.at(-1)?.testerReason, 'no_category_fallback');
-    assert.equal(JSON.parse(redis.data.get(keyRecordKey('nonprod', plain.inst.keyId))!).tier, 'tester');
+    const plainRecord = JSON.parse(redis.data.get(keyRecordKey('nonprod', plain.inst.keyId))!);
+    assert.equal(plainRecord.tier, 'tester');
+    assert.equal(plainRecord.tierReason, 'no_category_fallback');
     assert.equal((await handleToken(tokenRequest(plain.inst), h.deps)).status, 200);
 
     // Category present but not TestFlight (4 = App Store): still no tier → 403 no_entitlement.
     const store4 = await register(cbor(cmap(['apple_validation_category_01', 4])));
     assert.equal(store4.res.status, 204);
     assert.equal(regLogs.at(-1)?.testerReason, undefined);
-    assert.equal(JSON.parse(redis.data.get(keyRecordKey('nonprod', store4.inst.keyId))!).tier, undefined);
+    const store4Record = JSON.parse(redis.data.get(keyRecordKey('nonprod', store4.inst.keyId))!);
+    assert.equal(store4Record.tier, undefined);
+    assert.equal(store4Record.tierReason, undefined);
     const refused = await handleToken(tokenRequest(store4.inst), h.deps);
     assert.equal(refused.status, 403);
     assert.equal((await refused.json()).reason, 'no_entitlement');
@@ -490,14 +496,136 @@ describe('POST /api/attest/token', () => {
     assert.deepEqual(logs, [{ requestId: 'r', status: 204 }]);
   });
 
-  test('testerTier: absent → fallback (flag on only); 2 → testflight; other present values → none', () => {
+  test('testerTier: absent → fallback (flag on and fallback allowed only); 2 → testflight; other present values → none', () => {
     const on = merge(ATTEST_ENV, {});
+    const explicitOn = merge(ATTEST_ENV, { AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK: 'true' });
     const off = merge(ATTEST_ENV, { AERODJ_TTS_TESTER_VOICE_ENABLED: 'TRUE' });
+    const fallbackOff = merge(ATTEST_ENV, { AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK: 'false' });
+    const fallbackTypo = merge(ATTEST_ENV, { AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK: 'TRUE' });
     assert.equal(testerTier(undefined, on), 'no_category_fallback');
+    assert.equal(testerTier(undefined, explicitOn), 'no_category_fallback');
     assert.equal(testerTier(undefined, off), null);
+    assert.equal(testerTier(undefined, fallbackOff), null);
+    assert.equal(testerTier(undefined, fallbackTypo), null);
     assert.equal(testerTier(2, on), 'testflight_category');
     assert.equal(testerTier(2, off), 'testflight_category');
+    assert.equal(testerTier(2, fallbackOff), 'testflight_category');
+    assert.equal(testerTier(2, fallbackTypo), 'testflight_category');
     for (const c of [0, 1, 3, 4, 5, 255]) assert.equal(testerTier(c, on), null, `category ${c}`);
+  });
+
+  test('#407 N1: turning off no_category_fallback refuses fallback and legacy tester keys at /api/attest/token while category 2 keeps minting', async () => {
+    const redis = new FakeRedis(() => NOW);
+    const up = fakeUpstash({ redis });
+    const store = new RedisAttestStore({ url: 'https://upstash.invalid', token: 't' }, up.fetchImpl);
+    const register = async (extensions?: Buffer) => {
+      const challenge = issueChallenge({ key: CHALLENGE_KEY, purpose: 'attest', keyId: null, now: NOW });
+      const a = makeAttestation(CA, { clientDataHash: attestClientDataHash(challenge), extensions });
+      const body = JSON.stringify({ keyId: a.keyId.toString('base64'), attestationObject: a.attestationObject.toString('base64'), challenge, installId: crypto.randomUUID() });
+      const res = await handleRegister(
+        new Request('https://proxy.invalid/api/attest/register', { method: 'POST', body, headers: { 'x-vercel-forwarded-for': '203.0.113.11' } }),
+        { env: merge(ATTEST_ENV, {}), store, log: () => {}, now: () => NOW, requestId: () => 'r', roots: [CA.root] },
+      );
+      assert.equal(res.status, 204);
+      return { key: a.credKey, keyId: a.keyId, counter: 0 } as Install;
+    };
+
+    const cat2 = await register(cbor(cmap(['apple_validation_category_01', 2])));
+    const fallback = await register();
+    const legacy = await register();
+    // Simulate a legacy tester record written before #407 (tier: 'tester', no tierReason field).
+    const legacyKey = keyRecordKey('nonprod', legacy.keyId);
+    const legacyObj = JSON.parse(redis.data.get(legacyKey)!);
+    delete legacyObj.tierReason;
+    redis.data.set(legacyKey, JSON.stringify(legacyObj));
+
+    // While fallback is allowed (default unset or 'true'): all three mint 200.
+    const allowed = tokenHarness({}, redis);
+    assert.equal((await handleToken(tokenRequest(cat2), allowed.deps)).status, 200);
+    assert.equal((await handleToken(tokenRequest(fallback), allowed.deps)).status, 200);
+    assert.equal((await handleToken(tokenRequest(legacy), allowed.deps)).status, 200);
+
+    // Once fallback is disallowed ('false' or typo 'TRUE'): fallback & legacy get 403 no_entitlement; cat2 stays 200.
+    for (const flag of ['false', 'TRUE']) {
+      const tightened = tokenHarness({ AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK: flag }, redis);
+      assert.equal((await handleToken(tokenRequest(cat2), tightened.deps)).status, 200, `cat2 unaffected (${flag})`);
+
+      const fbRes = await handleToken(tokenRequest(fallback), tightened.deps);
+      assert.equal(fbRes.status, 403, `fallback refused (${flag})`);
+      assert.equal((await fbRes.json()).reason, 'no_entitlement');
+      assert.equal(tightened.logs.at(-1)?.detail, 'fallback_disabled');
+
+      const legRes = await handleToken(tokenRequest(legacy), tightened.deps);
+      assert.equal(legRes.status, 403, `legacy refused (${flag})`);
+      assert.equal((await legRes.json()).reason, 'no_entitlement');
+      assert.equal(tightened.logs.at(-1)?.detail, 'fallback_disabled');
+    }
+  });
+
+  test('#407 launch state: with AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK=false the register handler grants no fallback tier, the 403 hides the detail, and rollback restores minting', async () => {
+    const redis = new FakeRedis(() => NOW);
+    const up = fakeUpstash({ redis });
+    const store = new RedisAttestStore({ url: 'https://upstash.invalid', token: 't' }, up.fetchImpl);
+    const regLogs: RegisterLogEntry[] = [];
+    const register = async (fallbackFlag: string | undefined, extensions?: Buffer) => {
+      const challenge = issueChallenge({ key: CHALLENGE_KEY, purpose: 'attest', keyId: null, now: NOW });
+      const a = makeAttestation(CA, { clientDataHash: attestClientDataHash(challenge), extensions });
+      const body = JSON.stringify({ keyId: a.keyId.toString('base64'), attestationObject: a.attestationObject.toString('base64'), challenge, installId: crypto.randomUUID() });
+      const res = await handleRegister(
+        new Request('https://proxy.invalid/api/attest/register', { method: 'POST', body, headers: { 'x-vercel-forwarded-for': '203.0.113.12' } }),
+        {
+          env: merge(ATTEST_ENV, { AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK: fallbackFlag }),
+          store,
+          log: (e) => regLogs.push(e),
+          now: () => NOW,
+          requestId: () => 'r',
+          roots: [CA.root],
+        },
+      );
+      assert.equal(res.status, 204, JSON.stringify(regLogs));
+      const record = JSON.parse(redis.data.get(keyRecordKey('nonprod', a.keyId))!);
+      return { record, inst: { key: a.credKey, keyId: a.keyId, counter: 0 } as Install };
+    };
+
+    // Launch state at the handler level (testerTier alone is unit-tested above): an iOS 26
+    // no-category attestation registers (204) but gets no tier and no tier reason, and the
+    // 204 log carries no tester_reason.
+    const launchNoCat = await register('false');
+    assert.equal(launchNoCat.record.tier, undefined);
+    assert.equal(launchNoCat.record.tierReason, undefined);
+    assert.deepEqual(regLogs.at(-1), { requestId: 'r', status: 204 });
+    // A category-2 (iOS 27+ TestFlight) attestation still gets the tester tier in launch state.
+    const launchCat2 = await register('false', cbor(cmap(['apple_validation_category_01', 2])));
+    assert.equal(launchCat2.record.tier, 'tester');
+    assert.equal(launchCat2.record.tierReason, 'testflight_category');
+    assert.deepEqual(regLogs.at(-1), { requestId: 'r', status: 204, testerReason: 'testflight_category' });
+
+    // A key granted before the flip (default unset).
+    const preFlip = await register(undefined);
+    assert.equal(preFlip.record.tierReason, 'no_category_fallback');
+
+    const launch = tokenHarness({ AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK: 'false' }, redis);
+    assert.equal((await handleToken(tokenRequest(launchCat2.inst), launch.deps)).status, 200);
+    const noTier = await handleToken(tokenRequest(launchNoCat.inst), launch.deps);
+    assert.equal(noTier.status, 403);
+    assert.deepEqual(launch.logs.at(-1), { requestId: 'req-tok', status: 403, reason: 'no_entitlement' });
+    const revoked = await handleToken(tokenRequest(preFlip.inst), launch.deps);
+    assert.equal(revoked.status, 403);
+    // The log line is enum-only, and `fallback_disabled` stays in the log: the client gets
+    // the same body as any other no_entitlement 403, so it cannot tell why.
+    assert.deepEqual(launch.logs.at(-1), { requestId: 'req-tok', status: 403, reason: 'no_entitlement', detail: 'fallback_disabled' });
+    const revokedBody = await revoked.text();
+    assert.equal(revokedBody, await noTier.text());
+    assert.ok(!revokedBody.includes('fallback'), revokedBody);
+    assert.equal(revoked.headers.get('retry-after'), null);
+
+    // Rollback (unset or 'true'): the flip only refuses at mint time and deletes nothing,
+    // so the pre-flip fallback key mints again. Keys registered during launch state stay untiered.
+    for (const flag of [undefined, 'true']) {
+      const rolledBack = tokenHarness({ AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK: flag }, redis);
+      assert.equal((await handleToken(tokenRequest(preFlip.inst), rolledBack.deps)).status, 200, `rollback ${flag}`);
+      assert.equal((await handleToken(tokenRequest(launchNoCat.inst), rolledBack.deps)).status, 403, `launch-state key ${flag}`);
+    }
   });
 });
 

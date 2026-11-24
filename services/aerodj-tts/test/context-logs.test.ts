@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { defaultDeps, handleTts, type Deps, type Env, type LogEntry, type RefundLostLog, type TtsRequest } from '../src/handler.js';
-import { InMemoryUsageLimiter } from '../src/limiter.js';
+import { InMemoryUsageLimiter, LimiterStoreError, type UsageLimiter } from '../src/limiter.js';
 
 // Sentinel's #364 N1: stitching context (previousText / nextText / previousRequestIds) is the
 // neighbouring DJ lines of a break. It is forwarded upstream and never logged or echoed. Every
@@ -138,4 +138,119 @@ test('context stays out of the full console output of a real-logger request', as
     for (const key of Object.keys(JSON.parse(line))) assert.ok(ALLOWED_KEYS.has(key), `unexpected console key "${key}"`);
     for (const marker of MARKERS) assert.ok(!line.includes(marker), `console got "${marker}"`);
   }
+});
+
+// #370 follow-up: the remaining error paths reachable with context present (timeout, bracket-only
+// and non-string 400s, auth, refusals, a lost refund), each run through BOTH the injected spy
+// logger and the real production console logger. Spoken text is never logged either (README
+// "Logging and privacy": the line carries `chars`, never the text); it may only reach the body
+// on a 200, as audio. Error bodies are the generic `{ error, requestId[, reason, retryAfterSeconds] }`.
+
+const SPOKEN = 'Narwhal spoken marker, coming right up.';
+const SPOKEN_MARKERS = ['Narwhal', 'spoken marker'];
+const ALL_MARKERS = [...MARKERS, ...SPOKEN_MARKERS];
+
+/** Wraps an in-memory limiter: optional reserve/release faults, nothing else changed. */
+function faultyLimiter(opts: { reserveThrows?: Error; releaseThrows?: Error; rpm?: number; cap?: number }): UsageLimiter {
+  const inner = new InMemoryUsageLimiter({ deployment: 'production', dailyCharCap: opts.cap ?? 20_000, requestsPerMinute: opts.rpm ?? 100 });
+  return {
+    durable: false,
+    allowRequest: (b, n, l) => inner.allowRequest(b, n, l),
+    reserve: async (s, c, n) => { if (opts.reserveThrows) throw opts.reserveThrows; return inner.reserve(s, c, n); },
+    release: async (r) => { if (opts.releaseThrows) throw opts.releaseThrows; return inner.release(r); },
+  };
+}
+
+/** A fetch that never answers until the handler's timeout aborts it. */
+const hangingFetch = (async (_url: unknown, init?: RequestInit) =>
+  new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new Error(`aborted ${PREVIOUS} ${NEXT}`)));
+  })) as typeof fetch;
+
+const upstream401 = async () =>
+  new Response(JSON.stringify({ detail: { status: 'quota_exceeded', message: `${PREVIOUS} ${NEXT} ${SPOKEN}` } }), { status: 401 });
+
+const paths: Array<{
+  label: string;
+  status: number;
+  body?: Record<string, unknown>;
+  req?: Partial<TtsRequest>;
+  env?: Env;
+  deps?: Partial<Deps>;
+  fetch?: () => Promise<Response>;
+  refundLost?: boolean;
+}> = [
+  { label: '504 upstream timeout', status: 504, deps: { fetch: hangingFetch, timeoutMs: 20 } },
+  { label: '400 bracket-only text', status: 400, body: { text: '[[ ] [] ]' } },
+  { label: '400 SSML that is only brackets', status: 400, body: { format: 'ssml', text: '<speak>[ ]</speak>' } },
+  { label: '400 non-string previousText', status: 400, body: { previousText: { line: PREVIOUS } } },
+  { label: '400 non-string nextText', status: 400, body: { nextText: [NEXT] } },
+  { label: '400 over-long previousText', status: 400, body: { previousText: PREVIOUS.repeat(80) } },
+  { label: '400 too many request ids', status: 400, body: { previousRequestIds: ['ctxReqIdMarker01', 'ctxReqIdMarker02', 'ctxReqIdMarker03', 'ctxReqIdMarker04'] } },
+  { label: '400 bad voice', status: 400, body: { voiceId: 'notAllowed' } },
+  { label: '401 wrong bearer', status: 401, req: { authorization: 'Bearer wrong-token' } },
+  { label: '503 paid stop', status: 503, env: { AERODJ_TTS_PAID_STOP: 'true' } },
+  { label: '500 misconfig (no token hash)', status: 500, env: { AERODJ_TTS_TOKEN_SHA256: undefined } },
+  { label: '429 rate', status: 429, deps: { limiter: faultyLimiter({ rpm: 0 }) } },
+  { label: '429 daily cap', status: 429, deps: { limiter: faultyLimiter({ cap: 5 }) } },
+  { label: '503 store on reserve', status: 503, deps: { limiter: faultyLimiter({ reserveThrows: new LimiterStoreError(`store down ${PREVIOUS}`) }) } },
+  { label: '500 reserve fault', status: 500, deps: { limiter: faultyLimiter({ reserveThrows: new Error(`boom ${NEXT}`) }) } },
+  {
+    label: '502 upstream error + refund_lost (store)', status: 502, fetch: upstream401, refundLost: true,
+    deps: { limiter: faultyLimiter({ releaseThrows: new LimiterStoreError(`release ${PREVIOUS}`) }) },
+  },
+  {
+    label: '502 upstream error + refund_lost (timeout)', status: 502, fetch: upstream401, refundLost: true,
+    deps: { limiter: faultyLimiter({ releaseThrows: new LimiterStoreError(`release ${NEXT}`, true) }) },
+  },
+  { label: '200 SSML request with SSML context', status: 200, body: { format: 'ssml', text: `<speak>${SPOKEN}</speak>`, previousText: `<speak>${PREVIOUS}</speak>`, nextText: `<p>${NEXT}</p>` } },
+];
+
+function pathRequest(p: (typeof paths)[number]): TtsRequest {
+  const base = request({ text: SPOKEN, ...p.body });
+  return { ...base, ...p.req };
+}
+
+for (const p of paths) {
+  test(`#370 context and spoken text stay out of the spy logs and the response: ${p.label}`, async () => {
+    const h = harness(p.fetch ?? (async () => pcm()), p.env, p.deps);
+    const { result: res, lines } = await capturingConsole(() => handleTts(pathRequest(p), h.deps));
+    assert.equal(res.status, p.status);
+    assert.equal(h.logs.length, 1, 'exactly one request line');
+    assert.equal(h.refunds.length, p.refundLost ? 1 : 0, 'refund_lost fires only on a failed refund');
+    for (const [label, entries, allowed] of [['log', h.logs, ALLOWED_KEYS], ['refund_lost', h.refunds, ALLOWED_REFUND_KEYS]] as const) {
+      for (const entry of entries) {
+        for (const key of Object.keys(entry)) assert.ok(allowed.has(key), `${p.label} ${label}: unexpected key "${key}"`);
+        const serialized = JSON.stringify(entry);
+        for (const marker of ALL_MARKERS) assert.ok(!serialized.includes(marker), `${p.label} ${label}: "${marker}" logged`);
+      }
+    }
+    for (const line of lines) for (const marker of ALL_MARKERS) assert.ok(!line.includes(marker), `${p.label}: console got "${marker}"`);
+    assertResponseHasNoContext(p.label, res);
+    if (p.status !== 200) {
+      const text = JSON.stringify(res.headers) + Buffer.from(res.body as Buffer).toString('utf8');
+      for (const marker of ALL_MARKERS) assert.ok(!text.includes(marker), `${p.label}: "${marker}" in the error response`);
+      const parsed = JSON.parse(Buffer.from(res.body as Buffer).toString('utf8')) as Record<string, unknown>;
+      for (const key of Object.keys(parsed)) assert.ok(['error', 'requestId', 'reason', 'retryAfterSeconds'].includes(key), `${p.label}: body key "${key}"`);
+    }
+  });
+
+  test(`#370 context and spoken text stay out of the real console logger: ${p.label}`, async () => {
+    const h = harness(p.fetch ?? (async () => pcm()), p.env, { ...p.deps, log: defaultDeps({}).log, logRefundLost: undefined });
+    const { result: res, lines } = await capturingConsole(() => handleTts(pathRequest(p), h.deps));
+    assert.equal(res.status, p.status);
+    assert.equal(lines.length, p.refundLost ? 2 : 1, 'one request line, plus one refund_lost line on a failed refund');
+    for (const line of lines) {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      const allowed = parsed.event === 'refund_lost' ? ALLOWED_REFUND_KEYS : ALLOWED_KEYS;
+      for (const key of Object.keys(parsed)) assert.ok(allowed.has(key), `${p.label}: unexpected console key "${key}"`);
+      for (const marker of ALL_MARKERS) assert.ok(!line.includes(marker), `${p.label}: console got "${marker}"`);
+    }
+  });
+}
+
+test('#370 the 200 line counts the spoken text, never carries it', async () => {
+  const h = harness(async () => pcm());
+  assert.equal((await handleTts(request({ text: SPOKEN }), h.deps)).status, 200);
+  assert.deepEqual(h.logs, [{ requestId: 'req-1', status: 200, chars: SPOKEN.length }]);
 });
