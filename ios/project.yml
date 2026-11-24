@@ -47,6 +47,14 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_OBJC_BRIDGING_HEADER: AeroDJ/AeroDJ-Bridging-Header.h
         OTHER_LDFLAGS: "$(inherited) -lz"
+        # #600: NowPlaying.framework exists only in the iOS 27+ SDKs (Xcode 27.2: the Release archive
+        # and TestFlight). Xcode 26.6 jobs have no such framework, so an unconditional link fails
+        # (`ld: framework 'NowPlaying' not found`); there `canImport(NowPlaying)` is false and the
+        # session code is compiled out. Weak, so iOS 17-26 phones still launch an SDK-27 build.
+        "OTHER_LDFLAGS[sdk=iphoneos27*]": "$(inherited) -lz -weak_framework NowPlaying"
+        "OTHER_LDFLAGS[sdk=iphonesimulator27*]": "$(inherited) -lz -weak_framework NowPlaying"
+        "OTHER_LDFLAGS[sdk=iphoneos28*]": "$(inherited) -lz -weak_framework NowPlaying"
+        "OTHER_LDFLAGS[sdk=iphonesimulator28*]": "$(inherited) -lz -weak_framework NowPlaying"
         # Home-screen and Settings name (OnAirly, AppName.display in code). The bundle ID, target,
         # module, scheme, executable and paths keep the AeroDJ names.
         INFOPLIST_KEY_CFBundleDisplayName: OnAirly
