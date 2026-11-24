@@ -222,3 +222,80 @@ describe('Per-install bypass: verified Pro only (Orion, Nigel; Sentinel conditio
     assert.equal((await handleTts(req(A, 200), h.d)).status, 200, 'what is left of the global ceiling is still usable');
   });
 });
+
+describe('Two-subscriber shared 9,000-char global ceiling & 4-render break scripts (#284 item 3)', () => {
+  test('subscriber A exhausting the default 9,000-char global pool stops subscriber B with 429 global_daily and no cross-user leakage', async () => {
+    const h = harness({ options: { deployment: 'production' as const, dailyCharCap: DEFAULT_GLOBAL_DAILY_CHAR_CAP } });
+    const A = await subject(OTID_A);
+    const B = await subject(OTID_B);
+
+    await spend(h, A, DEFAULT_GLOBAL_DAILY_CHAR_CAP);
+    assert.equal(h.redis.get(keys(OTID_A).chars), DEFAULT_GLOBAL_DAILY_CHAR_CAP);
+    const upBefore = h.upstream();
+
+    const r = await handleTts(req(B, 120), h.d);
+    assert.equal(r.status, 429);
+    assert.equal(r.headers['Retry-After'], String(secondsUntilNextUtcDay(NOON)));
+    const payload = body(r);
+    assert.deepEqual(payload, {
+      error: 'Too many requests',
+      requestId: 'req-1',
+      reason: 'global_daily',
+      retryAfterSeconds: secondsUntilNextUtcDay(NOON),
+    });
+    // Subscriber B's Pro counters never move and no upstream call fires.
+    assert.equal(h.redis.data.has(keys(OTID_B).chars), false);
+    assert.equal(h.redis.data.has(keys(OTID_B).renders), false);
+    assert.equal(h.upstream(), upBefore);
+    // No cross-subscriber identity or usage leakage in response body or log line.
+    const serialized = JSON.stringify({ body: payload, log: h.logs.at(-1) });
+    assert.equal(serialized.includes(OTID_A), false);
+    assert.equal(serialized.includes(sha(OTID_A)), false);
+    assert.equal(serialized.includes(OTID_B), false);
+    assert.equal(serialized.includes(sha(OTID_B)), false);
+    assert.equal(serialized.includes('9000'), false);
+  });
+
+  test('representative 4-render breaks hit default 9,000 global ceiling before 40 breaks, and hit 12,000 Pro cap when global is raised', async () => {
+    // Representative 4-render break (opener 75 + color 85 + continuation 75 + closing 65 = 300 chars/break).
+    const cueLengths = [75, 85, 75, 65];
+    const breakChars = cueLengths.reduce((a, b) => a + b, 0);
+    assert.equal(breakChars, 300);
+
+    // 1) Default 9,000 global cap: 30 full 4-render breaks succeed (9,000 chars, 120 renders < 160),
+    //    31st break's first render fails closed with 429 global_daily.
+    const hDefault = harness({ options: { deployment: 'production' as const, dailyCharCap: DEFAULT_GLOBAL_DAILY_CHAR_CAP } });
+    const A = await subject(OTID_A);
+    let completedDefault = 0;
+    for (let b = 0; b < 30; b++) {
+      for (const n of cueLengths) {
+        assert.equal((await handleTts(req(A, n), hDefault.d)).status, 200);
+      }
+      completedDefault++;
+    }
+    assert.equal(completedDefault, 30);
+    assert.equal(hDefault.redis.get(keys(OTID_A).renders), 120);
+    assert.equal(hDefault.redis.get(keys(OTID_A).chars), 9_000);
+    const overDefault = await handleTts(req(A, cueLengths[0]), hDefault.d);
+    assert.equal(overDefault.status, 429);
+    assert.equal(body(overDefault).reason, 'global_daily');
+
+    // 2) Raised global cap (100k), default 12,000 Pro char cap: 40 full 4-render breaks succeed
+    //    (12,000 chars, 160 renders = exact Pro allowance), 41st break's first render fails with 429 daily_allowance.
+    const hRaised = harness();
+    const B = await subject(OTID_B);
+    let completedRaised = 0;
+    for (let b = 0; b < 40; b++) {
+      for (const n of cueLengths) {
+        assert.equal((await handleTts(req(B, n), hRaised.d)).status, 200);
+      }
+      completedRaised++;
+    }
+    assert.equal(completedRaised, 40);
+    assert.equal(hRaised.redis.get(keys(OTID_B).renders), 160);
+    assert.equal(hRaised.redis.get(keys(OTID_B).chars), 12_000);
+    const overRaised = await handleTts(req(B, cueLengths[0]), hRaised.d);
+    assert.equal(overRaised.status, 429);
+    assert.equal(body(overRaised).reason, 'daily_allowance');
+  });
+});
