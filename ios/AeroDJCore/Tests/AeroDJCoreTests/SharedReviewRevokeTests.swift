@@ -58,7 +58,7 @@ final class SharedReviewRevokeTests: XCTestCase {
 
     func testARemovedFileLoadsAsPendingAndLogsNothing() throws {
         let (store, marker, lines, _) = try savedStore(failing: [])
-        try store.removeSavedChoices()
+        store.removeSavedChoices()
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.file.path))
         XCTAssertTrue(store.load().isEmpty)
         XCTAssertTrue(relaunched(store, marker).load().isEmpty)
@@ -67,7 +67,7 @@ final class SharedReviewRevokeTests: XCTestCase {
 
     func testAFailedRemoveOverwritesTheFileWithNoRecords() throws {
         let (store, marker, lines, _) = try savedStore(failing: [.remove])
-        try store.removeSavedChoices()
+        store.removeSavedChoices()
         XCTAssertTrue(store.load().isEmpty, "this process")
         XCTAssertTrue(relaunched(store, marker).load().isEmpty, "a relaunch")
         let data = try Data(contentsOf: store.file)
@@ -77,7 +77,7 @@ final class SharedReviewRevokeTests: XCTestCase {
 
     func testAFailedRemoveAndOverwriteLeaveAMarkerSoARelaunchIgnoresTheFile() throws {
         let (store, marker, lines, _) = try savedStore(failing: [.remove, .overwrite])
-        try store.removeSavedChoices()
+        store.removeSavedChoices()
         // The old approvals are still in the file, but nothing loads them.
         XCTAssertEqual(try JSONDecoder().decode([String: SharedReviewRecord].self, from: Data(contentsOf: store.file)).count, 2)
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.revokedMarker.path))
@@ -89,7 +89,7 @@ final class SharedReviewRevokeTests: XCTestCase {
 
     func testWhenEveryStepFailsThisProcessStillIgnoresTheFile() throws {
         let (store, marker, lines, _) = try savedStore(failing: [.remove, .overwrite, .marker])
-        try store.removeSavedChoices()
+        store.removeSavedChoices()
         XCTAssertTrue(store.load().isEmpty, "the same store")
         XCTAssertTrue(relaunched(store, marker).load().isEmpty, "a new store in the same process (the sheet builds one per open)")
         assertContentFree(lines)
@@ -97,7 +97,7 @@ final class SharedReviewRevokeTests: XCTestCase {
 
     func testAVerifiedSaveEndsTheRevocationAndNewChoicesLoadBack() throws {
         let (store, marker, _, ids) = try savedStore(failing: [.remove, .overwrite])
-        try store.removeSavedChoices()
+        store.removeSavedChoices()
         try store.save([ids[0]: SharedReviewRecord(decision: .approved)])
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.revokedMarker.path))
         XCTAssertEqual(store.load(), [ids[0]: SharedReviewRecord(decision: .approved)])
@@ -106,7 +106,7 @@ final class SharedReviewRevokeTests: XCTestCase {
 
     func testAnUnverifiedSaveDoesNotEndTheRevocation() throws {
         let (store, marker, _, ids) = try savedStore(failing: [.remove, .overwrite])
-        try store.removeSavedChoices()
+        store.removeSavedChoices()
         marker.readBack = false
         XCTAssertThrowsError(try store.save([ids[0]: SharedReviewRecord(decision: .approved)]))
         XCTAssertTrue(store.load().isEmpty)
@@ -115,7 +115,7 @@ final class SharedReviewRevokeTests: XCTestCase {
 
     func testASaveThatCannotClearTheMarkerThrowsAndStillLoadsPending() throws {
         let (store, marker, _, ids) = try savedStore(failing: [.remove, .overwrite, .clearMarker])
-        try store.removeSavedChoices()
+        store.removeSavedChoices()
         XCTAssertThrowsError(try store.save([ids[0]: SharedReviewRecord(decision: .approved)]))
         XCTAssertTrue(relaunched(store, marker).load().isEmpty, "fails closed: pending")
     }
