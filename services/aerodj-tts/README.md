@@ -425,7 +425,8 @@ More than one of `Authorization`, `X-OnAirly-Install-Token`, `X-OnAirly-Assertio
 
 ## `GET /api/flags` (public app flags, #525)
 
-One small JSON object the app reads as remote kill switches: `{"djAirPlayLongForm": true}`.
+One small JSON object the app reads as remote kill switches:
+`{"djAirPlayLongForm": true, "onAirlyNowPlayingSession": true}`.
 No auth, no store, no upstream call; nothing from the request is read or logged, and the answer
 depends only on env (`Cache-Control: no-store`). `GET` and `HEAD` only (other methods: 405).
 The app fetches it only at its first AirPlay detection of a launch (the launch probe, or the first
@@ -433,6 +434,14 @@ DJ gap break on an AirPlay route), at most once per launch, with a bare HTTPS GE
 cookie or identifier); a listener off AirPlay never calls it. The app keeps the value in memory
 only: every launch starts on, so a kill or un-kill lands on the next launch. A failed fetch keeps
 that launch's value (fail open), and only a fetched `false` turns the AirPlay path off.
+
+`onAirlyNowPlayingSession` (#539 follow-up, #600) is the kill switch for the iOS 27 OnAirly
+lock-screen Now Playing session. The app fetches it once per launch at startup, only on iOS 27
+and later, with the same bare GET. Unlike `djAirPlayLongForm`, the app caches the answer (one Bool
+in UserDefaults) and each launch uses the value cached by an earlier launch; a fetch only updates
+the cache for the next launch, so a change takes two launches to reach a phone (one to fetch, the
+next to use it). No cached value, a missing key, a failed fetch or being offline means on; only a
+fetched `false` turns it off, and a later `true` or a response without the key turns it back on.
 
 ## Logging and privacy
 
@@ -474,6 +483,7 @@ either (`test/install-token.test.ts`); refusals log enum reasons only.
 | `AERODJ_TTS_ENROLL_DAILY_CAP` | no | Verified enrollments per UTC day overall (default 20, owner decision 2026-10-29). Plain integer 1-100000; anything else uses the default. |
 | `AERODJ_TTS_TESTER_VOICE_ENABLED` | no | Tester voice kill switch (#378). Only exactly `true` (and `AERODJ_TTS_ATTEST_ENABLED=true`) enables `/api/attest/token` and install tokens on `/api/tts`; anything else (`TRUE`, `1`, empty) is off: 503 `disabled`. **Leave unset until the owner OKs it at deploy.** |
 | `AERODJ_DJ_AIRPLAY_LONGFORM` | no | iOS #525 **kill switch**, served by `GET /api/flags` as `djAirPlayLongForm`. **On by default:** unset or any value except exactly `false` (including `FALSE`, `0`, empty) answers `true`. Set exactly `false` to turn off the DJ voice's long-form AirPlay gap-break session if the Build 10 hold comes back; unset (or any other value) turns it back on. |
+| `AERODJ_ONAIRLY_NOW_PLAYING_SESSION` | no | iOS #600 **kill switch**, served by `GET /api/flags` as `onAirlyNowPlayingSession`. **On by default:** unset or any value except exactly `false` answers `true`. Set exactly `false` to turn off the iOS 27 OnAirly lock-screen Now Playing session (the lock screen falls back to MusicKit's own card). The app caches it at one launch and applies it at the next. |
 | `AERODJ_TTS_INSTALL_TOKEN_HMAC_KEY` | before tester voice is enabled | Server-only. Dedicated key for install tokens, at least 32 bytes, **created by the owner**, pasted directly into Vercel (Production). Must differ from the challenge key; missing, short or equal → 500 `misconfig` on the install paths. Rotating it invalidates every live token (30 min max). |
 | `AERODJ_TTS_TESTER_POOL_DAILY_CHAR_CAP` | no | Spoken chars per UTC day that all TestFlight installs together may use. Default 6000. Always clamped to global − owner cap, so testers can never spend the owner share; nothing left → install requests 500 `misconfig`. |
 | `AERODJ_TTS_ENROLL_DEVICE_DAILY_CAP` | no | Verified enrollments per UTC day per device bucket (keyed hash of the client network; see above) (default 3, owner decision 2026-10-29). Plain integer 1-1000; anything else uses the default. |

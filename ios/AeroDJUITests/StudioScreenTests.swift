@@ -22,14 +22,15 @@ final class StudioScreenTests: XCTestCase {
                         restoreStationID: String? = nil,
                         musicAuthStatus: String? = nil,
                         orientation: UIDeviceOrientation = .portrait,
-                        splitExample: String? = nil) -> XCUIApplication {
+                        splitExample: String? = nil, splitPre499Guard: Bool = false) -> XCUIApplication {
         // Probe the layout before this test's own launch: the probe launches and terminates
         // its own app, so it must never run while the test's app is up.
         _ = isOpenLayout
         return startApp(segment: segment, scenario: scenario, largeText: largeText, dark: dark,
                         contentSize: contentSize, reduceMotion: reduceMotion,
                         restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus,
-                        orientation: orientation, splitExample: splitExample)
+                        orientation: orientation, splitExample: splitExample,
+                        splitPre499Guard: splitPre499Guard)
     }
 
     @MainActor
@@ -38,7 +39,7 @@ final class StudioScreenTests: XCTestCase {
                           restoreStationID: String? = nil,
                           musicAuthStatus: String? = nil,
                           orientation: UIDeviceOrientation = .portrait,
-                          splitExample: String? = nil) -> XCUIApplication {
+                          splitExample: String? = nil, splitPre499Guard: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
                                "-AeroDJResetContinuity", "YES"]
@@ -60,6 +61,10 @@ final class StudioScreenTests: XCTestCase {
         }
         if let splitExample {
             app.launchArguments += ["-AeroDJSplitExample", splitExample]
+        }
+        // DEBUG capture only (#574 review): the "before" shot uses the pre-#499 guard.
+        if splitPre499Guard {
+            app.launchArguments += ["-AeroDJSplitPre499Guard", "YES"]
         }
         XCUIDevice.shared.orientation = orientation
         app.launchAfterLeftoverExits()
@@ -2056,6 +2061,99 @@ final class StudioScreenTests: XCTestCase {
         for width in widths {
             try assertSplit(width)
         }
+    }
+
+    /// #574 review shots: the Duo in landscape (820 × 640) split into 320, 410 and 500 pt
+    /// slices, outer edge leading (28 pt) and inner edge 0. "before" is the pre-#499 guard,
+    /// so the bar stays on the preferred (inner) side; "after" is the shipped decision.
+    /// Shots for the owner. The after shot asserts the decision readout, the same one
+    /// `testSplitViewKeepsEveryScreenInsideTheWindow` reads, and (#574 rework, owner: no compact
+    /// player here) that Now Playing keeps Rail D: the reskin with its rail on the trailing (right)
+    /// edge as on the closed Duo (owner, Nov 23), the column clear of the 28 pt inset, with
+    /// Play/Pause on the rail.
+    @MainActor
+    func testDuoLandscapeSplitSlicesBeforeAndAfter() throws {
+        try XCTSkipUnless(isOpenLayout, "Split widths need an iPad-size simulator window")
+        let slices: [(example: String, width: CGFloat, span: String)] = [
+            ("duoLandscape320", 320, "compactNarrow"),
+            ("duoLandscape410", 410, "compactNarrow"),
+            ("duoLandscape500", 500, "half"),
+        ]
+        for slice in slices {
+            for before in [true, false] {
+                try shootDuoLandscapeSlice(slice.example, width: slice.width, span: slice.span, before: before)
+            }
+        }
+    }
+
+    @MainActor
+    private func shootDuoLandscapeSlice(_ example: String, width: CGFloat, span: String, before: Bool) throws {
+        let height: CGFloat = 640
+        let app = launch(scenario: "splitView", splitExample: example, splitPre499Guard: before)
+        defer { app.terminate() }
+        let any = app.descendants(matching: .any)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "no window")
+        if window.frame.width + 8 < width || window.frame.height + 8 < height {
+            throw XCTSkip("window \(window.frame) cannot hold \(width) × \(height)")
+        }
+        XCTAssertTrue(any["split.container"].waitForExistence(timeout: 15), app.debugDescription)
+        let suffix = before ? "before" : "after"
+        let base = "split-duo-landscape-\(Int(width))x\(Int(height))"
+        // Now Playing is the capture's first screen. Wait for the transport, never a timer;
+        // a miss still saves the shot rather than failing the job.
+        _ = app.buttons["transport.playPause"].waitForExistence(timeout: 8)
+        if !before {
+            let decision = any["split.decision"]
+            let matched = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label == %@", "\(span) leading"), object: decision)
+            XCTAssertEqual(XCTWaiter().wait(for: [matched], timeout: 8), .completed,
+                           "\(example) after: decision \(decision.label), expected \(span) leading")
+            try assertDuoLandscapeSliceKeepsRailD(app, example: example, leading: 28)
+        }
+        save(app, "\(base)-\(suffix)")
+        let stations = app.buttons["split.show.stations"]
+        if stations.waitForExistence(timeout: 5) {
+            stations.tap()
+            _ = app.buttons["stations.settings"].waitForExistence(timeout: 8)
+            save(app, "\(base)-stations-\(suffix)")
+        }
+    }
+
+    /// #574 rework: the slice's Now Playing is Rail D (`folded.outer` + `folded.closedRail`), not
+    /// the phone column, with the rail on the trailing (right) edge as on the closed Duo (owner,
+    /// Nov 23: "flip it back to the right"), and the whole reskin inside the host's inset.
+    @MainActor
+    private func assertDuoLandscapeSliceKeepsRailD(_ app: XCUIApplication, example: String,
+                                                   leading: CGFloat) throws {
+        let any = app.descendants(matching: .any)
+        let container = any["split.container"]
+        XCTAssertTrue(any["folded.outer"].waitForExistence(timeout: 8),
+                      "\(example): Rail D reskin, not the phone column\n\(app.debugDescription)")
+        let rail = any["folded.closedRail"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 5), "\(example): Rail D's rail")
+        let box = container.frame
+        try assertOuterEdge(rail, box: box, edge: "trailing", name: "\(example) rail")
+        if let frame = settledFrame(of: rail, "\(example) rail") {
+            XCTAssertGreaterThanOrEqual(frame.minX, box.minX + leading - 2,
+                                        "\(example): rail \(frame) under the \(leading) pt inset of \(box)")
+            XCTAssertTrue(box.insetBy(dx: -2, dy: -2).contains(frame), "\(example): rail \(frame) clipped by \(box)")
+            // Flush right like the closed Duo: within the rail's trailing inset plus slack.
+            XCTAssertLessThanOrEqual(box.maxX - frame.maxX, 24,
+                                     "\(example): rail \(frame) is not at the trailing edge of \(box)")
+            let title = any["folded.titleBlock"]
+            if title.exists {
+                XCTAssertLessThanOrEqual(title.frame.maxX, frame.minX + 2,
+                                         "\(example): title \(title.frame) is not left of the rail \(frame)")
+                XCTAssertGreaterThanOrEqual(title.frame.minX, box.minX + leading - 2,
+                                            "\(example): title \(title.frame) under the \(leading) pt inset")
+            }
+        }
+        let play = rail.buttons["transport.playPause"]
+        if play.waitForExistence(timeout: 5) {
+            try assertInside(play, box: box, leading: leading, trailing: 0, name: "\(example) play")
+        }
+        XCTAssertTrue(any["folded.titleBlock"].exists, "\(example): the title beside the rail")
     }
 
     @MainActor
