@@ -134,15 +134,3 @@ public enum ArrangementPaneLayout {
             edgeInset: edge, gutter: gap)
     }
 }
-
-extension ArrangementPaneLayout.Decision {
-    /// #512's seam, `AppWideLayout.Input.arrangement` (agreed mapping, -Nova): `.unchanged`
-    /// is nil (today's screen), `.split` is `.twoPane`, `.singleColumn` is `.single`.
-    public var appWideArrangement: AppWideLayout.Arrangement? {
-        switch self {
-        case .unchanged: nil
-        case .split: .twoPane
-        case .singleColumn: .single
-        }
-    }
-}
