@@ -1148,41 +1148,53 @@ jobs:
         working-directory: ios
       - name: Pick the iPhone Duo simulator on iOS 27.2
         # Image readme: "iPhone Duo" is installed on iOS 27.2 (and also on 27.1).
-        # This step accepts only an available device whose name is exactly
-        # "iPhone Duo" on com.apple.CoreSimulator.SimRuntime.iOS-27-2, with that
-        # runtime's version 27.2. Zero matches, two matches, a different OS, or a
-        # longer name all fail. There is no fallback device.
+        # The image ships two available iOS 27.2 runtimes, and the Duo sits on the
+        # one that is not com.apple.CoreSimulator.SimRuntime.iOS-27-2 (run 45321936246).
+        # So this step looks across every available iOS runtime whose version is 27.2
+        # and accepts only exactly one available device named exactly "iPhone Duo".
+        # Zero matches, two matches, a different OS, or a longer name all fail.
+        # There is no fallback device. -Nova
         run: |
           set -euo pipefail
-          RUNTIME=com.apple.CoreSimulator.SimRuntime.iOS-27-2
           NAME='iPhone Duo'
           DEVICES_JSON="$(xcrun simctl list devices available -j)"
           RUNTIMES_JSON="$(xcrun simctl list runtimes -j)"
-          VERSION="$(printf '%s' "$RUNTIMES_JSON" | jq -r --arg rt "$RUNTIME" '
-            [.runtimes[] | select(.identifier == $rt) | select(.isAvailable != false)]
-            | if length == 1 then .[0].version else empty end')"
-          case "$VERSION" in
-            27.2|27.2.*) ;;
-            *)
-              echo "::error::iOS 27.2 runtime $RUNTIME is not available (version=${VERSION:-missing}). Not substituting another runtime."
-              echo "Runtimes:"
-              xcrun simctl list runtimes
-              exit 1
-              ;;
-          esac
-          PICK="$(printf '%s' "$DEVICES_JSON" | jq -r --arg rt "$RUNTIME" --arg name "$NAME" '
-            [.devices[$rt] // [] | .[]
+          RUNTIME_IDS="$(printf '%s' "$RUNTIMES_JSON" | jq -c '
+            [.runtimes[]
+              | select(.isAvailable != false)
+              | select((.platform // "iOS") == "iOS")
+              | select(.identifier | startswith("com.apple.CoreSimulator.SimRuntime.iOS-"))
+              | select(.version == "27.2" or (.version | startswith("27.2.")))
+              | .identifier]')"
+          if [ "$(printf '%s' "$RUNTIME_IDS" | jq 'length')" -eq 0 ]; then
+            echo "::error::No available iOS 27.2 runtime. Not substituting another runtime."
+            echo "Runtimes:"
+            xcrun simctl list runtimes
+            exit 1
+          fi
+          echo "iOS 27.2 runtimes: $RUNTIME_IDS"
+          MATCHES="$(printf '%s' "$DEVICES_JSON" | jq -c --argjson rts "$RUNTIME_IDS" --arg name "$NAME" '
+            [.devices | to_entries[]
+              | select(.key as $k | $rts | index($k))
+              | .key as $rt
+              | .value[]
               | select(.name == $name)
-              | select(.isAvailable != false)]
-            | if length == 1 then .[0] | "\(.udid)\t\(.name)\t\(.deviceTypeIdentifier // "")" else empty end')"
-          if [ -z "$PICK" ]; then
-            COUNT="$(printf '%s' "$DEVICES_JSON" | jq -r --arg rt "$RUNTIME" --arg name "$NAME" '
-              [.devices[$rt] // [] | .[] | select(.name == $name) | select(.isAvailable != false)] | length')"
-            echo "::error::Need exactly one available '$NAME' on $RUNTIME (found ${COUNT:-0}). Not substituting another simulator."
+              | select(.isAvailable != false)
+              | {udid, name, deviceType: (.deviceTypeIdentifier // ""), runtime: $rt}]')"
+          COUNT="$(printf '%s' "$MATCHES" | jq 'length')"
+          if [ "$COUNT" -ne 1 ]; then
+            echo "::error::Need exactly one available '$NAME' on an iOS 27.2 runtime (found $COUNT). Not substituting another simulator."
             echo "Available devices:"
             xcrun simctl list devices available
             exit 1
           fi
+          RUNTIME="$(printf '%s' "$MATCHES" | jq -r '.[0].runtime')"
+          VERSION="$(printf '%s' "$RUNTIMES_JSON" | jq -r --arg rt "$RUNTIME" '.runtimes[] | select(.identifier == $rt) | .version')"
+          case "$VERSION" in
+            27.2|27.2.*) ;;
+            *) echo "::error::Picked runtime $RUNTIME is version ${VERSION:-missing}, not 27.2."; exit 1 ;;
+          esac
+          PICK="$(printf '%s' "$MATCHES" | jq -r '.[0] | "\(.udid)\t\(.name)\t\(.deviceType)"')"
           IFS=$'\t' read -r UDID PICKED_NAME DEVICE_TYPE <<<"$PICK"
           if [ "$PICKED_NAME" != "$NAME" ] || [ -z "$UDID" ]; then
             echo "::error::Picker returned name='$PICKED_NAME' udid='$UDID'; expected '$NAME'."
