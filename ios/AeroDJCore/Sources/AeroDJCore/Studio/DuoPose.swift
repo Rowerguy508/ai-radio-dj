@@ -7,10 +7,11 @@ import Foundation
 // `nonisolated func onHingeChange(isEnabled: Bool = true, _ action: @escaping (DeviceHingeContext, DeviceHingeContext) -> Void) -> some View`.
 // It hands over a `DeviceHingeContext` whose optional `hinge` has a `status`
 // (.closed / .partiallyOpen / .fullyOpen) and an `angle`. That API is
-// iOS 27.1 and needs the Xcode 27 SDK. Self-hosted required jobs in `ios.yml` still
-// pin Xcode 26.6 and Swift 6.3, so those builds compile the hinge out under
-// `#if compiler(>=6.4.2)`. The Release archive job selects Xcode 27.2 with the
-// iOS 27.2 SDK, which compiles the hinge path; it still runs only under
+// iOS 27.1 and needs the Xcode 27 SDK. In `ios.yml` only the Release archive job pins
+// Xcode 27.2 (iOS 27.2 SDK), so it is the one required job that compiles the hinge path,
+// and it runs no tests. The other macOS jobs build with the runner's default `Xcode.app`
+// (on the self-hosted Mac that is checked to be Xcode 26.6 / Swift 6.3) and compile the
+// hinge out under `#if compiler(>=6.4.2)`. At runtime the hinge path still runs only under
 // `if #available(iOS 27.1, *)`. The app hands this file a plain `DuoHingeSample`.
 //
 // Everything here is pure and UI-free, so the decision is driven by Linux tests and by the
