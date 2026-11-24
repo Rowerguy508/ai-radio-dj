@@ -211,7 +211,19 @@ struct FoldedPlayer: View {
                     // rule to hide the system back and move ⋯ in. Other states keep compactBody.
                     if FoldedOuterLayout.usesOuterReskin(containerWidth: Double(geo.size.width),
                                                          showsTrack: FoldedOuterLayout.reskinShows(content)) {
-                        foldedOuterBody(in: geo.size)
+                        // Build 58 (-Nova): on physical closed Duo (`safeAreaInsets.trailing > 0`),
+                        // extend into the trailing status column so the rail sits flush on the right
+                        // edge directly below the status cluster (matching `closed-duo-stations`).
+                        // On iPhone (`safeAreaInsets.trailing == 0`), `extend == 0` (byte-identical).
+                        let trailingUnsafe = Double(geo.safeAreaInsets.trailing)
+                        if trailingUnsafe > 0.5 {
+                            let extend = CGFloat(trailingUnsafe)
+                            let outerSize = CGSize(width: geo.size.width + extend, height: geo.size.height)
+                            foldedOuterBody(in: outerSize, trailingUnsafeWidth: trailingUnsafe)
+                                .padding(.trailing, -extend)
+                        } else {
+                            foldedOuterBody(in: geo.size)
+                        }
                     } else {
                         compactBody(in: geo.size)
                     }
@@ -1303,11 +1315,13 @@ extension FoldedPlayer {
     /// horizontal scrubber is gone; the header (Back, station) and the column sit beside the
     /// rail, and the freed row goes to a bigger title (40 / 17).
     /// The Duo landscape split slices (#574) draw this too, rail on the trailing side.
-    private func foldedOuterBody(in size: CGSize) -> some View {
+    private func foldedOuterBody(in size: CGSize, trailingUnsafeWidth: Double = 0) -> some View {
         let inset = CGFloat(FoldedOuterLayout.contentInset)
         let accessibilityText = typeSize.isAccessibilitySize
         let art = outerArtSide(in: size)
         let railInset = CGFloat(RailDLayout.closedVerticalInset)
+        let railTop = CGFloat(DuoStationsLayout.railTopInset(trailingUnsafeWidth: trailingUnsafeWidth))
+        let railTrailing = CGFloat(DuoStationsLayout.closedRailTrailingInset(trailingUnsafeWidth: trailingUnsafeWidth))
         return HStack(alignment: .top, spacing: 0) {
             VStack(spacing: 0) {
                 FoldedOuterHeader(heading: heading, dismiss: { dismiss() })
@@ -1350,8 +1364,9 @@ extension FoldedPlayer {
                     Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
                 }
             }
-            .padding(.vertical, railInset)
-            .padding(.trailing, CGFloat(RailDLayout.trailingInset))
+            .padding(.top, railTop)
+            .padding(.bottom, railInset)
+            .padding(.trailing, railTrailing)
             .accessibilitySortPriority(0)
         }
         .frame(width: size.width, height: size.height)
@@ -2425,10 +2440,10 @@ private struct DuoUpNextList: View {
     }
 
     private var lines: [DuoUpNextTimeline.Line] {
-        guard let track else { return [] }
-        return DuoUpNextTimeline.lines(
-            now: .init(title: track.title, artist: track.artistName),
-            readyBreak: readyBreak,
+        guard track != nil else { return [] }
+        // Build 58 (-Nova): only upcoming songs; the header + DJ pill above already show the
+        // currently playing song and any pending DJ break.
+        return DuoUpNextTimeline.upcomingLines(
             queued: queued.map { .init(title: $0.title, artist: $0.artistName) })
     }
 
@@ -2436,19 +2451,26 @@ private struct DuoUpNextList: View {
         let rows = lines
         return Button(action: onOpen) {
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, line in
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(line.title)
-                            .font(.subheadline.weight(line.role == .nowPlaying ? .semibold : .regular))
-                            .lineLimit(1)
-                        if !line.detail.isEmpty {
-                            Text(line.detail)
-                                .font(.caption)
-                                .foregroundStyle(FoldedStyle.secondaryInk)
+                if rows.isEmpty {
+                    Text("Up next")
+                        .font(.subheadline)
+                        .foregroundStyle(FoldedStyle.secondaryInk)
+                        .lineLimit(1)
+                } else {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, line in
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(line.title)
+                                .font(.subheadline.weight(.regular))
                                 .lineLimit(1)
+                            if !line.detail.isEmpty {
+                                Text(line.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(FoldedStyle.secondaryInk)
+                                    .lineLimit(1)
+                            }
                         }
+                        .accessibilityIdentifier("duo.upNext.\(line.role.rawValue)")
                     }
-                    .accessibilityIdentifier("duo.upNext.\(line.role.rawValue)")
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -2459,7 +2481,7 @@ private struct DuoUpNextList: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(rows.map { $0.detail.isEmpty ? $0.title : "\($0.title), \($0.detail)" }.joined(separator: ". "))
+        .accessibilityLabel(rows.isEmpty ? "Up next" : rows.map { $0.detail.isEmpty ? $0.title : "\($0.title), \($0.detail)" }.joined(separator: ". "))
         .accessibilityHint("Opens the queue")
         .accessibilityIdentifier("duo.upNext")
     }

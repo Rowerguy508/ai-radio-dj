@@ -153,6 +153,20 @@ final class StationQueueFeedTests: XCTestCase {
         XCTAssertNil(feed.takeForBoundary(active: new, playbackMayStart: true), "now the playing station")
     }
 
+    /// #304 R1 (-Atlas): the read-only check the background queue tail asks on every poll.
+    func testStationSwitchPendingIsReadOnlyAndMatchesTheBoundary() async throws {
+        let feed = makeFeed(QueueFakeCatalog())
+        XCTAssertFalse(feed.stationSwitchPending(active: new), "no queue start reported: never a switch")
+        XCTAssertNil(feed.playingKey, "the check does not adopt a key")
+        feed.queueStarted(for: old)
+        XCTAssertFalse(feed.stationSwitchPending(active: old), "same station")
+        XCTAssertTrue(feed.stationSwitchPending(active: new))
+        XCTAssertEqual(feed.stagedCount, nil, "the check builds nothing")
+        _ = await feed.prepare(new)
+        XCTAssertNotNil(feed.takeForBoundary(active: new, playbackMayStart: true))
+        XCTAssertFalse(feed.stationSwitchPending(active: new), "now the playing station")
+    }
+
     func testOrderIsDeterministicAcrossFeeds() async throws {
         let one = makeFeed(QueueFakeCatalog())
         let two = makeFeed(QueueFakeCatalog())
@@ -1377,6 +1391,24 @@ final class StationStartInstantTests: XCTestCase {
         XCTAssertNil(again, "only the first boundary")
     }
 
+    /// #304 R1 (-Atlas): a begun intro arms the first boundary, so the player keeps one song for it.
+    func testABegunIntroIsReportedUntilItsBoundaryTakesIt() async throws {
+        let (model, feed, player) = await rig()
+        let s = starter(feed)
+        let intro = FakeIntro()
+        s.intro = intro
+        s.airIntro = { _ in }
+        XCTAssertFalse(s.hasBegunIntro)
+        guard case .started = await open(s, model, player, station([seed(.artist, "a")]),
+                                         facts: StationIntroFacts(id: "a", name: "A")) else { return XCTFail() }
+        await waitFor { !intro.begins.isEmpty }
+        XCTAssertTrue(s.hasBegunIntro)
+        XCTAssertTrue(s.hasBegunIntro, "reading it takes nothing")
+        XCTAssertEqual(intro.takes, [])
+        _ = await s.songBoundary(queueEpoch: player.epoch)
+        XCTAssertFalse(s.hasBegunIntro, "the boundary took it")
+    }
+
     func testAnIntroNotReadyAtTheBoundaryIsSkippedAndAQueueChangeDropsIt() async throws {
         let (model, feed, player) = await rig()
         let s = starter(feed)
@@ -1748,4 +1780,369 @@ final class StationSkipFillTests: XCTestCase {
 @MainActor
 private final class PollCounter {
     var count = 0
+}
+
+/// #217 (-Atlas): deterministic Core regressions proving an abandoned created-station start
+/// cannot start playback or DJ narration after a built-in tap, newer created tap, explicit
+/// pause/stop, or restore, and verifying app-layer pause/external-queue invalidation wiring.
+@MainActor
+final class CreatedStationSupersession217Tests: XCTestCase {
+    private let createdConfig = StationConfiguration(
+        seeds: [StationSeed(kind: .artist, catalogID: "a1", name: "Artist One")])
+    private let secondCreatedConfig = StationConfiguration(
+        seeds: [StationSeed(kind: .artist, catalogID: "a2", name: "Artist Two")])
+
+    @MainActor private final class FakePlayer {
+        var starts: [[String]] = []
+        var epoch = 0
+        var playingStation: StationQueueKey?
+        var transport: TransportState = .stopped
+        var nothingQueued: Bool { starts.isEmpty }
+        func play(_ items: [String], station: StationQueueKey?) {
+            epoch += 1
+            starts.append(items)
+            playingStation = station
+            transport = .playing
+        }
+    }
+
+    @MainActor private final class FakeIntro: StationIntroHook {
+        var begins: [String] = []
+        var takes: [String] = []
+        var ready: PreparedDJBreak?
+        func beginStationIntro(_ facts: StationIntroFacts) {
+            begins.append(facts.id)
+        }
+        func takeStationIntroAtSongStart(id: String) async -> PreparedDJBreak? {
+            takes.append(id)
+            return ready
+        }
+    }
+
+    private func makeStation(active: StationConfiguration = .default) async -> StationConfigurationModel {
+        let model = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: active))),
+            consent: StaticIntegrationConsent([:]))
+        await model.load()
+        return model
+    }
+
+    private func makeFeed(_ catalog: QueueFakeCatalog) -> StationQueueFeed<String> {
+        StationQueueFeed<String>(
+            resolver: CatalogStationSeedResolver(catalog: catalog),
+            materialize: { picks in picks.map(\.id) },
+            options: .init(limit: 5, seedSource: .perDay),
+            day: { 1 })
+    }
+
+    private func makeStarter(_ feed: StationQueueFeed<String>, intro: FakeIntro,
+                             aired: @escaping @MainActor () -> Void = {}) -> CreatedStationStarter<String> {
+        let starter = CreatedStationStarter(
+            feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1),
+            fillTimeout: .seconds(5), introDelay: .milliseconds(1))
+        starter.intro = intro
+        starter.airIntro = { _ in aired() }
+        return starter
+    }
+
+    private func introFacts(id: UUID, name: String) -> StationIntroFacts {
+        StationIntroFacts(id: id.uuidString, name: name, seeds: createdConfig.seeds)
+    }
+
+    // #217: a built-in tap during authorization invalidates the created tap before apply, start,
+    // or DJ intro narration.
+    func testBuiltInTapDuringAuthorizationCancelsBeforeApplyStartOrIntro() async throws {
+        let model = await makeStation(active: .default)
+        let feed = makeFeed(QueueFakeCatalog())
+        feed.follow(model)
+        let player = FakePlayer()
+        let intro = FakeIntro()
+        var aired = 0
+        let starter = makeStarter(feed, intro: intro, aired: { aired += 1 })
+        let createdID = UUID()
+        var applies = 0
+
+        let outcome = await starter.open(
+            .userTap, recipeID: createdID, introFacts: introFacts(id: createdID, name: "Created"),
+            authorize: {
+                // Built-in tap arrives mid-authorization and invalidates before its own await.
+                _ = await starter.open(
+                    .userTap, recipeID: UUID(), available: false,
+                    authorize: {}, apply: { false }, active: { model.active },
+                    nothingQueued: { player.nothingQueued },
+                    start: { player.play($0, station: StationQueueKey(model.active)) })
+            },
+            apply: { applies += 1; return true },
+            active: { model.active },
+            nothingQueued: { player.nothingQueued },
+            playingStation: { player.playingStation },
+            queueEpoch: { player.epoch },
+            transport: { player.transport },
+            start: { player.play($0, station: StationQueueKey(model.active)) })
+
+        XCTAssertEqual(outcome, .notStarted(.superseded))
+        XCTAssertEqual(applies, 0, "the superseded tap must not apply its recipe")
+        XCTAssertEqual(player.starts, [], "no playback may start")
+        try await Task.sleep(nanoseconds: 15_000_000)
+        XCTAssertEqual(intro.begins, [], "no DJ narration may begin")
+        XCTAssertEqual(aired, 0)
+    }
+
+    // #217: a built-in tap during apply invalidates the created tap before it becomes current,
+    // starts playback, or schedules DJ narration.
+    func testBuiltInTapDuringApplyCancelsBeforeStartOrIntro() async throws {
+        let model = await makeStation(active: .default)
+        let feed = makeFeed(QueueFakeCatalog())
+        feed.follow(model)
+        let player = FakePlayer()
+        let intro = FakeIntro()
+        var aired = 0
+        let starter = makeStarter(feed, intro: intro, aired: { aired += 1 })
+        let createdID = UUID()
+
+        let outcome = await starter.open(
+            .userTap, recipeID: createdID, introFacts: introFacts(id: createdID, name: "Created"),
+            authorize: {},
+            apply: {
+                await model.applyRecipe(StationRecipe(name: "Created", configuration: self.createdConfig))
+                starter.cancelPending()
+                return true
+            },
+            active: { model.active },
+            nothingQueued: { player.nothingQueued },
+            playingStation: { player.playingStation },
+            queueEpoch: { player.epoch },
+            transport: { player.transport },
+            start: { player.play($0, station: StationQueueKey(model.active)) })
+
+        XCTAssertEqual(outcome, .notStarted(.superseded))
+        XCTAssertNil(starter.currentRecipeID, "the cancelled tap must not become current")
+        XCTAssertEqual(player.starts, [], "no playback may start")
+        try await Task.sleep(nanoseconds: 15_000_000)
+        XCTAssertEqual(intro.begins, [], "no DJ narration may begin")
+        XCTAssertEqual(aired, 0)
+    }
+
+    // #217: created tap waits for queue -> built-in tap -> created queue becomes ready ->
+    // no playback and no DJ narration; restore starts nothing; a new legitimate tap starts once.
+    func testBuiltInTapWhileCreatedStationWaitsPreventsPlaybackAndNarrationUntilNewTap() async throws {
+        let catalog = QueueFakeCatalog()
+        await catalog.holdAllCalls()
+        let model = await makeStation(active: .default)
+        let feed = makeFeed(catalog)
+        feed.follow(model)
+        let player = FakePlayer()
+        let intro = FakeIntro()
+        var aired = 0
+        let starter = makeStarter(feed, intro: intro, aired: { aired += 1 })
+        let createdID = UUID()
+
+        let waitingTap = Task {
+            await starter.open(
+                .userTap, recipeID: createdID, introFacts: self.introFacts(id: createdID, name: "Created"),
+                authorize: {},
+                apply: {
+                    await model.applyRecipe(StationRecipe(name: "Created", configuration: self.createdConfig))
+                    return true
+                },
+                active: { model.active },
+                nothingQueued: { player.nothingQueued },
+                playingStation: { player.playingStation },
+                queueEpoch: { player.epoch },
+                transport: { player.transport },
+                start: { player.play($0, station: StationQueueKey(model.active)) })
+        }
+
+        for _ in 0..<500 {
+            if await catalog.isHolding { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let isHolding = await catalog.isHolding
+        XCTAssertTrue(isHolding, "the created tap is waiting on the catalog build")
+
+        // Built-in tap supersedes the waiting created tap before its own authorization await.
+        let builtInOutcome = await starter.open(
+            .userTap, recipeID: UUID(), available: false,
+            authorize: {}, apply: { false }, active: { model.active },
+            nothingQueued: { player.nothingQueued },
+            start: { player.play($0, station: StationQueueKey(model.active)) })
+        XCTAssertEqual(builtInOutcome, .notStarted(.notAvailableYet))
+
+        // Release the catalog so the abandoned created station's queue finishes building.
+        await catalog.release()
+        let abandonedOutcome = await waitingTap.value
+        XCTAssertEqual(abandonedOutcome, .notStarted(.superseded))
+
+        for _ in 0..<500 {
+            if feed.stagedKey != nil { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertNotNil(feed.stagedKey, "the abandoned created queue became ready")
+        XCTAssertEqual(player.starts, [], "late created queue must not start playback")
+        try await Task.sleep(nanoseconds: 15_000_000)
+        XCTAssertEqual(intro.begins, [], "late created queue must not start DJ narration")
+        XCTAssertEqual(aired, 0)
+
+        // Restore starts nothing.
+        let restoreOutcome = await starter.open(
+            .restore, recipeID: createdID, introFacts: introFacts(id: createdID, name: "Created"),
+            authorize: { XCTFail("restore must not authorize") },
+            apply: { XCTFail("restore must not apply"); return false },
+            active: { model.active },
+            nothingQueued: { player.nothingQueued },
+            start: { player.play($0, station: StationQueueKey(model.active)) })
+        XCTAssertEqual(restoreOutcome, .restoredOnly)
+        XCTAssertEqual(player.starts, [], "restore never starts playback")
+
+        // A new legitimate tap on the created station starts it once.
+        let freshOutcome = await starter.open(
+            .userTap, recipeID: createdID, introFacts: introFacts(id: createdID, name: "Created"),
+            authorize: {},
+            apply: {
+                await model.applyRecipe(StationRecipe(name: "Created", configuration: self.createdConfig))
+                return true
+            },
+            active: { model.active },
+            nothingQueued: { player.nothingQueued },
+            playingStation: { player.playingStation },
+            queueEpoch: { player.epoch },
+            transport: { player.transport },
+            start: { player.play($0, station: StationQueueKey(model.active)) })
+        guard case .started = freshOutcome else {
+            return XCTFail("a new legitimate tap must start the station, got \(freshOutcome)")
+        }
+        XCTAssertEqual(player.starts.count, 1)
+        XCTAssertEqual(starter.currentRecipeID, createdID)
+    }
+
+    // #217: explicit pause/stop cancels an in-flight created-station switch even while another
+    // station is already playing (wasIdle == false).
+    func testExplicitStopCancelsWaitingCreatedStationWhileAnotherStationPlays() async throws {
+        let catalog = QueueFakeCatalog()
+        await catalog.holdAllCalls()
+        let model = await makeStation(active: secondCreatedConfig)
+        let feed = makeFeed(catalog)
+        feed.follow(model)
+        let player = FakePlayer()
+        player.play(["existing-song"], station: StationQueueKey(secondCreatedConfig))
+        let intro = FakeIntro()
+        let starter = makeStarter(feed, intro: intro)
+        let createdID = UUID()
+
+        let waitingSwitch = Task {
+            await starter.open(
+                .userTap, recipeID: createdID, introFacts: self.introFacts(id: createdID, name: "Created"),
+                authorize: {},
+                apply: {
+                    await model.applyRecipe(StationRecipe(name: "Created", configuration: self.createdConfig))
+                    return true
+                },
+                active: { model.active },
+                nothingQueued: { player.nothingQueued },
+                playingStation: { player.playingStation },
+                switchNow: { await model.applyPendingForStationSwitch() },
+                queueEpoch: { player.epoch },
+                transport: { player.transport },
+                start: { player.play($0, station: StationQueueKey(model.active)) })
+        }
+
+        for _ in 0..<500 {
+            if await catalog.isHolding { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let isHolding = await catalog.isHolding
+        XCTAssertTrue(isHolding)
+
+        // Listener pauses/stops while the new station is still resolving.
+        player.transport = .paused
+        starter.cancelPending()
+        await catalog.release()
+
+        let outcome = await waitingSwitch.value
+        XCTAssertEqual(outcome, .notStarted(.superseded))
+        XCTAssertEqual(player.starts, [["existing-song"]], "paused/stopped switch must not start the new station")
+        try await Task.sleep(nanoseconds: 15_000_000)
+        XCTAssertEqual(intro.begins, [], "cancelled switch must not begin DJ narration")
+    }
+
+    // #217: two created taps back to back keep only the second tap's playback and DJ narration.
+    func testTwoCreatedTapsKeepOnlyLatestPlaybackAndNarration() async throws {
+        let catalog = QueueFakeCatalog()
+        await catalog.holdAllCalls()
+        let model = await makeStation(active: .default)
+        let feed = makeFeed(catalog)
+        feed.follow(model)
+        let player = FakePlayer()
+        let intro = FakeIntro()
+        let starter = makeStarter(feed, intro: intro)
+        let firstID = UUID()
+        let secondID = UUID()
+
+        let firstTap = Task {
+            await starter.open(
+                .userTap, recipeID: firstID, introFacts: self.introFacts(id: firstID, name: "First"),
+                authorize: {},
+                apply: {
+                    await model.applyRecipe(StationRecipe(name: "First", configuration: self.createdConfig))
+                    return true
+                },
+                active: { model.active },
+                nothingQueued: { player.nothingQueued },
+                playingStation: { player.playingStation },
+                queueEpoch: { player.epoch },
+                transport: { player.transport },
+                start: { player.play($0, station: StationQueueKey(model.active)) })
+        }
+
+        for _ in 0..<500 {
+            if await catalog.isHolding { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        let secondTap = Task {
+            await starter.open(
+                .userTap, recipeID: secondID, introFacts: self.introFacts(id: secondID, name: "Second"),
+                authorize: {},
+                apply: {
+                    await model.applyRecipe(StationRecipe(name: "Second", configuration: self.secondCreatedConfig))
+                    return true
+                },
+                active: { model.active },
+                nothingQueued: { player.nothingQueued },
+                playingStation: { player.playingStation },
+                switchNow: { await model.applyPendingForStationSwitch() },
+                queueEpoch: { player.epoch },
+                transport: { player.transport },
+                start: { player.play($0, station: StationQueueKey(model.active)) })
+        }
+
+        await catalog.release()
+        let firstOutcome = await firstTap.value
+        let secondOutcome = await secondTap.value
+        XCTAssertEqual(firstOutcome, .notStarted(.superseded))
+        guard case .started = secondOutcome else {
+            return XCTFail("the second tap must start, got \(secondOutcome)")
+        }
+        XCTAssertEqual(player.starts.count, 1)
+        try await Task.sleep(nanoseconds: 25_000_000)
+        XCTAssertFalse(intro.begins.contains(firstID.uuidString), "the superseded tap must never narrate")
+    }
+
+    // #217: app-layer wiring check ensuring user Pause and external queue replacements cancel
+    // any in-flight station start.
+    func testAppWiringCancelsPendingStationStartOnPauseAndExternalQueueReplace() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // AeroDJCoreTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // AeroDJCore
+            .deletingLastPathComponent() // ios
+        let music = try String(contentsOf: repoRoot.appendingPathComponent("AeroDJ/MusicKitService.swift"), encoding: .utf8)
+        let queue = try String(contentsOf: repoRoot.appendingPathComponent("AeroDJ/StationQueuePlayer.swift"), encoding: .utf8)
+
+        XCTAssertTrue(music.contains("var onUserPaused: (@MainActor () -> Void)?"))
+        XCTAssertTrue(music.contains("stateMachine.apply(.pause)\n        onUserPaused?()"))
+        XCTAssertTrue(queue.contains("music.onUserPaused = { [weak self] in self?.cancelCreatedStationStart() }"))
+        XCTAssertTrue(queue.contains("if self.ownQueueStarting { self.ownQueueStarting = false; self.stationOwnsQueue = true; return }\n            // #217 (-Atlas): an external queue start"))
+        XCTAssertTrue(queue.contains("self.createdStart.cancelPending()"))
+    }
 }

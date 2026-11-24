@@ -565,8 +565,10 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(timeline.waitForExistence(timeout: 5), "up-next timeline missing\n\(app.debugDescription)")
         XCTAssertGreaterThanOrEqual(timeline.frame.midX, contentFrame.minX - 4, "timeline stays in the content column")
         XCTAssertLessThanOrEqual(timeline.frame.midX, contentFrame.maxX + 4, "timeline stays in the content column")
-        XCTAssertTrue(timeline.label.contains("Morning Light"))
-        XCTAssertTrue(timeline.label.contains("DJ break after this song"))
+        // Build 58 (-Nova): Up Next lists only upcoming songs, never duplicating the
+        // currently playing track or the DJ break pill already shown above it.
+        XCTAssertFalse(timeline.label.contains("Morning Light"))
+        XCTAssertFalse(timeline.label.contains("DJ break after this song"))
         XCTAssertTrue(timeline.label.contains("Slow Burn"))
         timeline.tap()
         XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5), "tapping the timeline opens the queue")
