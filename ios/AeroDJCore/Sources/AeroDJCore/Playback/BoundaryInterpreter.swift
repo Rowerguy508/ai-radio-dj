@@ -80,6 +80,12 @@ public struct BoundaryInterpreter: Sendable {
         detector.noteUserSkip()
     }
 
+    /// #586 (-Fry): the capped rewind cut's target never started. See
+    /// `PlaybackBoundaryDetector.takeSkipStartStalled()`.
+    public mutating func takeSkipStartStalled() -> Bool {
+        detector.takeSkipStartStalled()
+    }
+
     /// #444 (-Atlas): our own `play()` for the loaded song returned. See
     /// `PlaybackBoundaryDetector.noteOwnPlayReturned()`.
     public mutating func noteOwnPlayReturned() {

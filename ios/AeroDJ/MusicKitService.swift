@@ -1240,9 +1240,13 @@ final class MusicKitService: ObservableObject {
                 }
                 return
             }
-            if snapshot.transport == .preparing, let attempt = attempts.current {
+            if let attempt = attempts.current,
+               PlaybackConfirmPolicy.pollConfirms(position: observation.position,
+                                                  transportIsPreparing: snapshot.transport == .preparing,
+                                                  reportedThisAttempt: confirmReportedAttempt == attempt) {
                 // `.preparing` belongs to the current attempt; a late `.playing` after a reported
-                // timeout confirms it and clears that error.
+                // timeout confirms it and clears that error. #587 (-Fry): the skip path's stall report
+                // leaves transport `.playing`, so a reported attempt confirms here too, once.
                 confirmStart(attempt)
             }
         }
@@ -1294,6 +1298,11 @@ final class MusicKitService: ObservableObject {
                 // and pausing it leaves the player stuck. The load cut path handles a real Next.
                 if skipCoordinator.isInFlight { return }
                 surfaceNoProgressEnd(stillPlaying: observation.isPlaying)
+            }
+            if boundaries.takeSkipStartStalled(), let attempt = attempts.current {
+                // #586 (-Fry): the capped rewind cut's target stayed at 0:00 past #109's deadline.
+                // The skip path arms no confirm watchdog, so report it here the same way.
+                reportConfirmProblem(.confirmDeadline(last: .paused), attempt: attempt)
             }
             return
         }

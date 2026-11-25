@@ -36,6 +36,8 @@ public enum DJBreakSkipReason: String, Codable, Equatable, Sendable, CaseIterabl
     /// This boundary's planned break did not air because the station intro took the boundary.
     /// One break per boundary: the intro is the speech, and this break is not played after it.
     case stationIntro
+    /// #304 R3: the catalog song reported no usable duration at start, so no break was planned.
+    case durationUnknown
 }
 
 /// Why a planned time-check line did not air (#347). Only that line is dropped; the rest of
