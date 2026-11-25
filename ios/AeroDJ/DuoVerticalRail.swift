@@ -63,7 +63,18 @@ struct DuoVerticalRail: View {
     /// build now draws this custom rail. `DuoSystemVerticalToolbar` below stays compiled under
     /// `#if compiler(>=6.4)` but is not attached; turning it back on needs UI tests on a 27.1
     /// SDK runner first.
-    static var usesSystemBar: Bool { false }
+    ///
+    /// #465 item 1 (-Nova): the one exception is a DEBUG Studio capture launched with
+    /// `-AeroDJCaptureSystemVerticalBars YES` on a binary and OS that have the 27.1 vertical bar
+    /// (`SystemVerticalBarsCaptureFlag`), so the owner gets real shots to decide from. Release
+    /// compiles only `false`, and a default Debug run reads `false`.
+    static var usesSystemBar: Bool {
+        #if DEBUG
+        return SystemVerticalBarsCaptureFlag.isOn
+        #else
+        return false
+        #endif
+    }
 
     var body: some View {
         VStack(spacing: CGFloat(DuoRailLayout.spacing)) {

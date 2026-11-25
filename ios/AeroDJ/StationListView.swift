@@ -30,6 +30,10 @@ struct StationListView: View {
             // #465 item 10: the app-wide captures have their own scenario names.
             if let appWide = AppWideCaptureScenario.requested() {
                 AppWideCaptureView(scenario: appWide, dependencies: dependencies)
+            } else if let bars = SystemVerticalBarsCapture.Scenario.named(
+                UserDefaults.standard.string(forKey: StudioCapture.scenarioKey)) {
+                // #465 item 1: the system vertical bar shots for the owner (-Nova).
+                SystemVerticalBarsCaptureView(scenario: bars, dependencies: dependencies)
             } else if let layouts = StationsLayoutCaptureScenario.requested() {
                 // Open-Duo Stations designs and the Settings picker (-Nova).
                 StationsLayoutCaptureView(scenario: layouts)
