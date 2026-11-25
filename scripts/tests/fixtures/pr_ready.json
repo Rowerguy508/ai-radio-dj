@@ -1,0 +1,32 @@
+{
+  "pr": {"number": 900, "head_sha": "6d5a15054d340a344e47810e928e6ce617dc8ea6", "base": "integration/device-duo", "state": "open", "merged": false},
+  "base_head": "c77584179c08b4cbdffe013cad698bcb34174a99",
+  "merge_base": "c77584179c08b4cbdffe013cad698bcb34174a99",
+  "workflows": [
+    "name: iOS\non:\n  pull_request:\njobs:\n  changes:\n    runs-on: ubuntu-latest\n  core-tests:\n    name: AeroDJCore tests\n    needs: changes\n  release-archive:\n    # comment before the name\n    timeout-minutes: 5\n    name: \"Release archive (Xcode 27.2, unsigned)\"\n    steps:\n      - name: Not a job name\n",
+    "name: CI\non:\n  pull_request:\njobs:\n  checks:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Checkout\n"
+  ],
+  "check_runs": [
+    {"id": 1, "name": "changes", "status": "completed", "conclusion": "success", "started_at": "2026-11-24T10:00:00Z"},
+    {"id": 2, "name": "AeroDJCore tests", "status": "completed", "conclusion": "failure", "started_at": "2026-11-24T10:00:00Z"},
+    {"id": 3, "name": "AeroDJCore tests", "status": "completed", "conclusion": "success", "started_at": "2026-11-24T11:00:00Z"},
+    {"id": 4, "name": "Release archive (Xcode 27.2, unsigned)", "status": "completed", "conclusion": "success", "started_at": "2026-11-24T10:00:00Z"},
+    {"id": 5, "name": "checks", "status": "completed", "conclusion": "success", "started_at": "2026-11-24T10:00:00Z"},
+    {"id": 6, "name": "Vercel Preview Comments", "status": "completed", "conclusion": "failure", "started_at": "2026-11-24T10:00:00Z"}
+  ],
+  "commits": [
+    {"commit": {"author": {"name": "Fry"}, "message": "#146: pin song end -Fry"}},
+    {"commit": {"author": {"name": "Nova"}, "message": "Merge branch 'integration/device-duo' into fry/x\n\nCo-authored-by: Atlas <atlas@users.noreply.github.com>"}}
+  ],
+  "postings": [
+    {"kind": "comment", "body": "SIGN 6d5a1505 -Echo\n\nReviewed. No blockers.\n\nComment, not approval. -Echo", "url": "u/echo"},
+    {"kind": "review", "state": "COMMENTED", "body": "SIGN 6d5a15054d340a344e47810e928e6ce617dc8ea6 -Sentinel\r\n\r\nNo blockers.\r\n-Sentinel", "url": "u/sentinel"},
+    {"kind": "comment", "body": "SIGN 6d5a1505 -Echo\n\nNo blockers. (again)", "url": "u/echo2"},
+    {"kind": "comment", "body": "SIGN 6d5a1505 -Fry\n\nNo blockers.", "url": "u/fry"},
+    {"kind": "comment", "body": "SIGN 6d5a1505 -Nova\n\nNo blockers.", "url": "u/nova"},
+    {"kind": "comment", "body": "SIGN 6d5a1505 -Atlas\n\nNo blockers.", "url": "u/atlas"},
+    {"kind": "comment", "body": "Looks good, will sign. No blockers.", "url": "u/x"}
+  ],
+  "pr_files": ["ios/AeroDJCore/Tests/AeroDJCoreTests/LatePollQueueEndTests.swift"],
+  "base_files": []
+}
