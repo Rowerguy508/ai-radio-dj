@@ -256,21 +256,33 @@ public struct AudioCacheSweeper: Sendable {
 
     public init(cache: any AudioCache) { self.cache = cache }
 
-    /// Production entry point. With `purgingPersonalFirst`, personal clips left by an earlier
-    /// launch are removed before the first sweep (live consent is not persisted).
+    /// Production entry point. Personal clips left by an earlier launch are removed before the
+    /// first sweep (live consent is not persisted), then the 7-day cap is swept every `interval`.
+    ///
+    /// #637 follow-up (-Sentinel, Nova's nit): only a `LaunchPurgeGated` cache compiles here, so
+    /// reads are gated before the purge task exists in every build, Release included (this was a
+    /// Debug-only `assert`). Gate an `any AudioCache` with `LaunchPurgeGatedCache(base:)` and read
+    /// through that wrapper. The cache reopens when its `purgePersonalItems` completes.
     @discardableResult
-    public func start(every interval: Duration = Self.defaultInterval, purgingPersonalFirst: Bool,
+    public static func startPurgingPersonalFirst(_ cache: some LaunchPurgeGated,
+                                                 every interval: Duration = Self.defaultInterval,
+                                                 onLaunchSweep: @escaping @Sendable (String?) -> Void = { _ in }) -> Task<Void, Never> {
+        cache.beginLaunchPurge()
+        return AudioCacheSweeper(cache: cache).launch(every: interval, purgingPersonalFirst: true, onLaunchSweep: onLaunchSweep)
+    }
+
+    /// Sweeps with no launch purge: expired and unattributable clips at launch, then every
+    /// `interval`. Personal clips from an earlier launch stay (use `startPurgingPersonalFirst`).
+    @discardableResult
+    public func start(every interval: Duration = Self.defaultInterval,
                       onLaunchSweep: @escaping @Sendable (String?) -> Void = { _ in }) -> Task<Void, Never> {
+        launch(every: interval, purgingPersonalFirst: false, onLaunchSweep: onLaunchSweep)
+    }
+
+    private func launch(every interval: Duration, purgingPersonalFirst: Bool,
+                        onLaunchSweep: @escaping @Sendable (String?) -> Void) -> Task<Void, Never> {
         let cache = cache
         let ticks = Self.ticks(every: interval)
-        // #82 F3: gate reads before the purge task exists, so no read can beat it to a personal
-        // clip from an earlier launch. The cache reopens when `purgePersonalItems` completes.
-        if purgingPersonalFirst {
-            // #637 follow-up: a production cache that is not gated would serve earlier-launch
-            // personal clips until its purge completes. Debug builds stop here.
-            assert(cache is any LaunchPurgeGated, "start(purgingPersonalFirst: true) needs a LaunchPurgeGated cache")
-            (cache as? any LaunchPurgeGated)?.beginLaunchPurge()
-        }
         return Task.detached(priority: .utility) {
             let line = await AudioCacheSweeper(cache: cache).prepareForLaunch(purgingPersonalFirst: purgingPersonalFirst)
             onLaunchSweep(line)
