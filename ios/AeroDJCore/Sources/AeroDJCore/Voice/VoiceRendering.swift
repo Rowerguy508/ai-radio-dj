@@ -298,8 +298,12 @@ public struct AudioCacheSweeper: Sendable {
     /// is left is logged. Returns the log line (nil if the cache can't count). Cloud clips of
     /// library songs and typed station names (`allLinesClipTag` only) are kept (owner, Nov 9
     /// 2026); "Delete my DJ data" removes them.
+    ///
+    /// #656 nit (-Sentinel): internal (tests reach it with `@testable`). It opens no read gate, so
+    /// it is only safe when awaited before any read; the app starts the launch purge only through
+    /// `startPurgingPersonalFirst`, which gates reads first.
     @discardableResult
-    public func prepareForLaunch(purgingPersonalFirst: Bool) async -> String? {
+    func prepareForLaunch(purgingPersonalFirst: Bool) async -> String? {
         if purgingPersonalFirst { await cache.purgePersonalItems() }
         await cache.purgeExpired()
         return await AudioCacheFileLog.record(cache, after: .launch)

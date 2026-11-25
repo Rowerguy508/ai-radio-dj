@@ -8,7 +8,7 @@ import Foundation
 ///
 /// - Pending only after `begin()`, which `AudioCacheSweeper.startPurgingPersonalFirst`
 ///   calls synchronously before it detaches. A cache nobody starts a launch purge on (tests,
-///   `prepareForLaunch` called directly) behaves exactly as before.
+///   the internal `prepareForLaunch` called directly) behaves exactly as before.
 /// - `finish()` runs when `purgePersonalItems` completes; after that every read is as before,
 ///   so `VoiceRenderer.allLinesClipTag`-only clips (never withheld) keep working.
 /// - Keys stored in this launch during the window are "fresh": served, and skipped by the purge,
@@ -80,7 +80,14 @@ extension FileAudioCache: LaunchPurgeGated {
 ///   except a clip it stored itself in this launch and reads back unchanged (an earlier clip
 ///   left at the key by a write that failed is not served as this launch's). The window closes
 ///   when the base's `purgePersonalItems` returns through this wrapper. Never waits.
-/// Holds keys and content fingerprints only, never clip content or item ids, and logs nothing.
+/// - Requirement on an ungated base (#656 nit): its `purgePersonalItems` must really delete every
+///   personal clip, or not return. This wrapper cannot see a failed or partial purge, so a purge
+///   that fails silently closes the window early and the clips it left are served again. A cache
+///   whose removals can fail must gate itself and keep its gate shut on failure, as
+///   `FileAudioCache` does (#637 P1), so that this wrapper forwards to it instead.
+/// Holds keys and content fingerprints only, and only while its own window is open: none are
+/// recorded when no purge is pending, and all are dropped when the window closes. Never clip
+/// content or item ids, and it logs nothing.
 /// The base cache is private and never handed out (Sentinel's #409 N1).
 public struct LaunchPurgeGatedCache: LaunchPurgeGated {
     private let wrapped: any AudioCache
@@ -125,6 +132,8 @@ public struct LaunchPurgeGatedCache: LaunchPurgeGated {
 
     /// True while this wrapper's own window is open (base not gated, purge not returned).
     var isWithholding: Bool { state.isPending }
+    /// Fingerprints held now (tests): zero whenever the window is closed.
+    var heldFingerprintCount: Int { state.fingerprintCount }
 
     private struct Fingerprint: Equatable {
         let bytes: Int, hash: Int, createdAt: Date, providerID: String, voiceID: String
@@ -144,8 +153,10 @@ public struct LaunchPurgeGatedCache: LaunchPurgeGated {
         private var fresh: [String: Fingerprint] = [:]
 
         var isPending: Bool { lock.withLock { pending } }
+        var fingerprintCount: Int { lock.withLock { fresh.count } }
         func begin() { lock.withLock { pending = true; fresh = [:] } }
-        func finish() { lock.withLock { pending = false; fresh = [:] } }
+        func finish() { lock.withLock { pending = false; fresh.removeAll() } }   // drop every fingerprint
+        /// Records nothing unless the window is open (a write that returns after it closed included).
         func mark(_ key: String, _ print: Fingerprint) { lock.withLock { if pending { fresh[key] = print } } }
         func unmark(_ key: String) { lock.withLock { _ = fresh.removeValue(forKey: key) } }
         func heldFingerprint(_ key: String) -> Held { lock.withLock { pending ? .pending(fresh[key]) : .open } }

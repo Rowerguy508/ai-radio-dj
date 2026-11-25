@@ -146,6 +146,43 @@ final class LaunchPurgeGateHardCheckTests: XCTestCase {
         await launch.releasePurgeAndWait()
     }
 
+    /// #656 nit: fingerprints exist only while the window is open. None are recorded before a
+    /// launch purge, they are dropped when it closes, and none are recorded after; reads behave
+    /// as before throughout.
+    func testFingerprintsAreHeldOnlyWhileThePurgeIsPending() async {
+        let disk = seededDisk()
+        let barrier = HardCheckBarrier()
+        let (started, startedC) = AsyncStream<Void>.makeStream()
+        let (launched, launchedC) = AsyncStream<String?>.makeStream()
+        defer { startedC.finish(); launchedC.finish() }
+        let cache = LaunchPurgeGatedCache(base: UngatedPersistentCache(disk: disk, barrier: barrier, started: startedC))
+
+        await cache.store(clip(5, sources: [UUID()]), for: "before")
+        XCTAssertEqual(cache.heldFingerprintCount, 0, "nothing recorded with no purge pending")
+        let before = await cache.audio(for: "before")
+        XCTAssertEqual(before?.data, Data([5]), "served as before")
+
+        let task = AudioCacheSweeper.startPurgingPersonalFirst(cache, every: .seconds(3600),
+                                                               onLaunchSweep: { launchedC.yield($0) })
+        defer { task.cancel() }
+        var it = started.makeAsyncIterator(); _ = await it.next()
+        await cache.store(clip(9, sources: [UUID()]), for: "fresh")
+        XCTAssertEqual(cache.heldFingerprintCount, 1, "held while the window is open")
+        let fresh = await cache.audio(for: "fresh")
+        let earlier = await cache.audio(for: "before")
+        XCTAssertEqual(fresh?.data, Data([9]))
+        XCTAssertNil(earlier, "stored before the purge began, so withheld like any earlier clip")
+
+        barrier.open()
+        var done = launched.makeAsyncIterator(); _ = await done.next()
+        XCTAssertFalse(cache.isWithholding)
+        XCTAssertEqual(cache.heldFingerprintCount, 0, "dropped when the window closes")
+        await cache.store(clip(7, sources: [UUID()]), for: "after")
+        XCTAssertEqual(cache.heldFingerprintCount, 0, "nothing recorded after it closes")
+        let after = await cache.audio(for: "after")
+        XCTAssertEqual(after?.data, Data([7]), "served as before")
+    }
+
     /// A write that silently did not land leaves the earlier launch's clip at the key; it must
     /// not be served as this launch's (the gate checks what it stored, not only the key).
     func testAnEarlierClipLeftByADroppedWriteIsStillWithheld() async {
