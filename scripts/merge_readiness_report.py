@@ -5,8 +5,10 @@ Run by hand:  python3 scripts/merge_readiness_report.py 633 [--repo owner/name] 
 
 Prints, at the PR's exact head sha:
   (a) checks: every job in ios.yml and ci.yml (read from the base branch head) has a completed
-      `success` check run on that sha. A skipped job counts as green only when ios.yml's `changes`
-      job (the path filter) concluded success at the same sha; it is shown as
+      `success` check run on that sha. Jobs are keyed by (workflow, job name): each check run is
+      mapped to its workflow through its check suite and the Actions workflow runs for the sha, and
+      a run that can't be mapped never counts. A skipped iOS job counts as green only when
+      ios.yml's own `changes` job (the path filter) concluded success at the same sha; it is shown as
       "skipped (path filter, changes passed)". Missing, pending, cancelled, failed, or any other
       skip is not green.
   (b) signs: a comment or review whose first non-empty line is exactly `SIGN <sha8|sha40> -Name`,
@@ -20,6 +22,7 @@ Prints, at the PR's exact head sha:
       READY ("forward-merge or confirm the hunks are disjoint"), because the PR has not been
       tested against those base changes.
   (d) READY or NOT READY, with every reason.
+  Also warns (report-only, never a reason) when a commit author is outside ROSTER.
 
 Report-only: it is not a required check, writes no check run, and changes no branch protection.
 Default is print-only. `--comment` posts the same report as a PR comment (only when asked).
@@ -38,6 +41,10 @@ import sys
 TARGET_BASE = "integration/device-duo"
 REQUIRED_SIGNS = 2
 WORKFLOWS = (".github/workflows/ios.yml", ".github/workflows/ci.yml")
+IOS_WORKFLOW = ".github/workflows/ios.yml"
+CHANGES_JOB = "changes"
+# #634 follow-up (Atlas): the bot roster. A commit author outside it is a warning only.
+ROSTER = ("Fry", "Nova", "Echo", "Atlas", "Sentinel", "Orion")
 PAGE = 100
 MAX_PR_COMMITS = 250   # GitHub's pulls/N/commits limit: more than this and we can't see every author.
 MAX_COMPARE_FILES = 300  # GitHub's compare file limit.
@@ -86,6 +93,55 @@ def job_check_names(yaml_text: str) -> list[str]:
     if in_jobs:
         flush()
     return names
+
+
+def workflow_display_name(path: str, yaml_text: str) -> str:
+    m = re.search(r"^name:\s*['\"]?(.+?)['\"]?\s*$", yaml_text, re.MULTILINE)
+    return m.group(1) if m else path
+
+
+def required_jobs(workflows: list[dict]) -> list[tuple[str, str]]:
+    """(workflow path, check-run name) for every job of every workflow, in order."""
+    out: list[tuple[str, str]] = []
+    for wf in workflows:
+        for n in job_check_names(wf["text"]):
+            if (wf["path"], n) not in out:
+                out.append((wf["path"], n))
+    return out
+
+
+def normalize_workflow_path(path: str | None) -> str | None:
+    """`path` from the workflow-runs API, without any `@ref` suffix."""
+    return path.split("@", 1)[0] if path else None
+
+
+def suite_to_workflow(workflow_runs: list[dict]) -> dict[int, str]:
+    """check_suite_id -> workflow path, from the Actions workflow runs for the head sha."""
+    out: dict[int, str] = {}
+    for w in workflow_runs:
+        sid, path = w.get("check_suite_id"), normalize_workflow_path(w.get("path"))
+        if sid is not None and path:
+            out[sid] = path
+    return out
+
+
+def commit_author_display(commits: list[dict]) -> list[str]:
+    """Author and Co-authored-by names as written, unique case-insensitively, sorted."""
+    seen: dict[str, str] = {}
+    for c in commits:
+        commit = c.get("commit") or {}
+        names = [(commit.get("author") or {}).get("name") or ""]
+        names += CO_AUTHOR.findall(commit.get("message") or "")
+        for n in names:
+            n = n.strip()
+            if n:
+                seen.setdefault(n.lower(), n)
+    return sorted(seen.values(), key=str.lower)
+
+
+def off_roster(authors: list[str], roster=ROSTER) -> list[str]:
+    known = {r.lower() for r in roster}
+    return [a for a in authors if a.lower() not in known]
 
 
 def commit_author_names(commits: list[dict]) -> set[str]:
@@ -139,43 +195,55 @@ def collect_signs(postings: list[dict], head_sha: str, authors: set[str]) -> dic
 
 
 SKIP_GREEN = "skipped (path filter, changes passed)"
-CHANGES_JOB = "changes"
+UNMAPPED = "unmapped (check run's suite has no workflow run)"
 
 
-def latest_runs(check_runs: list[dict], head_sha: str | None = None) -> dict[str, dict]:
-    """Latest check run per name (by started_at, then id). Runs at another sha are ignored."""
-    best: dict[str, dict] = {}
+def latest_runs(check_runs: list[dict], head_sha: str | None = None,
+                suites: dict[int, str] | None = None) -> dict[tuple, dict]:
+    """Latest check run per (workflow path, name), by started_at then id. Runs at another sha are
+    ignored. A run whose check suite maps to no workflow run is keyed (None, name)."""
+    best: dict[tuple, dict] = {}
+    suites = suites or {}
     for r in check_runs:
         if head_sha and r.get("head_sha") and r["head_sha"].lower() != head_sha.lower():
             continue
+        wf = suites.get((r.get("check_suite") or {}).get("id"))
+        k = (wf, r.get("name"))
         key = (r.get("started_at") or "", r.get("id") or 0)
-        cur = best.get(r.get("name"))
+        cur = best.get(k)
         if cur is None or key > (cur.get("started_at") or "", cur.get("id") or 0):
-            best[r.get("name")] = r
+            best[k] = r
     return best
 
 
-def assess_checks(check_runs: list[dict], required: list[str], head_sha: str | None = None) -> dict:
-    """A skipped job counts as green only when the `changes` job (ios.yml's path filter) concluded
-    success at the same head sha. Any other skip, or a skip with `changes` missing, pending or not
-    successful, is not green."""
-    runs = latest_runs(check_runs, head_sha)
-    ch = runs.get(CHANGES_JOB)
+def assess_checks(check_runs: list[dict], required: list[tuple[str, str]], head_sha: str | None = None,
+                  workflow_runs: list[dict] | None = None, labels: dict[str, str] | None = None) -> dict:
+    """Required jobs are keyed by (workflow path, job name), so the same job name in two workflows
+    never collides (Sentinel). A skipped iOS job counts as green only when ios.yml's own `changes`
+    job concluded success at the same head sha. Any other skip, a skip with that `changes` missing,
+    pending or not successful, or a run that can't be mapped to its workflow, is not green."""
+    runs = latest_runs(check_runs, head_sha, suite_to_workflow(workflow_runs or []))
+    labels = labels or {}
+    ch = runs.get((IOS_WORKFLOW, CHANGES_JOB))
     changes_passed = bool(ch and ch.get("status") == "completed" and ch.get("conclusion") == "success")
     rows, bad = [], []
-    for name in required:
-        r = runs.get(name)
+    for wf, name in required:
+        r = runs.get((wf, name))
         if r is None:
-            state = "missing"
+            state = UNMAPPED if (None, name) in runs else "missing"
         elif r.get("status") != "completed":
             state = r.get("status") or "pending"
         else:
             state = r.get("conclusion") or "no conclusion"
-            if state == "skipped" and name != CHANGES_JOB:
-                state = SKIP_GREEN if changes_passed else "skipped (changes did not pass at this head)"
-        rows.append((name, state))
+            if state == "skipped" and not (wf == IOS_WORKFLOW and name == CHANGES_JOB):
+                if wf != IOS_WORKFLOW:
+                    state = "skipped (not an iOS path-filter job)"
+                else:
+                    state = SKIP_GREEN if changes_passed else "skipped (changes did not pass at this head)"
+        label = f"{labels.get(wf, wf)} / {name}"
+        rows.append((label, state))
         if state not in ("success", SKIP_GREEN):
-            bad.append(f"{name}: {state}")
+            bad.append(f"{label}: {state}")
     return {"rows": rows, "bad": bad}
 
 
@@ -206,7 +274,7 @@ def render(report: dict) -> str:
     pr, checks, signs = report["pr"], report["checks"], report["signs"]
     out = [f"Merge readiness for #{pr['number']} at {pr['head_sha']} (report-only)",
            f"Base {pr['base']} at {report['base_head'][:8]}, merge-base {report['merge_base'][:8]}",
-           f"Commit authors on the PR: {', '.join(report['author_names']) or '(none)'}",
+           f"Commit authors on the PR: {', '.join(report['author_display']) or '(none)'}",
            "", f"Checks ({len(checks['rows']) - len(checks['bad'])}/{len(checks['rows'])} green):"]
     out += [f"  {'ok ' if s in ('success', SKIP_GREEN) else 'NO '} {n}: {s}" for n, s in checks["rows"]]
     out += ["", f"Signs ({len(signs['valid'])}/{REQUIRED_SIGNS} non-author at {pr['head_sha'][:8]}):"]
@@ -223,24 +291,28 @@ def render(report: dict) -> str:
     return "\n".join(out)
 
 
-def build_report(*, pr: dict, base_head: str, merge_base: str, workflows: list[str], check_runs: list[dict],
+def build_report(*, pr: dict, base_head: str, merge_base: str, workflows: list[dict], check_runs: list[dict],
                  commits: list[dict], postings: list[dict], pr_files: list[str], base_files: list[str],
-                 warnings: list[str] | None = None) -> dict:
+                 workflow_runs: list[dict] | None = None, warnings: list[str] | None = None) -> dict:
     warnings = list(warnings or [])
-    required: list[str] = []
-    for text in workflows:
-        for n in job_check_names(text):
-            if n not in required:
-                required.append(n)
+    required = required_jobs(workflows)
     if not required:
         warnings.append("INCOMPLETE: no job names found in ios.yml/ci.yml")
+    labels = {wf["path"]: workflow_display_name(wf["path"], wf["text"]) for wf in workflows}
     authors = commit_author_names(commits)
-    checks = assess_checks(check_runs, required, pr["head_sha"])
+    display = commit_author_display(commits)
+    outside = off_roster(display)
+    if outside:
+        # Report-only (Atlas): never a reason, never changes READY or NOT READY.
+        warnings.append(f"ROSTER: commit author(s) outside the bot roster ({', '.join(ROSTER)}): "
+                        f"{', '.join(outside)}. Report-only; does not change the verdict")
+    checks = assess_checks(check_runs, required, pr["head_sha"], workflow_runs or [], labels)
     signs = collect_signs(postings, pr["head_sha"], authors)
     ov = overlap(pr_files, base_files)
     ready, reasons = verdict(pr=pr, checks=checks, signs=signs, overlap_files=ov, warnings=warnings)
-    return {"pr": pr, "base_head": base_head, "merge_base": merge_base, "required": required,
-            "author_names": sorted(authors), "checks": checks, "signs": signs, "overlap": ov,
+    return {"pr": pr, "base_head": base_head, "merge_base": merge_base,
+            "required": [list(r) for r in required],
+            "author_names": sorted(authors), "author_display": display, "off_roster_authors": outside, "checks": checks, "signs": signs, "overlap": ov,
             "pr_file_count": len(set(pr_files)), "base_file_count": len(set(base_files)),
             "warnings": warnings, "ready": ready, "reasons": reasons}
 
@@ -278,8 +350,12 @@ def fetch(repo: str, number: int) -> dict:
     workflows = []
     for path in WORKFLOWS:
         c = gh_api(f"repos/{repo}/contents/{path}?ref={base_head}")
-        workflows.append(base64.b64decode(c["content"]).decode())
+        workflows.append({"path": path, "text": base64.b64decode(c["content"]).decode()})
     check_runs = gh_list(f"repos/{repo}/commits/{head}/check-runs?filter=all", key="check_runs")
+    # Map each check run to its workflow via its check suite (Sentinel). Unmapped runs never count.
+    workflow_runs = [{"check_suite_id": w.get("check_suite_id"), "path": w.get("path"), "name": w.get("name"),
+                      "head_sha": w.get("head_sha")}
+                     for w in gh_list(f"repos/{repo}/actions/runs?head_sha={head}", key="workflow_runs")]
     commits = gh_list(f"repos/{repo}/pulls/{number}/commits", limit_pages=3)
     if len(commits) >= MAX_PR_COMMITS:
         warnings.append(f"INCOMPLETE: PR has {len(commits)}+ commits; GitHub lists at most {MAX_PR_COMMITS}, "
@@ -301,6 +377,7 @@ def fetch(repo: str, number: int) -> dict:
             warnings.append(f"INCOMPLETE: base changed {len(base_files)}+ files since the merge-base "
                             f"(compare lists at most {MAX_COMPARE_FILES}); overlap may be missing files")
     return dict(pr=pr, base_head=base_head, merge_base=merge_base, workflows=workflows, check_runs=check_runs,
+                workflow_runs=workflow_runs,
                 commits=commits, postings=postings, pr_files=pr_files, base_files=base_files, warnings=warnings)
 
 

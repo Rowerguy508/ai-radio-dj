@@ -30,9 +30,9 @@ class NoNetwork(unittest.TestCase):
 class JobNames(NoNetwork):
     def test_names_ids_quotes_and_step_names(self):
         f = fixture()
-        self.assertEqual(m.job_check_names(f["workflows"][0]),
+        self.assertEqual(m.job_check_names(f["workflows"][0]["text"]),
                          ["changes", "AeroDJCore tests", "Release archive (Xcode 27.2, unsigned)"])
-        self.assertEqual(m.job_check_names(f["workflows"][1]), ["checks"])
+        self.assertEqual(m.job_check_names(f["workflows"][1]["text"]), ["checks"])
 
     def test_repo_workflows_give_8_ios_jobs_and_2_ci_jobs(self):
         with open(os.path.join(ROOT, ".github/workflows/ios.yml")) as f:
@@ -88,58 +88,101 @@ class Signs(NoNetwork):
         self.assertEqual(s["valid"], {})
 
 
+IOS, CI = ".github/workflows/ios.yml", ".github/workflows/ci.yml"
+LABELS = {IOS: "iOS", CI: "CI"}
+WRUNS = [{"check_suite_id": 1, "path": IOS, "name": "iOS"},
+         {"check_suite_id": 2, "path": CI + "@refs/pull/900/merge", "name": "CI"}]
+
+
+def run(id, name, conclusion="success", suite=1, status="completed", started="1", sha=HEAD):
+    return {"id": id, "name": name, "status": status, "conclusion": conclusion, "started_at": started,
+            "head_sha": sha, "check_suite": {"id": suite}}
+
+
+def assess(runs, required, workflow_runs=WRUNS):
+    return m.assess_checks(runs, required, HEAD, workflow_runs, LABELS)
+
+
 class Checks(NoNetwork):
     def test_latest_run_wins_and_missing_pending_failed_are_not_green(self):
-        runs = [
-            {"id": 1, "name": "a", "status": "completed", "conclusion": "failure", "started_at": "1"},
-            {"id": 2, "name": "a", "status": "completed", "conclusion": "success", "started_at": "2"},
-            {"id": 3, "name": "b", "status": "queued", "conclusion": None, "started_at": "1"},
-            {"id": 4, "name": "c", "status": "completed", "conclusion": "cancelled", "started_at": "1"},
-            {"id": 5, "name": "d", "status": "completed", "conclusion": "success", "started_at": "1"},
-            {"id": 6, "name": "d", "status": "completed", "conclusion": "cancelled", "started_at": "2"},
-        ]
-        r = m.assess_checks(runs, ["a", "b", "c", "d", "e"])
-        self.assertEqual(r["rows"], [("a", "success"), ("b", "queued"), ("c", "cancelled"),
-                                     ("d", "cancelled"), ("e", "missing")])
+        runs = [run(1, "a", "failure", started="1"), run(2, "a", "success", started="2"),
+                run(3, "b", None, status="queued"), run(4, "c", "cancelled"),
+                run(5, "d", "success", started="1"), run(6, "d", "cancelled", started="2")]
+        r = assess(runs, [(IOS, n) for n in "abcde"])
+        self.assertEqual(r["rows"], [("iOS / a", "success"), ("iOS / b", "queued"), ("iOS / c", "cancelled"),
+                                     ("iOS / d", "cancelled"), ("iOS / e", "missing")])
         self.assertEqual(len(r["bad"]), 4)
 
 
+class WorkflowKeying(NoNetwork):
+    """#634 follow-up (Sentinel): jobs are keyed by (workflow, job name)."""
+
+    def test_same_job_name_in_two_workflows_is_tracked_separately(self):
+        runs = [run(1, "lint", "success", suite=1), run(2, "lint", "failure", suite=2, started="9")]
+        r = assess(runs, [(IOS, "lint"), (CI, "lint")])
+        self.assertEqual(r["rows"], [("iOS / lint", "success"), ("CI / lint", "failure")])
+        self.assertEqual(r["bad"], ["CI / lint: failure"])
+
+    def test_ci_changes_job_does_not_vouch_for_ios_skips(self):
+        runs = [run(1, "changes", "failure", suite=1), run(2, "iOS simulator build", "skipped", suite=1),
+                run(3, "changes", "success", suite=2, started="9")]
+        r = assess(runs, [(IOS, "changes"), (IOS, "iOS simulator build"), (CI, "changes")])
+        self.assertIn("iOS / iOS simulator build: skipped (changes did not pass at this head)", r["bad"])
+        self.assertIn(("CI / changes", "success"), r["rows"])
+
+    def test_ci_changes_alone_does_not_vouch_when_ios_changes_missing(self):
+        runs = [run(2, "iOS simulator build", "skipped", suite=1), run(3, "changes", "success", suite=2)]
+        r = assess(runs, [(IOS, "changes"), (IOS, "iOS simulator build")])
+        self.assertIn("iOS / changes: missing", r["bad"])
+        self.assertIn("iOS / iOS simulator build: skipped (changes did not pass at this head)", r["bad"])
+
+    def test_unmapped_suite_fails_closed(self):
+        runs = [run(1, "changes", "success", suite=99), run(2, "iOS simulator build", "success", suite=99)]
+        r = assess(runs, [(IOS, "changes"), (IOS, "iOS simulator build")])
+        self.assertEqual(r["bad"], [f"iOS / changes: {m.UNMAPPED}", f"iOS / iOS simulator build: {m.UNMAPPED}"])
+        r = assess(runs, [(IOS, "changes")], workflow_runs=[])
+        self.assertEqual(r["bad"], [f"iOS / changes: {m.UNMAPPED}"])
+
+    def test_skip_outside_ios_is_never_green(self):
+        runs = [run(1, "changes", "success", suite=1), run(2, "checks", "skipped", suite=2)]
+        r = assess(runs, [(IOS, "changes"), (CI, "checks")])
+        self.assertEqual(r["bad"], ["CI / checks: skipped (not an iOS path-filter job)"])
+
+    def test_workflow_path_ref_suffix_is_stripped(self):
+        self.assertEqual(m.suite_to_workflow(WRUNS), {1: IOS, 2: CI})
+
+
 class PathFilterSkips(NoNetwork):
-    REQ = ["changes", "iOS simulator build", "checks"]
+    REQ = [(IOS, "changes"), (IOS, "iOS simulator build"), (CI, "checks")]
 
     def runs(self, changes=("completed", "success"), changes_sha=HEAD, sim_sha=HEAD):
-        out = [{"id": 2, "name": "iOS simulator build", "status": "completed", "conclusion": "skipped",
-                "started_at": "1", "head_sha": sim_sha},
-               {"id": 3, "name": "checks", "status": "completed", "conclusion": "success",
-                "started_at": "1", "head_sha": HEAD}]
+        out = [run(2, "iOS simulator build", "skipped", suite=1, sha=sim_sha), run(3, "checks", suite=2)]
         if changes:
-            out.append({"id": 1, "name": "changes", "status": changes[0], "conclusion": changes[1],
-                        "started_at": "1", "head_sha": changes_sha})
+            out.append(run(1, "changes", changes[1], suite=1, status=changes[0], sha=changes_sha))
         return out
 
     def test_skip_with_changes_success_counts_as_green(self):
-        r = m.assess_checks(self.runs(), self.REQ, HEAD)
+        r = assess(self.runs(), self.REQ)
         self.assertEqual(r["bad"], [])
-        self.assertIn(("iOS simulator build", m.SKIP_GREEN), r["rows"])
+        self.assertIn(("iOS / iOS simulator build", m.SKIP_GREEN), r["rows"])
 
     def test_skip_with_changes_failed_or_pending_or_missing_is_not_green(self):
         for changes in (("completed", "failure"), ("completed", "skipped"), ("in_progress", None), None):
-            r = m.assess_checks(self.runs(changes=changes), self.REQ, HEAD)
-            self.assertIn("iOS simulator build: skipped (changes did not pass at this head)", r["bad"], changes)
+            r = assess(self.runs(changes=changes), self.REQ)
+            self.assertIn("iOS / iOS simulator build: skipped (changes did not pass at this head)", r["bad"], changes)
 
     def test_changes_at_another_sha_does_not_vouch(self):
-        r = m.assess_checks(self.runs(changes_sha="b" * 40), self.REQ, HEAD)
-        self.assertIn("changes: missing", r["bad"])
-        self.assertIn("iOS simulator build: skipped (changes did not pass at this head)", r["bad"])
+        r = assess(self.runs(changes_sha="b" * 40), self.REQ)
+        self.assertIn("iOS / changes: missing", r["bad"])
+        self.assertIn("iOS / iOS simulator build: skipped (changes did not pass at this head)", r["bad"])
 
     def test_skip_at_another_sha_does_not_count(self):
-        r = m.assess_checks(self.runs(sim_sha="b" * 40), self.REQ, HEAD)
-        self.assertIn("iOS simulator build: missing", r["bad"])
+        r = assess(self.runs(sim_sha="b" * 40), self.REQ)
+        self.assertIn("iOS / iOS simulator build: missing", r["bad"])
 
     def test_skipped_changes_job_itself_is_not_green(self):
-        runs = [{"id": 1, "name": "changes", "status": "completed", "conclusion": "skipped",
-                 "started_at": "1", "head_sha": HEAD}]
-        self.assertEqual(m.assess_checks(runs, ["changes"], HEAD)["bad"], ["changes: skipped"])
+        r = assess([run(1, "changes", "skipped", suite=1)], [(IOS, "changes")])
+        self.assertEqual(r["bad"], ["iOS / changes: skipped"])
 
     def test_report_marks_skip_green_as_ok(self):
         f = fixture()
@@ -148,7 +191,37 @@ class PathFilterSkips(NoNetwork):
                 r["conclusion"] = "skipped"
         rep = m.build_report(**f)
         self.assertTrue(rep["ready"], rep["reasons"])
-        self.assertIn("  ok  AeroDJCore tests: skipped (path filter, changes passed)", m.render(rep))
+        self.assertIn("  ok  iOS / AeroDJCore tests: skipped (path filter, changes passed)", m.render(rep))
+
+
+class Roster(NoNetwork):
+    """#634 follow-up (Atlas): authors outside the roster warn, report-only."""
+
+    def test_off_roster_names(self):
+        self.assertEqual(m.off_roster(["Fry", "cursor agent", "Rowerguy508", "NOVA"]),
+                         ["cursor agent", "Rowerguy508"])
+
+    def test_non_roster_author_warns_without_changing_ready(self):
+        f = fixture()
+        before = m.build_report(**fixture())
+        self.assertEqual(before["off_roster_authors"], [])
+        self.assertFalse(any(w.startswith("ROSTER") for w in before["warnings"]))
+        f["commits"].append({"commit": {"author": {"name": "Cursor Agent"},
+                                        "message": "x\n\nCo-authored-by: Rowerguy508 <r@example.com>"}})
+        rep = m.build_report(**f)
+        self.assertTrue(rep["ready"], rep["reasons"])
+        self.assertEqual(rep["off_roster_authors"], ["Cursor Agent", "Rowerguy508"])
+        text = m.render(rep)
+        self.assertIn("WARNING: ROSTER: commit author(s) outside the bot roster", text)
+        self.assertTrue(text.endswith("\nREADY"))
+        self.assertIn('"off_roster_authors"', json.dumps(rep))
+
+    def test_non_roster_author_does_not_change_not_ready(self):
+        f = fixture()
+        f["postings"] = []
+        f["commits"].append({"commit": {"author": {"name": "Cursor Agent"}, "message": "x"}})
+        rep = m.build_report(**f)
+        self.assertEqual(rep["reasons"], ["0/2 non-author signs at this head"])
 
 
 class Overlap(NoNetwork):
@@ -165,6 +238,7 @@ class Verdict(NoNetwork):
         self.assertTrue(text.endswith("\nREADY"), text)
         self.assertIn("Signs (2/2 non-author at 6d5a1505)", text)
         self.assertIn("Checks (4/4 green)", text)
+        self.assertIn("  ok  CI / checks: success", text)
         self.assertNotIn("Vercel", text)  # only ios.yml and ci.yml jobs are required
 
     def test_each_failure_is_a_reason(self):
@@ -197,7 +271,7 @@ class Verdict(NoNetwork):
 
     def test_no_workflow_jobs_fails_closed(self):
         f = fixture()
-        f["workflows"] = ["name: x\n", "name: y\n"]
+        f["workflows"] = [{"path": IOS, "text": "name: x\n"}, {"path": CI, "text": "name: y\n"}]
         self.assertFalse(m.build_report(**f)["ready"])
 
     def test_original_fixture_untouched_between_tests(self):
