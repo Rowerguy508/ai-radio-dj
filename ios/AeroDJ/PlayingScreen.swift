@@ -145,6 +145,11 @@ struct PlayingScreen: View {
                 if DisplayContinuityLaunch.shouldReset("player-scroll") {
                     storedScrollAnchor = ""
                 }
+                // #460: a collapsed-rail capture frame opens with Collapse tapped.
+                if StudioCaptureCollapse.initial {
+                    duoCollapsed = true
+                    StudioCaptureCollapse.initial = false
+                }
                 if let initial = StudioCaptureSegment.initial {
                     segment = initial
                     StudioCaptureSegment.initial = nil

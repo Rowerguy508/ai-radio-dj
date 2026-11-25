@@ -340,13 +340,69 @@ final class FoldAwarenessTests: XCTestCase {
         XCTAssertNil(FoldAwareness.bookRailColumn(.init(minX: 16, width: .nan, artSide: 100)))
     }
 
-    /// Full open (flat, `railDLandscapeCentred`) and no fold reading: no book column, so the
-    /// collapsed Duo keeps integration's pinned column.
+    /// Full open (flat, `railDLandscapeCentred`) and no fold reading: no book column. #460: the
+    /// collapsed Duo then takes `flatRailColumn` (below), not integration's pinned column.
     func testOutsideBookPoseThereIsNoBookRail() {
         let band = vertical(minX: 396, width: 28, height: 640)
         XCTAssertNil(bookColumn(width: 820, height: 640, status: .fullyOpen, divisions: []))
         XCTAssertNil(bookColumn(width: 820, height: 640, status: .fullyOpen, divisions: [band]))
         XCTAssertNil(bookColumn(width: 820, height: 640, status: .partiallyOpen, divisions: []))
+    }
+
+    // MARK: - #460 flat open Duo: the collapsed column keeps Rail D on the right (-Nova)
+
+    /// The open Duo's collapsed frames outside book pose: upright (640 x 820, and its reader
+    /// under the navigation bar), sideways (820 x 640 and 820 x 576), the owner's device window
+    /// (951 x 669), and the sidebar-open details (350 pt upright beside the 290 pt sidebar,
+    /// 500 pt sideways beside the 320 pt one). The pinned column's width is centred, split into
+    /// the content column and the 56 pt closed rail on its trailing side, inside one
+    /// `duoEdgeInset` of both edges, and the rail fits every plate and the song-position bar.
+    func testTheFlatCollapsedColumnCarriesRailDOnTheRight() throws {
+        let frames: [(width: Double, height: Double)] = [
+            (640, 820), (640, 764), (820, 640), (820, 576), (951, 669), (350, 764), (500, 576),
+        ]
+        let slots = RailDLayout.slots(hasCollapse: false, showsTransport: true, showsScrubber: true)
+        for frame in frames {
+            let label = "\(frame.width)x\(frame.height)"
+            let m = centredColumn(width: frame.width, height: frame.height)
+            let split = try XCTUnwrap(FoldAwareness.flatRailColumn(containerWidth: frame.width,
+                                                                   containerHeight: frame.height,
+                                                                   column: m.column, artSide: m.artSide), label)
+            XCTAssertEqual(split.railWidth, RailDLayout.railWidth, "the closed screen's rail: \(label)")
+            XCTAssertEqual(split.railMinX - split.columnMaxX, FoldAwareness.bookRailGap, accuracy: 0.001, label)
+            XCTAssertGreaterThan(split.railMinX, split.columnMaxX, "rail trailing of the column: \(label)")
+            XCTAssertGreaterThan(split.railMinX + split.railWidth / 2, frame.width / 2, "rail on the right: \(label)")
+            XCTAssertEqual(split.columnMinX, frame.width - split.railMaxX, accuracy: 0.001, "centred: \(label)")
+            XCTAssertGreaterThanOrEqual(split.columnMinX, FoldedColumnLayout.duoEdgeInset - 0.001, label)
+            XCTAssertLessThanOrEqual(split.railMaxX, frame.width - FoldedColumnLayout.duoEdgeInset + 0.001, label)
+            XCTAssertGreaterThanOrEqual(split.columnWidth, StudioLayoutMetrics.touchTargetMin, label)
+            XCTAssertLessThanOrEqual(split.artSide, split.columnWidth, label)
+            XCTAssertLessThanOrEqual(split.columnWidth + FoldAwareness.bookRailGap + split.railWidth,
+                                     m.column + 0.001, "never wider than the pinned column: \(label)")
+            let rail = RailDLayout.closedRailHeight(containerHeight: frame.height)
+            XCTAssertTrue(RailDLayout.fits(railHeight: rail, slots: slots), label)
+        }
+    }
+
+    /// Sizes only. Narrower than `railColumnMinWidth`, or longer than `openDuoMaxSide` on either
+    /// side (every full-screen iPad), keeps the pinned column; so does a bad measurement.
+    func testTheFlatRailColumnIsOnlyForOpenDuoSizes() {
+        func flat(_ width: Double, _ height: Double, column: Double = 360) -> FoldAwareness.BookRailColumn? {
+            FoldAwareness.flatRailColumn(containerWidth: width, containerHeight: height, column: column, artSide: 200)
+        }
+        for (width, height) in [(1024.0, 1366.0), (1366, 1024), (1180, 820), (820, 1180), (1133, 744), (744, 1133)] {
+            XCTAssertNil(flat(width, height), "full-screen iPad \(width)x\(height)")
+        }
+        XCTAssertNotNil(flat(FoldedColumnLayout.railColumnMinWidth, 764))
+        XCTAssertNil(flat(FoldedColumnLayout.railColumnMinWidth - 0.5, 764))
+        XCTAssertNotNil(flat(640, FoldedColumnLayout.openDuoMaxSide))
+        XCTAssertNil(flat(640, FoldedColumnLayout.openDuoMaxSide + 0.5))
+        XCTAssertNil(flat(.nan, 820))
+        XCTAssertNil(flat(640, .infinity))
+        XCTAssertNil(flat(640, 820, column: 0))
+        XCTAssertNil(flat(640, 0))
+        XCTAssertNil(flat(640, 820, column: FoldedOuterLayout.closedRailWidth + FoldAwareness.bookRailGap),
+                     "no room for a column beside the rail")
     }
 
     private func centredColumn(width: Double, height: Double) -> (artSide: Double, column: Double) {

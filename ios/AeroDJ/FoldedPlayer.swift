@@ -931,8 +931,10 @@ struct FoldedPlayer: View {
     /// `foldAware` is true only on the two `.duoHorizontal` collapsed branches (#507 / #548). In
     /// book pose (`FoldAwareness.bookColumn`) the column moves to one side of the fold and, per
     /// the owner's Nov 17 call, carries the closed screen's Rail D with the song position in the
-    /// rail (`bookRailColumnBody`). Outside book pose, and on the sidebar-open detail (false),
-    /// this is integration's pinned column unchanged.
+    /// rail (`bookRailColumnBody`). #460 (-Nova): outside book pose, and on the sidebar-open
+    /// detail, an open-Duo-sized window (`FoldAwareness.flatRailColumn`) gets the same column
+    /// and rail, centred, so the scrubber, Play/Skip and the station bar no longer sit at the
+    /// bottom. Any other size (a full-screen iPad) keeps integration's pinned column unchanged.
     ///
     /// `placementHeight` is the height the caller chose `.duoHorizontal` from (the route height,
     /// `placementSize`). The reader under the navigation bar is shorter (820 x 576 in the 820 x 640
@@ -953,9 +955,18 @@ struct FoldedPlayer: View {
                                        column: m.column, artSide: m.artSide)
             : nil
         let split = book.flatMap { FoldAwareness.bookRailColumn($0) }
+        // #460 (-Nova): outside book pose the open Duo keeps Rail D too, so nothing is left at
+        // the bottom. Nil (today's pinned column) for a window that is not open-Duo sized.
+        let flat = split == nil
+            ? FoldAwareness.flatRailColumn(containerWidth: Double(size.width),
+                                           containerHeight: Double(size.height),
+                                           column: m.column, artSide: m.artSide)
+            : nil
         return Group {
             if let split {
                 bookRailColumnBody(in: size, split: split)
+            } else if let flat {
+                bookRailColumnBody(in: size, split: flat, identifier: "folded.collapsedRailD")
             } else {
                 centredPinnedColumn(in: size, metrics: m)
             }
@@ -1009,7 +1020,11 @@ struct FoldedPlayer: View {
     /// bar, the live dot) on its trailing side, inside the same span. No horizontal scrubber,
     /// transport row or station bar in the column: the rail carries them, and Tune is in the
     /// rail's ⋯ as on the closed screen. Show rail stays in the column's header. -Nova
-    private func bookRailColumnBody(in size: CGSize, split: FoldAwareness.BookRailColumn) -> some View {
+    ///
+    /// #460 (-Nova): the flat collapsed column (`FoldAwareness.flatRailColumn`) draws the same
+    /// body under `identifier` "folded.collapsedRailD", so the book-pose tests keep their element.
+    private func bookRailColumnBody(in size: CGSize, split: FoldAwareness.BookRailColumn,
+                                    identifier: String = "folded.bookColumn") -> some View {
         typealias Gap = FoldedColumnLayout.Spacing
         let column = CGFloat(split.columnWidth)
         return HStack(alignment: .top, spacing: CGFloat(split.railMinX - split.columnMaxX)) {
@@ -1034,7 +1049,7 @@ struct FoldedPlayer: View {
             }
             .frame(width: column, height: size.height, alignment: .top)
             .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("folded.bookColumn.column")
+            .accessibilityIdentifier("\(identifier).column")
             .accessibilitySortPriority(1)
             ClosedVerticalRail(dj: dj, upNext: snapshot.upNext,
                                transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
@@ -1059,7 +1074,7 @@ struct FoldedPlayer: View {
         .padding(.leading, CGFloat(split.columnMinX))
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("folded.bookColumn")
+        .accessibilityIdentifier(identifier)
     }
 
     /// Show rail (build 51, -Atlas): brings the rail back after Collapse. 44 × 44.

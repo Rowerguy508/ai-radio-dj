@@ -155,13 +155,30 @@ enum StudioCaptureScenario: String {
     case railDLandscapeSpreadVoiceUnavailable
     case railDLandscapeCentredVoiceUnavailable
     case railDLandscapeSidebarVoiceUnavailable
+    /// #460 (-Nova): the open Duo with the rail collapsed, which used to pin the scrubber,
+    /// Play/Skip and the station bar at the bottom of a centred column. Each frame is its mock
+    /// frame (`railDFrame`) with Collapse already tapped (`StudioCaptureCollapse`), so the owner
+    /// shot shows the column with Rail D on its trailing side: upright (640 × 820, flat hinge),
+    /// sideways (820 × 640, flat) and upright with the 290 pt Stations sidebar (the narrow
+    /// detail). Same playing song and break-ready chip as the mock frames.
+    case railDPortraitCollapsed
+    case railDLandscapeCollapsed
+    case railDPortraitSidebarCollapsed
 
     /// The mockup D frames drawn in `RailDCaptureContainer`.
     var isRailDContainer: Bool {
         switch self {
         case .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
              .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar: true
-        default: isRailDOnAir || isRailDVoiceUnavailable
+        default: isRailDOnAir || isRailDVoiceUnavailable || isRailDCollapsed
+        }
+    }
+
+    /// #460: the collapsed-rail frames (`StudioCaptureCollapse`).
+    var isRailDCollapsed: Bool {
+        switch self {
+        case .railDPortraitCollapsed, .railDLandscapeCollapsed, .railDPortraitSidebarCollapsed: true
+        default: false
         }
     }
 
@@ -188,6 +205,9 @@ enum StudioCaptureScenario: String {
         case .railDLandscapeSpreadOnAir, .railDLandscapeSpreadVoiceUnavailable: .railDLandscapeSpread
         case .railDLandscapeCentredOnAir, .railDLandscapeCentredVoiceUnavailable: .railDLandscapeCentred
         case .railDLandscapeSidebarOnAir, .railDLandscapeSidebarVoiceUnavailable: .railDLandscapeSidebar
+        case .railDPortraitCollapsed: .railDPortrait
+        case .railDLandscapeCollapsed: .railDLandscapeCentred
+        case .railDPortraitSidebarCollapsed: .railDPortraitSidebar
         default: self
         }
     }
@@ -209,7 +229,8 @@ enum StudioCaptureScenario: String {
             return PlaybackFixtures.recoverableError
         case .duoWideReady, .duoWideSpeaking, .duoArrangement, .duoWideOnAir, .duoLandscape, .duoLandscapeTune, .duoSidebar,
              .railDPhone, .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
-             .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar:
+             .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar,
+             .railDPortraitCollapsed, .railDLandscapeCollapsed, .railDPortraitSidebarCollapsed:
             // A playing song the listener can seek. The shared fixture leaves canSeek false,
             // which draws the scrubber as a non-interactive element.
             var playing = PlaybackFixtures.playing
@@ -379,7 +400,8 @@ struct StudioCaptureView: View {
                 studio.dj.send(.playbackFailed(afterTrack: 0))
             case .breakReady, .duoWideReady, .duoArrangement, .duoLandscape, .duoLandscapeTune, .duoSidebar,
                  .railDPhone, .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
-                 .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar:
+                 .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar,
+                 .railDPortraitCollapsed, .railDLandscapeCollapsed, .railDPortraitSidebarCollapsed:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .duoWideSpeaking, .onAir, .duoWideOnAir, .railDPortraitOnAir,
                  .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir:
@@ -427,6 +449,8 @@ struct StudioCaptureView: View {
                 captureRating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id,
                                                                     labelSeen: true)
             }
+            // #460: the collapsed-rail frames open with Collapse already tapped.
+            StudioCaptureCollapse.initial = scenario.isRailDCollapsed
             if let segment = defaults.string(forKey: StudioCapture.segmentKey).flatMap(WorkspaceSegment.init) ?? scenario.segment {
                 StudioCaptureSegment.initial = segment
             }
@@ -1012,6 +1036,13 @@ private struct RatingCaptureReadout: View {
 @MainActor
 enum StudioCaptureSegment {
     static var initial: WorkspaceSegment?
+}
+
+/// #460 (-Nova): the collapsed-rail frames (`isRailDCollapsed`). `PlayingScreen` reads it once
+/// on appear, as `StudioCaptureSegment`, and sets its own Collapse state; Show rail still
+/// brings the rail back. Every other scenario leaves it false.
+enum StudioCaptureCollapse {
+    static var initial = false
 }
 
 /// The `onAir`, `duoWideSpeaking`, and `duoWideOnAir` captures' frozen ON AIR timer.

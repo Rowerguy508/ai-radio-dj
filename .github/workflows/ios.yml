@@ -970,6 +970,12 @@ jobs:
                       rail-d-duo-open-landscape-sidebar; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
+          # #460: the open Duo with the rail collapsed keeps Rail D on the right, upright,
+          # sideways and with the Stations sidebar (RailDLayoutTests). -Nova
+          for shot in rail-d-duo-open-portrait-collapsed rail-d-duo-open-landscape-collapsed \
+                      rail-d-duo-open-portrait-sidebar-collapsed; do
+            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
+          done
           # Open-Duo Stations (owner, 2026-11-17): the three designs in the book pose and upright,
           # and Settings > Stations layout on the iPhone and the Duo (StationsLayoutTests). -Nova
           for shot in stations-layout-a-duo-open-book stations-layout-a-duo-open-portrait \

@@ -174,6 +174,33 @@ public enum FoldAwareness {
                               railMinX: book.minX + column + gap, railWidth: railWidth)
     }
 
+    /// #460 (-Nova): the open Duo with its rail collapsed, outside book pose (flat open, and the
+    /// sidebar-open detail). The owner's rule for #460 is that on the Duo the bottom controls
+    /// live on the right, and his Nov 17 call gave the open Duo "book pose included" the closed
+    /// screen's Rail D. So the collapsed column keeps that rail too: the pinned column's width
+    /// (`column`, from `FoldedColumnLayout.metrics`), centred in the container less one
+    /// `duoEdgeInset` either side, split by `bookRailColumn` into the content column and the
+    /// rail on its trailing side. No scrubber, transport row or station bar stays at the bottom.
+    ///
+    /// Nil (the caller keeps the pinned column) for anything that is not an open-Duo-sized
+    /// window: narrower than `FoldedColumnLayout.railColumnMinWidth`, or longer than
+    /// `FoldedColumnLayout.openDuoMaxSide` on either side (every full-screen iPad). Sizes only,
+    /// no device model. No phone reaches the caller: it needs `.duoHorizontal` or the
+    /// sidebar-open rail column.
+    public static func flatRailColumn(containerWidth: Double, containerHeight: Double,
+                                      column: Double, artSide: Double) -> BookRailColumn? {
+        guard containerWidth.isFinite, containerHeight.isFinite, column.isFinite, artSide.isFinite,
+              containerWidth > 0, containerHeight > 0, column > 0 else { return nil }
+        guard containerWidth >= FoldedColumnLayout.railColumnMinWidth,
+              max(containerWidth, containerHeight) <= FoldedColumnLayout.openDuoMaxSide else { return nil }
+        let edge = FoldedColumnLayout.duoEdgeInset
+        let width = min(column, max(0, containerWidth - edge * 2))
+        guard width > 0 else { return nil }
+        let book = BookColumn(minX: (containerWidth - width) / 2, width: width,
+                              artSide: max(0, min(artSide, width)))
+        return bookRailColumn(book)
+    }
+
     /// The gates `resolve` applies before it looks for a fold.
     private static func isBookPose(containerWidth: Double, containerHeight: Double, hinge: HingeSample?) -> Bool {
         guard containerWidth.isFinite, containerHeight.isFinite,
