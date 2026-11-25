@@ -264,6 +264,68 @@ final class AppWideLayoutTests: XCTestCase {
         save(app, "duo-landscape-localarea", container: any["capture.appWideContainer"])
     }
 
+    // MARK: #615 owner shots: the whole 820 × 640 frame, upright
+
+    /// #615 capture (-Nova): the landscape shots above launch in `.landscapeLeft`, and on the
+    /// hosted iPad sim an element screenshot then comes back sideways (portrait-origin
+    /// framebuffer; the 64de43a5 app screenshot also cut the actions pane off). The container's
+    /// size, not the device's orientation, picks the two-pane layout, and the 820 × 640 frame
+    /// fits the iPad's portrait window (820 pt wide), so these launch upright and save the
+    /// container: the full frame, both panes, the right way up. Smaller windows (every iPhone)
+    /// skip, so no iPhone PNG changes.
+    @MainActor
+    func testDuoLandscapeLocalAreaFullFrameShot() throws {
+        let (app, box) = try launch("duoLandscapeLocalArea", size: Self.duoLandscape, orientation: .portrait)
+        let any = app.descendants(matching: .any)
+        let actionsPane = any["onboarding.localArea.pane.actions"]
+        XCTAssertTrue(actionsPane.waitForExistence(timeout: 10),
+                      "two-pane onboarding missing\n\(app.debugDescription)")
+        let copyPane = any["onboarding.localArea.pane.copy"]
+        XCTAssertTrue(copyPane.exists, "copy pane missing\n\(app.debugDescription)")
+        for (name, pane) in [("copy pane", copyPane), ("actions pane", actionsPane)] {
+            XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(pane.frame), "\(name) left the frame: \(pane.frame) in \(box)")
+        }
+        for id in ["localArea.approximate", "localArea.manual", "localArea.notNow"] {
+            let button = app.buttons[id]
+            XCTAssertTrue(button.exists, "\(id) missing\n\(app.debugDescription)")
+            assertTarget(button, in: box, id)
+            XCTAssertGreaterThanOrEqual(button.frame.minX, box.midX + 15, "\(id) crossed into fold gutter: \(button.frame)")
+        }
+        save(app, "duo-landscape-localarea-full", container: any["capture.appWideContainer"])
+    }
+
+    /// #615 capture (-Nova): Cloud Voice Consent v3 as its two-pane sheet in the 820 × 640
+    /// frame: disclosure left, the two answers right, the fold gutter between. Labels are the
+    /// sheet's own `CloudVoiceConsentCopy` strings; nothing is tapped.
+    @MainActor
+    func testDuoLandscapeCloudConsentFullFrameShot() throws {
+        let (app, box) = try launch("duoLandscapeCloudConsent", size: Self.duoLandscape, orientation: .portrait)
+        let any = app.descendants(matching: .any)
+        let actionsPane = any["onboarding.consent.pane.actions"]
+        XCTAssertTrue(actionsPane.waitForExistence(timeout: 10),
+                      "two-pane consent missing\n\(app.debugDescription)")
+        let copyPane = any["onboarding.consent.pane.copy"]
+        XCTAssertTrue(copyPane.exists, "copy pane missing\n\(app.debugDescription)")
+        XCTAssertTrue(app.staticTexts["Use a cloud voice?"].exists, app.debugDescription)
+        XCTAssertLessThanOrEqual(copyPane.frame.maxX, box.midX - 15,
+                                 "copy pane crossed fold gutter: \(copyPane.frame) midX=\(box.midX)")
+        XCTAssertGreaterThanOrEqual(actionsPane.frame.minX, box.midX + 15,
+                                    "actions pane crossed fold gutter: \(actionsPane.frame) midX=\(box.midX)")
+        for (name, pane) in [("copy pane", copyPane), ("actions pane", actionsPane)] {
+            XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(pane.frame), "\(name) left the frame: \(pane.frame) in \(box)")
+        }
+        let accept = app.buttons["cloudVoiceConsent.accept"]
+        let decline = app.buttons["cloudVoiceConsent.decline"]
+        XCTAssertTrue(accept.exists && decline.exists, "answers missing\n\(app.debugDescription)")
+        XCTAssertEqual(accept.label, "Use cloud voice")
+        XCTAssertEqual(decline.label, "Keep on-device voice")
+        for (id, button) in [("accept", accept), ("decline", decline)] {
+            assertTarget(button, in: box, id)
+            XCTAssertGreaterThanOrEqual(button.frame.minX, box.midX + 15, "\(id) crossed into fold gutter: \(button.frame)")
+        }
+        save(app, "duo-landscape-cloud-consent", container: any["capture.appWideContainer"])
+    }
+
     // MARK: Narrow Split View: the phone path, unchanged
 
     @MainActor

@@ -20,6 +20,9 @@ enum AppWideCaptureScenario: String, CaseIterable {
     case duoLandscapeLibrary
     /// #461 PR 4 (-Nova): Open-Duo Landscape (`820 × 640 pt`) horizontal two-pane Onboarding (`LocalAreaPrompt`).
     case duoLandscapeLocalArea
+    /// #615 capture (-Nova): Cloud Voice Consent v3 (`CloudVoiceConsentSheet`) in the same
+    /// `820 × 640 pt` container, as its two-pane sheet. Nothing is tapped; nothing is recorded.
+    case duoLandscapeCloudConsent
 
     /// The scenario named in `-AeroDJStudioCaptureScenario`, if it is one of these.
     static func requested(defaults: UserDefaults = .standard) -> AppWideCaptureScenario? {
@@ -31,14 +34,14 @@ enum AppWideCaptureScenario: String, CaseIterable {
         case .duoWideLibrary, .splitNarrowLibrary, .duoLandscapeLibrary: .library
         case .duoWideStations, .splitNarrowStations: .stations
         case .duoWideSettings, .splitNarrowSettings: .settings
-        case .duoWideLocalArea, .duoLandscapeLocalArea: .onboarding
+        case .duoWideLocalArea, .duoLandscapeLocalArea, .duoLandscapeCloudConsent: .onboarding
         }
     }
 
     var input: AppWideLayout.Input {
         switch self {
         case .duoWideLibrary, .duoWideStations, .duoWideSettings, .duoWideLocalArea: AppWideLayout.duoWide
-        case .duoLandscapeLocalArea, .duoLandscapeLibrary: AppWideLayout.Input(hasRegularWidth: false, containerWidth: 820, containerHeight: 640, hasRegularHeight: true)
+        case .duoLandscapeLocalArea, .duoLandscapeLibrary, .duoLandscapeCloudConsent: AppWideLayout.Input(hasRegularWidth: false, containerWidth: 820, containerHeight: 640, hasRegularHeight: true)
         case .splitNarrowLibrary, .splitNarrowStations, .splitNarrowSettings: AppWideLayout.splitNarrow
         }
     }
@@ -128,6 +131,11 @@ struct AppWideCaptureView: View {
         case .settings:
             SettingsView(isPresented: .constant(true), isTestStation: true)
                 .appWideScreen(.settings, formMargins: true)
+        case .onboarding where scenario == .duoLandscapeCloudConsent:
+            // The consent sheet fills the container, as a large-detent sheet fills the window.
+            CloudVoiceConsentSheetCapture()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(.systemBackground))
         case .onboarding:
             // As the Tune card presents it: a sheet, content at the top. In-memory store; the
             // location object asks Core Location only if "Use approximate location" is tapped.
