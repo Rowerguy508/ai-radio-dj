@@ -112,8 +112,13 @@ struct RailDCaptureContainer: View {
                     }
                     .navigationSplitViewStyle(.balanced)
                 } else {
-                    NavigationStack { player }
-                        .modifier(ClosedStatusColumnCapture(width: Self.closedStatusColumn(for: scenario)))
+                    // #626 (-Nova): the safe-area band goes on the player inside the stack. Padded
+                    // outside it, the band never reached the player's reader (run 45466062310: the
+                    // reader stayed 390 wide, `extend` came on top, and the rail drew off-screen).
+                    NavigationStack {
+                        player.modifier(ClosedStatusColumnInset(width: Self.closedStatusColumn(for: scenario)))
+                    }
+                    .modifier(ClosedStatusColumnCapture(width: Self.closedStatusColumn(for: scenario)))
                 }
             }
             .environment(\.horizontalSizeClass, frame.sizeClass)
@@ -141,11 +146,11 @@ struct RailDCaptureContainer: View {
     }
 }
 
-/// The closed Duo's status column in a capture (`RailDCaptureContainer.closedStatusColumnKey`):
-/// a trailing safe-area band of `width` with a stand-in for the device's time and battery ring at
-/// its top, and the same width in `trailingSystemInset`. `width == 0` returns the content as is,
-/// so every other capture keeps its pixels.
-private struct ClosedStatusColumnCapture: ViewModifier {
+/// The closed Duo's status column in a capture (`RailDCaptureContainer.closedStatusColumnKey`),
+/// on the player itself: a trailing safe-area band of `width` (so the player's reader ends where
+/// the column starts, as under the device's window) and the same width in `trailingSystemInset`.
+/// `width == 0` returns the content as is, so every other capture keeps its pixels.
+private struct ClosedStatusColumnInset: ViewModifier {
     let width: Double
 
     @ViewBuilder
@@ -154,6 +159,21 @@ private struct ClosedStatusColumnCapture: ViewModifier {
             content
                 .safeAreaPadding(.trailing, CGFloat(width))
                 .environment(\.trailingSystemInset, width)
+        } else {
+            content
+        }
+    }
+}
+
+/// The stand-in for the device's time and battery ring at the top of the status column
+/// (`ClosedStatusColumnInset` makes the band). `width == 0` returns the content as is.
+private struct ClosedStatusColumnCapture: ViewModifier {
+    let width: Double
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if width > 0.5 {
+            content
                 .overlay(alignment: .topTrailing) {
                     VStack(spacing: 6) {
                         Text(verbatim: "12:58")
