@@ -60,14 +60,14 @@ final class StaleUpNextDropTests: XCTestCase {
     }
 
     @MainActor
-    private func until(_ condition: @MainActor () -> Bool, _ message: String = "") async {
+    private func until(_ condition: @escaping @MainActor () -> Bool, _ message: String = "") async {
         for _ in 0..<500 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertTrue(condition(), message)
     }
 
     /// Song 0 plays and its break renders, then the edit is saved mid-song (pending).
     @MainActor
-    private func readyBreakAfterSongZero(_ r: Rig, edit: () async -> Void) async {
+    private func readyBreakAfterSongZero(_ r: Rig, edit: @escaping @MainActor () async -> Void) async {
         XCTAssertEqual(r.session.plannedBoundaries.first, 0)
         await r.session.songStarted(index: 0, remaining: .seconds(180))
         await until({ if case .ready = r.dj.studioState { true } else { false } }, "ready before the boundary")
@@ -146,7 +146,7 @@ final class StaleUpNextDropTests: XCTestCase {
             XCTAssertTrue(S.nextSongMayChange(queue: .known(a), before: a, after: b), "promoted here")
             XCTAssertTrue(S.nextSongMayChange(queue: .known(a), before: b, after: b), "promoted earlier, not handed off yet")
             XCTAssertFalse(S.nextSongMayChange(queue: .known(b), before: b, after: b), "queue already on the new station")
-            XCTAssertFalse(S.nextSongMayChange(queue: .known(nil), before: a, after: a), "feed adopts, no hand-off")
+            XCTAssertTrue(S.nextSongMayChange(queue: .known(nil), before: a, after: a), "reported seedless queue hands off once built (#301)")
             XCTAssertFalse(S.nextSongMayChange(queue: .known(a), before: nil, after: nil), "no seeds: queue kept")
             XCTAssertTrue(S.nextSongMayChange(queue: .unknown, before: a, after: a), "unknown fails closed")
         }
@@ -159,7 +159,7 @@ final class StaleUpNextDropTests: XCTestCase {
         XCTAssertEqual(r.session.plannedBoundaries.first, 0)
         let queue = ["t0", "t1"]
         let feed = StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: RefillCatalog()),
-                                            materialize: { $0.map(\.id) }, day: { 42 })
+                                            materialize: { $0.map(\.id) }, options: .init(seedSource: .perDay), day: { 42 })
         feed.queueStarted(for: r.station.committedDisplayed, songCount: queue.count)
         _ = await feed.prepare(r.station.active)
         let key = StationQueueKey(r.station.active)
@@ -181,5 +181,70 @@ final class StaleUpNextDropTests: XCTestCase {
         XCTAssertEqual(refill.first, "t1", "the song the intro named is the song that plays next")
         XCTAssertGreaterThan(refill.count, 1, "the station continues after it")
         XCTAssertEqual(feed.playingKey, key, "a refill keeps the StationQueueKey")
+    }
+
+    // (5) #301: seedless queue started, seeded station saved while build is notReady at B1,
+    // then ready at B2: the session must not adopt the new key at B1, so B2 drops the stale intro.
+    @MainActor
+    func testSeedlessQueueDropsStaleUpNextIntroAtLaterHandOffBoundary() async throws {
+        let seedless = StationConfiguration(commentary: .frequent)
+        XCTAssertNil(StationQueueKey(seedless))
+        let station = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: seedless))),
+            consent: StaticIntegrationConsent([:]))
+        await station.load()
+        await station.setPlaybackActivity(.holdingSong)
+        let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: WordVoice(), voice: djVoice)],
+                                     budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
+        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: seedless.cadence())
+        let dj = DJPresentationStore()
+        let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 14 })
+        await session.start()
+        await session.queueStarted(djTracks(10))
+
+        let feed = StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: RefillCatalog()),
+                                            materialize: { $0.map(\.id) }, options: .init(seedSource: .perDay), day: { 42 })
+        feed.queueStarted(for: station.committedDisplayed, songCount: 10)
+        XCTAssertTrue(feed.queueStartReported)
+        XCTAssertNil(feed.playingKey)
+
+        // Save a seeded station while the feed's build is still notReady.
+        await station.applyRecipe(StationRecipe(name: "A Radio", configuration: Self.seeded("a")))
+        XCTAssertTrue(station.hasPendingChanges)
+
+        // B1: station promotes, feed build is notReady so it keeps the seedless queue.
+        _ = await session.naturalBoundary(afterTrack: 0)
+        XCTAssertNil(feed.takeForBoundary(active: station.active, playbackMayStart: true),
+                     "B1: feed build is notReady yet")
+        XCTAssertNil(feed.playingKey, "feed must not adopt key when queueStartReported is true")
+
+        // Now the feed finishes building before B2.
+        _ = await feed.prepare(station.active)
+        XCTAssertEqual(feed.stagedKey, StationQueueKey(station.active))
+
+        // Prepare a real planned break at B2 whose script actually introduces the next song.
+        let b2 = try XCTUnwrap(session.plannedBoundaries.first { k in
+            guard k > 0, let brk = session.testPlannedBreaks[k] else { return false }
+            let nextID = "t\(k + 1)"
+            return brk.attributions.values.contains {
+                if case .trackMetadata(let ids, _) = $0 { return ids.contains(nextID) }
+                return false
+            }
+        }, "expected a planned break after B1 that introduces the next track")
+        let nextTrackID = "t\(b2 + 1)"
+        await session.songStarted(index: b2, remaining: .seconds(180))
+        await until({ if case .ready = dj.studioState { true } else { false } }, "B2 ready before the boundary")
+
+        // B2: feed hands off to the seeded station, so the session must drop any stale intro for nextTrackID.
+        let handedBreak = await session.naturalBoundary(afterTrack: b2)
+        let handedQueue = feed.takeForBoundary(active: station.active, playbackMayStart: true)
+        XCTAssertNotNil(handedQueue, "B2: feed hands off to the new seeded station")
+        if let handedBreak {
+            XCTAssertTrue(names(nextTrackID, in: handedBreak).isEmpty,
+                          "B2 must drop the stale up-next intro for \(nextTrackID) (#301)")
+        } else {
+            XCTAssertEqual(session.lastNoBreak?.reason, .cancelled,
+                           "if only the stale intro was left, the break is skipped as cancelled")
+        }
     }
 }

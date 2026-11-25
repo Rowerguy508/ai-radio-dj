@@ -48,7 +48,7 @@ public struct SpeechTempFiles: Sendable {
     }
 
     /// Runs `body` with a fresh temp file URL and always deletes the file afterwards.
-    public func withFile<T>(_ body: (URL) async throws -> T) async throws -> T {
+    public func withFile<T>(_ body: @escaping (URL) async throws -> T) async throws -> T {
         let url = try makeURL()
         defer { try? FileManager.default.removeItem(at: url) }
         return try await body(url)
