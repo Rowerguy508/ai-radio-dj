@@ -30,6 +30,13 @@ struct RailDCaptureContainer: View {
     static let deviceWindowKey = "AeroDJRailDDeviceWindow"
     static let deviceWindowSize = CGSize(width: 951, height: 669)
 
+    /// #460 (-Nova): the collapsed frames draw the open Duo's trailing status column as a
+    /// trailing safe-area inset (≈ 73 pt in the owner's build 54 @3x shots,
+    /// `DuoStationsLayout.statusColumnClearance`'s note), which no iPad simulator window has.
+    /// The collapsed player reads it like the device's (`FoldAwareness.flatRailColumn`). Every
+    /// other frame keeps no inset, so its shot is unchanged.
+    static let openStatusColumn: CGFloat = 73
+
     static func frame(for scenario: StudioCaptureScenario) -> Frame {
         let frame = baseFrame(for: scenario)
         guard UserDefaults.standard.bool(forKey: deviceWindowKey),
@@ -100,6 +107,7 @@ struct RailDCaptureContainer: View {
                     NavigationStack { player }
                 }
             }
+            .modifier(CaptureStatusColumn(width: scenario.isRailDCollapsed ? Self.openStatusColumn : 0))
             .environment(\.horizontalSizeClass, frame.sizeClass)
             .environment(\.foldPoseOverride, frame.fold)
             .frame(width: frame.size.width, height: frame.size.height)
@@ -109,6 +117,18 @@ struct RailDCaptureContainer: View {
             .accessibilityIdentifier("capture.railDContainer")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    /// #460: the trailing status column, or the content unchanged at width 0 (every other frame).
+    private struct CaptureStatusColumn: ViewModifier {
+        let width: CGFloat
+        @ViewBuilder func body(content: Content) -> some View {
+            if width > 0 {
+                content.safeAreaPadding(.trailing, width)
+            } else {
+                content
+            }
+        }
     }
 
     private var player: some View {

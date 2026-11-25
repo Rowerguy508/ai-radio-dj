@@ -9,7 +9,7 @@ import UIKit
 /// rail-d-duo-open-portrait-sidebar, rail-d-duo-open-landscape-spread,
 /// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar, and (#460, the flat
 /// frames with the rail collapsed) rail-d-duo-open-portrait-collapsed,
-/// rail-d-duo-open-landscape-collapsed, rail-d-duo-open-portrait-sidebar-collapsed. Not required:
+/// rail-d-duo-open-landscape-collapsed, rail-d-duo-open-landscape-sidebar-collapsed. Not required:
 /// rail-d-duo-open-landscape-book-collapsed (#548, the spread's frame with the rail collapsed).
 /// A frame bigger than the simulator window is skipped, as in `AppWideLayoutTests`.
 final class RailDLayoutTests: XCTestCase {
@@ -22,6 +22,8 @@ final class RailDLayoutTests: XCTestCase {
     /// `RailDLayout.railWidth` and `RailDLayout.trailingInset` (spec D: 56 pt glass, 8 pt in).
     private static let railGlassWidth: CGFloat = 56
     private static let railEdgeInset: CGFloat = 8
+    /// `RailDCaptureContainer.openStatusColumn` (#460): the collapsed frames' trailing status column.
+    private static let openStatusColumn: CGFloat = 73
 
     override func setUp() {
         continueAfterFailure = false
@@ -345,9 +347,9 @@ final class RailDLayoutTests: XCTestCase {
     }
 
     @MainActor
-    func testOpenPortraitSidebarCollapsedKeepsRailD() throws {
-        try assertCollapsedRailD("railDPortraitSidebarCollapsed", size: Self.portrait, orientation: .portrait,
-                                 sidebar: true, shot: "rail-d-duo-open-portrait-sidebar-collapsed")
+    func testOpenLandscapeSidebarCollapsedKeepsRailD() throws {
+        try assertCollapsedRailD("railDLandscapeSidebarCollapsed", size: Self.landscape, orientation: .landscapeLeft,
+                                 sidebar: true, shot: "rail-d-duo-open-landscape-sidebar-collapsed")
     }
 
     /// The collapsed column (`folded.collapsedRailD`) with Rail D (`folded.closedRail`) trailing
@@ -367,8 +369,14 @@ final class RailDLayoutTests: XCTestCase {
         let rail = try assertRail(app, id: "folded.closedRail", hasCollapse: false)
         XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail), "rail \(rail) left the container \(box)")
         XCTAssertGreaterThan(rail.midX, box.midX, "Rail D is not on the right: \(rail) in \(box)")
+        // The capture's trailing status column (`RailDCaptureContainer.openStatusColumn`, 73 pt):
+        // the rail sits in it, under the clock, as on the device.
+        XCTAssertGreaterThanOrEqual(rail.minX, box.maxX - Self.openStatusColumn - 1,
+                                    "Rail D \(rail) is not in the trailing status column of \(box)")
         assertNoHorizontalBar(app)
         let column = try XCTUnwrap(settledFrame(of: any["folded.collapsedRailD.column"], "collapsed column"))
+        XCTAssertLessThanOrEqual(column.maxX, box.maxX - Self.openStatusColumn + 1,
+                                 "the column \(column) reaches into the status column of \(box)")
         XCTAssertGreaterThanOrEqual(rail.minX, column.maxX - 1, "Rail D \(rail) is not right of the column \(column)")
         for identifier in ["transport.playPause", "transport.skip", "queue.affordance"] {
             let frame = app.buttons[identifier].frame
