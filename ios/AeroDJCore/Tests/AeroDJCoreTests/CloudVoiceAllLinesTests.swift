@@ -346,6 +346,22 @@ final class CloudVoiceAllLinesTests: XCTestCase {
         XCTAssertTrue(PersonalDataReset.message.contains("cloud-voice clips of your library songs and station names"))
     }
 
+    /// #440: privacy.md must disclose App Store vs TestFlight differences, WeatherKit/GDELT opt-ins,
+    /// App Attest record retention (90-day sliding TTL, 2-day hashed counters), and withdrawal limits.
+    func testPrivacyPolicyDisclosesAttestRetentionAndWithdrawalLimits() throws {
+        let privacy = try repoFile("docs/site/privacy.md")
+        for required in [
+            "App Store builds do not include this news provider",
+            "coarse coordinate is sent only to Apple WeatherKit",
+            "90-day sliding TTL",
+            "2-day TTL",
+            "zero retention is not enabled",
+            "cannot be remotely deleted by OnAirly",
+        ] {
+            XCTAssertTrue(privacy.contains(required), "privacy.md must mention: \(required)")
+        }
+    }
+
     private func appSource(_ name: String) throws -> String { try repoFile("ios/AeroDJ/\(name)") }
 
     private func repoFile(_ path: String) throws -> String {

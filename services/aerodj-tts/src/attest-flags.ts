@@ -37,9 +37,10 @@ export function testerVoiceOn(env: Env): boolean {
  * `no_category_fallback` (and legacy un-reasoned) tester keys with 403
  * `no_entitlement` while `testflight_category` keys stay unaffected.
  *
- * TODO(#407 N2): before public App Store launch, set
- * `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK=false` (or remove the fallback branch) so
- * iOS 26 App Store installs cannot reach the tester tier.
+ * TODO(#407, App Store release gate): launch-checklist step, not a code change. Before
+ * submitting an App Store build, set `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK=false` on
+ * production aerodj-tts and redeploy (README "Before App Store submission"), so iOS 26
+ * App Store installs cannot reach the tester tier. Rollback: unset it (or `true`) and redeploy.
  */
 export function noCategoryFallbackAllowed(env: Env): boolean {
   if (!testerVoiceEnabled(env)) return false;

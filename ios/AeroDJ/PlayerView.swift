@@ -199,9 +199,14 @@ enum PlaybackSessionBinder {
             }
         }
         // A song really started: the DJ session plans its break with the catalog duration.
-        // Without a duration nothing is planned, so the DJ stays quiet rather than guessing.
-        music.onSongStarted = { [djSession, talkover] index, duration in
+        // Without a usable duration nothing is planned, so the DJ stays quiet rather than guessing,
+        // and logs the skip so the silent boundary is visible in release logs (#304 R3).
+        music.onSongStarted = { [djSession, talkover, weak music] index, duration in
             talkover.songStarted(index: index, duration: duration)
+            if let skip = PlaybackLog.songStartSkipReason(duration: duration) {
+                music?.logBreakSkipped(after: index, reason: skip)
+                return
+            }
             guard let duration else { return }
             Task { await djSession.songStarted(index: index, remaining: .seconds(duration)) }
         }
@@ -216,6 +221,32 @@ enum PlaybackSessionBinder {
         music.onSongSkipped = { [djSession, talkover] index in
             talkover.songSkipped(index: index)
             Task { await djSession.songCut(afterTrack: index) }
+        }
+        // #304 R1 (-Atlas): what is armed for song k's boundary. While nothing is, the player may also
+        // hold the next station song in the background, so a suspended app still advances (Core
+        // `BackgroundQueueTail`). Read-only checks: asked on background polls and while a song is queued.
+        let dj = dependencies.dj
+        music.boundaryWorkArmed = { @MainActor [dj, interlude, talkover, stationQueue] k in
+            BackgroundQueueTail.boundaryWorkArmed(afterTrack: k, dj: dj.state,
+                                                  interludeSpeaking: interlude.isSpeaking,
+                                                  talkoverOwnsBoundary: talkover.ownsBoundary(k),
+                                                  stationWorkPending: stationQueue?.boundaryWorkPending ?? false)
+        }
+        // A break that starts preparing or becomes ready arms its boundary: trim the queued next
+        // song now (event-driven), not on the next poll. The poll's trim stays as the backstop.
+        Task { @MainActor [dj, music] in
+            for await state in dj.updates() {
+                switch state {
+                case let .preparing(k, _), let .ready(k, _, _): music.boundaryWorkWasArmed(afterTrack: k)
+                case .idle, .speaking, .unavailable: break
+                }
+            }
+        }
+        // The app was suspended through song k's end and MusicKit played the queued next song: a
+        // break armed for k is dropped (that boundary is gone), never played over the next song.
+        music.onQueueTailAdopted = { @MainActor [djSession] finishedIndex, workWasArmed in
+            guard workWasArmed else { return }
+            Task { await djSession.songCut(afterTrack: finishedIndex) }
         }
         // Only real audio events reach the DJ session; nothing is synthesized from the plan.
         interlude.onPlayback = { [djSession] event in

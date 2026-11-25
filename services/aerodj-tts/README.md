@@ -403,9 +403,9 @@ is unset or `true`, for an attestation with **no** category field (iOS 26 and ol
 `tierReason: "no_category_fallback"`; owner 2026-11-03). Any other present category (e.g. 4
 App Store) is 403 `no_entitlement`. `/api/attest/token` enforces `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK`
 on every mint for `no_category_fallback` (and legacy un-reasoned) tester keys while leaving
-`testflight_category` keys unaffected. **TODO(#407 N2, before public App Store launch):** set
-`AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK=false` or remove the no-category fallback, since an
-iOS 26 App Store install also carries no category.
+`testflight_category` keys unaffected. Before App Store submission the fallback must be
+turned off (#407; see "Before App Store submission" below), since an iOS 26 App Store install
+also carries no category.
 
 1. `POST /api/attest/challenge {purpose:"tok"}` + `X-OnAirly-Key` → key-bound challenge.
 2. `POST /api/attest/token {challenge}` + `X-OnAirly-Key` + `X-OnAirly-Assertion` (base64
@@ -425,6 +425,28 @@ More than one of `Authorization`, `X-OnAirly-Install-Token`, `X-OnAirly-Assertio
 `mixed_auth`. The owner bearer path is unchanged. Revoke keys with
 `npx tsx scripts/revoke-installs.ts production < keyids.txt` (owner's shell; entries live
 90 days, like the key record).
+
+#### Before App Store submission (#407 release gate)
+
+No App Attest signal tells an iOS 26 TestFlight copy from an iOS 26 App Store copy: both
+attest in the production environment (same aaguid), and `apple_validation_category_01` exists
+only on iOS 27+. So the no-category fallback is closed by config at launch, not by code.
+Do not flip it earlier: until submission it is what gives iOS 26 TestFlight testers cloud voice.
+
+1. Set `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK=false` on the **production** aerodj-tts project
+   (owner), then redeploy Production (env changes apply only on the next deployment).
+2. What it revokes: new no-category (iOS 26) registrations get no tier, and `/api/attest/token`
+   answers 403 `no_entitlement` for existing `no_category_fallback` keys and legacy tester keys
+   with no `tierReason` (logged `detail: "fallback_disabled"`, enum only; the client body is the
+   same as any other `no_entitlement`). Category-2 keys (`testflight_category`, iOS 27+ TestFlight)
+   keep minting. Nothing is deleted: refusal happens at each mint, and issued install tokens
+   expire within 30 minutes.
+3. After the flip, iOS 26 testers need iOS 27 for cloud voice; on iOS 26 the app uses the
+   on-device voice.
+4. Rollback: unset the variable (or set exactly `true`) and redeploy. Pre-flip fallback keys mint
+   again; installs that registered while it was `false` have no tier and need delete + reinstall.
+
+Pinned by the `#407 launch state` and `#407 N1` tests in `test/install-token.test.ts`.
 
 ## `GET /api/flags` (public app flags, #525)
 
@@ -485,7 +507,7 @@ either (`test/install-token.test.ts`); refusals log enum reasons only.
 | `AERODJ_TTS_APP_ATTEST_ENV` | no | Unset or `production`: only the production `aaguid`. `development` also accepts `appattestdevelop` (and validation category 3), **only** on a Preview/Development deployment with no `ELEVENLABS_API_KEY`; anywhere else, or any other value → 500 `misconfig`. |
 | `AERODJ_TTS_ENROLL_DAILY_CAP` | no | Verified enrollments per UTC day overall (default 20, owner decision 2026-10-29). Plain integer 1-100000; anything else uses the default. |
 | `AERODJ_TTS_TESTER_VOICE_ENABLED` | no | Tester voice kill switch (#378). Only exactly `true` (and `AERODJ_TTS_ATTEST_ENABLED=true`) enables `/api/attest/token` and install tokens on `/api/tts`; anything else (`TRUE`, `1`, empty) is off: 503 `disabled`. **Leave unset until the owner OKs it at deploy.** |
-| `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK` | no | iOS 26 no-category TestFlight fallback switch (#407 N1/N2). Unset or `true` (with `AERODJ_TTS_TESTER_VOICE_ENABLED=true`) allows no-category installs to register and mint; any other value (including `false` or a typo) fails closed: new no-category registrations get no tier, and `/api/attest/token` returns 403 `no_entitlement` for `no_category_fallback` and legacy un-reasoned tester keys while `testflight_category` keys stay unaffected. **Set `false` before public App Store launch (#407 N2).** |
+| `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK` | no | iOS 26 no-category TestFlight fallback switch (#407 N1/N2). Unset or `true` (with `AERODJ_TTS_TESTER_VOICE_ENABLED=true`) allows no-category installs to register and mint; any other value (including `false` or a typo) fails closed: new no-category registrations get no tier, and `/api/attest/token` returns 403 `no_entitlement` for `no_category_fallback` and legacy un-reasoned tester keys while `testflight_category` keys stay unaffected. **Set `false` before App Store submission (#407; see "Before App Store submission").** |
 | `AERODJ_DJ_AIRPLAY_LONGFORM` | no | iOS #525 **kill switch**, served by `GET /api/flags` as `djAirPlayLongForm`. **On by default:** unset or any value except exactly `false` (including `FALSE`, `0`, empty) answers `true`. Set exactly `false` to turn off the DJ voice's long-form AirPlay gap-break session if the Build 10 hold comes back; unset (or any other value) turns it back on. |
 | `AERODJ_ONAIRLY_NOW_PLAYING_SESSION` | no | iOS #600 **kill switch**, served by `GET /api/flags` as `onAirlyNowPlayingSession`. **On by default:** unset or any value except exactly `false` answers `true`. Set exactly `false` to turn off the iOS 27 OnAirly lock-screen Now Playing session (the lock screen falls back to MusicKit's own card). The app caches it at one launch and applies it at the next. |
 | `AERODJ_TTS_INSTALL_TOKEN_HMAC_KEY` | before tester voice is enabled | Server-only. Dedicated key for install tokens, at least 32 bytes, **created by the owner**, pasted directly into Vercel (Production). Must differ from the challenge key; missing, short or equal → 500 `misconfig` on the install paths. Rotating it invalidates every live token (30 min max). |
@@ -499,7 +521,13 @@ either (`test/install-token.test.ts`); refusals log enum reasons only.
 2. In Vercel, create a **new, separate project** named `aerodj-tts` from this
    repo with **Root Directory = `services/aerodj-tts`**, Framework preset: Other.
    This deploys only `api/tts.ts`, never the legacy root app. `vercel.json` sets
-   an ignore command so the project only builds when this directory changes.
+   an ignore command (`scripts/vercel-ignore-build.sh`) so **Preview and
+   Development** only build when this directory changes. **Production always
+   builds (#292)**: the step can't tell which environment Vercel's previous SHA
+   came from, so an app-only commit deployed to Production now rebuilds the
+   proxy too. That costs build minutes only; the proxy code is unchanged, so
+   don't treat such a build as a proxy change, and don't expect a
+   Production deploy to show "SKIP" in the build log.
    Confirm the production domain is exactly `aerodj-tts.vercel.app` (Vercel adds
    a suffix if the name is taken; the app pin must match it exactly).
 3. Add the Upstash Redis integration (Vercel Marketplace, free tier) to that
