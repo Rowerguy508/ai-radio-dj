@@ -1,10 +1,12 @@
 import crypto, { type X509Certificate } from 'node:crypto';
+import { TESTFLIGHT_VALIDATION_CATEGORY } from './app-attest-assertion.js';
 import { attestClientDataHash, MAX_ATTESTATION_BYTES, verifyAttestation, type AttestationFailure } from './app-attest-verify.js';
 import { registerConfig } from './attest-config.js';
 import {
   attestEnabled,
   DISABLED_RETRY_AFTER_SECONDS,
   MISCONFIG_RETRY_AFTER_SECONDS,
+  noCategoryFallbackAllowed,
   paidStopped,
   STORE_RETRY_AFTER_SECONDS,
 } from './attest-flags.js';
@@ -17,6 +19,7 @@ import {
   keyRecordKey,
   selectAttestStore,
   type AttestStore,
+  type TesterReason,
 } from './attest-store.js';
 import { parseKeyId, USED_TTL_SECONDS, verifyChallenge, type ChallengeFailure } from './challenge.js';
 import { clientNetwork, deviceBucket } from './enroll-device.js';
@@ -45,11 +48,20 @@ export type RegisterReason =
  */
 export type RegisterDetail = ChallengeFailure | AttestationFailure | 'reused' | 'duplicate' | 'device_cap' | 'install_cap';
 
+/**
+ * Why a registered install got tier `tester` (204 logs only; an enum, never sent to the client).
+ * - `testflight_category`: the attestation carries `apple_validation_category_01` == 2 (iOS 27+).
+ * - `no_category_fallback`: the attestation carries no category at all (iOS 26 and older), see
+ *   `testerTier` below.
+ */
+export type { TesterReason };
+
 export interface RegisterLogEntry {
   requestId: string;
   status: number;
   reason?: RegisterReason;
   detail?: RegisterDetail;
+  testerReason?: TesterReason;
 }
 
 export interface RegisterDeps {
@@ -109,6 +121,7 @@ export function registerDeps(env: Env = process.env): RegisterDeps {
           status: e.status,
           ...(e.reason ? { reason: e.reason } : {}),
           ...(e.detail ? { detail: e.detail } : {}),
+          ...(e.testerReason ? { tester_reason: e.testerReason } : {}),
         }),
       ),
     now: Date.now,
@@ -129,6 +142,34 @@ function parseAttestationObject(value: unknown): Buffer | null {
   if (value.length % 4 !== 0 || !B64.test(value)) return null;
   const bytes = Buffer.from(value, 'base64');
   return bytes.toString('base64') === value ? bytes : null;
+}
+
+/**
+ * Tier decision for a fully verified attestation (#378 §1.5, widened by owner decision
+ * 2026-11-03 20:45 ET: "Yes, make the server change for iOS 26 testers").
+ *
+ * - category 2 (TestFlight, iOS 27+)                → tester (`testflight_category`)
+ * - no category field at all (iOS 26 and older)     → tester, but only while
+ *   `noCategoryFallbackAllowed(env)` is true (`no_category_fallback`)
+ * - any other category present (4 App Store, 3 dev) → no tier (token → 403 no_entitlement)
+ *
+ * Apple only adds `apple_validation_category_01` on iOS 27+, so without the fallback an iOS 26
+ * TestFlight tester registers (204) but /api/attest/token refuses them and the app falls back
+ * to the on-device voice. The fallback is weaker: an App Store copy on iOS 26 would also carry
+ * no category and so would get the tester tier. Acceptable while OnAirly ships on TestFlight
+ * only; every cap (per-install, tester pool, owner share, global) still applies unchanged.
+ *
+ * TODO(#407, App Store release gate): no attestation signal separates an iOS 26 TestFlight copy
+ * from an iOS 26 App Store copy (both use the production aaguid; the category extension is
+ * iOS 27+ only), so the fallback is closed by config, not code. Launch-checklist step (README
+ * "Before App Store submission"): set `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK=false` on production
+ * aerodj-tts and redeploy before submitting. Pinned by the `#407 launch state` test in
+ * test/install-token.test.ts.
+ */
+export function testerTier(validationCategory: number | undefined, env: Env): TesterReason | null {
+  if (validationCategory === TESTFLIGHT_VALIDATION_CATEGORY) return 'testflight_category';
+  if (validationCategory === undefined && noCategoryFallbackAllowed(env)) return 'no_category_fallback';
+  return null;
 }
 
 /**
@@ -236,6 +277,7 @@ export async function handleRegister(request: Request, deps: RegisterDeps): Prom
     const day = utcDay(now);
     const enrollDevice = enrollDeviceKey(config.keyspace, day, deviceBucket(config.challengeKey, day, network));
     const enrollInstall = enrollInstallKey(config.keyspace, day, installBucket(config.challengeKey, day, installId));
+    const testerReason = testerTier(verified.attestation.validationCategory, deps.env);
     const outcome = await store.register(
       { used, record: keyRecordKey(config.keyspace, keyId), enroll: enrollKey(config.keyspace, day), enrollDevice, enrollInstall },
       {
@@ -244,12 +286,16 @@ export async function handleRegister(request: Request, deps: RegisterDeps): Prom
         env: verified.attestation.environment,
         createdDay: day,
         revoked: false,
+        // #378 §1.5 + #407 N1 iOS 26 fallback (see testerTier): category 2, or no category
+        // while fallback is allowed. Persist `tierReason` so `/api/attest/token` can turn off
+        // fallback-granted keys later without affecting `testflight_category` keys.
+        ...(testerReason ? { tier: 'tester' as const, tierReason: testerReason } : {}),
       },
       { usedTtlSeconds: USED_TTL_SECONDS, enrollCap: config.enrollCap, enrollDeviceCap: config.enrollDeviceCap, enrollInstallCap: config.enrollInstallCap },
     );
     switch (outcome) {
       case 'registered':
-        deps.log({ requestId, status: 204 });
+        deps.log({ requestId, status: 204, ...(testerReason ? { testerReason } : {}) });
         return new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store', 'X-Request-Id': requestId } });
       case 'reused':
         return fail('assertion', 'reused');

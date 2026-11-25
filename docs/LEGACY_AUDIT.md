@@ -48,7 +48,7 @@
 
 | Env var | Exposure | Risk |
 |---|---|---|
-| `NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN` | **Client** (NEXT_PUBLIC) | 🟡 MEDIUM — public by design: MusicKit JS requires the developer token in the browser, so it cannot be removed from the web client. Risk is a long-lived, origin-unrestricted token reused against our quota. **Remediation (#36):** mint server-side with short `exp` + `origin` claim, then rotate. The native app ships no developer token (MusicKit framework auth). |
+| `NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN` | Was **Client** (NEXT_PUBLIC); removed from the client path in #635 | 🟡 MEDIUM — no longer public by design. Since #635 the web client does not read this variable; `POST /api/apple-music/token` mints a short-lived developer token server-side (ES256 JWT with an `origin` claim and a 1 h max lifetime). The route is not on the public allowlist in `lib/auth/route-gate.ts`, so the fail-closed `/api` middleware (#174) still requires the admin token in front of it. A developer token that already shipped in a `NEXT_PUBLIC_` bundle stays valid until the owner rotates it; the code fix did not revoke it. The native app ships no developer token (MusicKit framework auth). |
 | `NEXT_PUBLIC_SPOTIFY_CLIENT_ID` | Client | 🟡 MEDIUM — public by design (OAuth client ID), low risk |
 | `SPOTIFY_CLIENT_SECRET` | Server | 🟢 OK — server-only |
 | `MINIMAX_API_KEY` | Server | 🟢 OK — server-only |
@@ -58,7 +58,7 @@
 | `SUPABASE_SERVICE_ROLE_KEY` | Server | 🔴 **HIGH** — full admin. Must never reach client. Confirmed server-only in `createAdminClient()`. |
 | `TELEGRAM_WEBHOOK_SECRET` | Server | 🟢 OK — server-only |
 
-**Key finding:** the service-role key is server-only, but the routes that use it have no authentication (§5), so its isolation provides no protection in practice. The MusicKit developer token is public by design; the roadmap's "short TTL/secure issuer" guidance applies (#36). In the native app, **no developer token is shipped** — MusicKit framework handles auth.
+**Key finding:** the service-role key is server-only, but the routes that use it have no authentication (§5), so its isolation provides no protection in practice. The MusicKit JS developer token is no longer public by design: since #635 it is minted server-side behind the admin gate (#36). A developer token that already shipped in a `NEXT_PUBLIC_` bundle stays valid until the owner rotates it, because the code fix did not revoke it. In the native app, **no developer token is shipped** — MusicKit framework handles auth.
 
 ## 4. Private data logging
 

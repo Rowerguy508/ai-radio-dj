@@ -103,6 +103,13 @@ struct AddStationWalkthroughView: View {
     @State private var savedName: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AccessibilityFocusState private var headingFocused: Bool
+    /// #465 item 10: nil on every phone and narrow split, which keeps the 20 pt gutter and
+    /// one results column exactly as before.
+    @Environment(\.appWideLayout) private var appWide
+
+    /// Extra side inset that holds the step at the readable width. Zero on the phone path.
+    private var wideLeadingInset: CGFloat { CGFloat(appWide?.leadingInset ?? 0) }
+    private var wideTrailingInset: CGFloat { CGFloat(appWide?.trailingInset ?? 0) }
 
     init(studio: StudioPresentationModel, creation: StationCreationModel,
          initialStep: AddStationStep = .kind, initialKind: StationCreationKind? = nil,
@@ -121,6 +128,14 @@ struct AddStationWalkthroughView: View {
     }
 
     var body: some View {
+        SplitBarHost(preferred: .leading) { insets in
+            libraryBrowser(insets)
+        }
+    }
+
+    /// Library playlists are one step of this walkthrough. `insets` nil keeps Cancel
+    /// on the leading edge.
+    private func libraryBrowser(_ insets: SplitInsets?) -> some View {
         NavigationStack {
             VStack(spacing: 0) {
                 StepIndicator(current: step, complete: { AddStationWalkthrough.isComplete($0, progress) })
@@ -135,7 +150,8 @@ struct AddStationWalkthroughView: View {
                             .accessibilityFocused($headingFocused)
                         stepContent
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.leading, 20 + wideLeadingInset)
+                    .padding(.trailing, 20 + wideTrailingInset)
                     .padding(.vertical, 18)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     // New identity per step, so the transition and pop-ins rerun.
@@ -148,9 +164,12 @@ struct AddStationWalkthroughView: View {
             }
             .background(AddStationStyle.canvas.ignoresSafeArea())
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: SplitToolbar.placement(
+                    preferred: .leading, edge: insets?.barEdge,
+                    leading: .cancellationAction, trailing: .topBarTrailing)) {
                     Button(savedName == nil ? "Cancel" : "Done") { onClose() }
                         .disabled(creation.isSaving)
+                        .modifier(SplitMinimumTarget(enabled: insets != nil))
                         .accessibilityIdentifier("addStation.cancel")
                 }
             }
@@ -364,6 +383,19 @@ struct AddStationWalkthroughView: View {
                 .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("addStation.genres.connect")
+        case .searching where wideColumns > 1, .results where wideColumns > 1:
+            // #465 item 10: the Duo, iPad and Split View half and wider. The same rows, in
+            // reading order across then down, so VoiceOver order is unchanged.
+            VStack(spacing: 8) {
+                if creation.resultsSource == .libraryPlaylists { libraryHeader }
+                LazyVGrid(columns: appWide?.gridColumns ?? [], alignment: .leading, spacing: 8) {
+                    ForEach(Array(creation.results.enumerated()), id: \.element.id) { index, row in
+                        resultRow(row).popIn(min(index, 6) + 2)
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("addStation.results.grid")
+            }
         case .searching, .results:
             VStack(spacing: 8) {
                 if creation.resultsSource == .libraryPlaylists {
@@ -377,6 +409,17 @@ struct AddStationWalkthroughView: View {
                 }
             }
         }
+    }
+
+    /// Results columns: 1 (the phone list) unless `AppWideLayout` gives more.
+    private var wideColumns: Int { appWide?.columns ?? 1 }
+
+    /// The wide grid's copy of the phone header above the rows.
+    private var libraryHeader: some View {
+        Text("Your playlists").font(.footnote.weight(.semibold))
+            .foregroundStyle(AddStationStyle.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
     }
 
     private func resultRow(_ row: StationSeedSearchResult) -> some View {
@@ -580,7 +623,8 @@ struct AddStationWalkthroughView: View {
                               enabled: AddStationWalkthrough.canGoNext(from: step, progress)) { goNext() }
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.leading, 20 + wideLeadingInset)
+        .padding(.trailing, 20 + wideTrailingInset)
         .padding(.top, 10)
         .padding(.bottom, 14)
         .background(AddStationStyle.canvas)
@@ -638,6 +682,8 @@ private struct StepIndicator: View {
     let current: AddStationStep
     let complete: (AddStationStep) -> Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// #465 item 10: lines the indicator up with the capped step. Nil (0 pt) on phones.
+    @Environment(\.appWideLayout) private var appWide
 
     var body: some View {
         HStack(spacing: 6) {
@@ -651,6 +697,8 @@ private struct StepIndicator: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(AddStationStyle.secondary)
         }
+        .padding(.leading, CGFloat(appWide?.leadingInset ?? 0))
+        .padding(.trailing, CGFloat(appWide?.trailingInset ?? 0))
         .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.8), value: current)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(current.accessibilityLabel)
