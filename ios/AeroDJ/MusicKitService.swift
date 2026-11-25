@@ -110,6 +110,8 @@ final class MusicKitService: ObservableObject {
     /// #304 R1 (-Atlas): what the player queue holds. One song in the foreground; in the
     /// background, the next station song too when nothing is armed for this boundary.
     private var queueTail = BackgroundQueueTail()
+    /// #304 R2 (-Atlas): one foreground retry for a post-break resume that failed in the background.
+    private var foregroundRetry = ForegroundResumeRetry()
     /// The last keep reason logged for the queue tail (logged once per change).
     private var lastQueueTailKeep: (index: Int, reason: BackgroundQueueTail.KeepReason)?
     /// #217 (-Atlas): the listener pressed Pause. `StationQueuePlayer` cancels any in-flight
@@ -254,6 +256,7 @@ final class MusicKitService: ObservableObject {
         // A new queue is not the song a skip was loading. A scheduled recovery must not replace it.
         skipCoordinator.invalidate(.queueReplaced)
         boundaries.setSkipLoadInFlight(false)
+        foregroundRetry.userIntervened()
         sessionPolicy.userPlay()
         // Build 9 P0 (-Atlas): every older start, watchdog and boundary is stale from here.
         let attempt = beginAttempt(userChangedQueue: true)
@@ -325,6 +328,7 @@ final class MusicKitService: ObservableObject {
         // A queued Next or a reload must not call userPlay() over this pause.
         skipCoordinator.invalidate(.userPause)
         boundaries.setSkipLoadInFlight(false)
+        foregroundRetry.userIntervened()
         cancelPlaybackConfirmTimeout()
         #if DEBUG || AERODJ_P0_DIAG
         cancelAirPlayGapMusicPlayingStamp()
@@ -453,6 +457,9 @@ final class MusicKitService: ObservableObject {
     /// Starts music again after a DJ break or an interruption, only if the user still
     /// wants playback and the system is not holding it paused.
     func resumeIfAllowed() async {
+        // #304 R2 (-Atlas): the resume right after a DJ break; if it throws in the background, it is
+        // retried once in the foreground.
+        let afterBreak = foregroundRetry.takeBreakResume()
         // #444: a skip already owns the player (it stopped the break and is loading the next
         // song). Automatic resume stays out of that skip. Explicit and remote Play cancel it
         // in `stopSkipForPlay` and clear the skip-load flag immediately.
@@ -493,6 +500,10 @@ final class MusicKitService: ObservableObject {
             cancelPlaybackConfirmTimeout()
             send(.playbackStartRefused)
             reportError(Self.playbackFailureMessage(error, attempt: attempt))
+            // #304 R2 (-Atlas): the error stays visible either way; a background post-break failure
+            // also arms one retry for the foreground, and a failed retry arms nothing.
+            _ = foregroundRetry.resumeFailed(attempt: attempt, generation: attempts.queueGeneration,
+                                             afterBreak: afterBreak)
         }
     }
 
@@ -924,6 +935,7 @@ final class MusicKitService: ObservableObject {
     /// again, so a song that starts there (or is still settling) gets its tail too.
     func sceneEnteredBackground() {
         queueTail.sceneEnteredBackground()
+        foregroundRetry.sceneEnteredBackground()
         queueNextSongIfAllowed(headPlaying: player.state.playbackStatus == .playing,
                                headPosition: player.playbackTime)
     }
@@ -933,8 +945,21 @@ final class MusicKitService: ObservableObject {
     func sceneBecameActive() {
         queueTail.sceneBecameActive()
         lastQueueTailKeep = nil
+        retryFailedBreakResumeIfArmed()
         guard pollTimer != nil else { return }
         pollPlaybackPosition()
+    }
+
+    /// #304 R2 (-Atlas): a post-break resume threw while the app was in the background. Back in the
+    /// foreground it runs once more, only if no newer start, queue change or pause happened since.
+    private func retryFailedBreakResumeIfArmed() {
+        guard foregroundRetry.sceneBecameActive(current: attempts.current, generation: attempts.queueGeneration,
+                                                mayAutoResume: sessionPolicy.mayAutoResume) == .retryResume else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.resumeIfAllowed()
+            self.foregroundRetry.retryReturned()
+        }
     }
 
     /// #304 R1 (-Atlas): boundary work was just armed for song `finishedIndex`: a DJ break began
@@ -1409,8 +1434,13 @@ final class MusicKitService: ObservableObject {
         send(.playbackConfirmed)
         isPlaying = true
         cancelPlaybackConfirmTimeout()
+        // #304 R2 (-Atlas): the foreground retry played; the failure it retried no longer applies.
+        let retryConfirmed = foregroundRetry.confirmed(attempt)
         if confirmReportedAttempt == attempt {
             confirmReportedAttempt = nil
+            lastError = nil
+            send(.errorCleared)
+        } else if retryConfirmed {
             lastError = nil
             send(.errorCleared)
         }
@@ -1489,6 +1519,7 @@ final class MusicKitService: ObservableObject {
     private func beginAttempt(userChangedQueue: Bool) -> PlaybackAttemptID {
         if userChangedQueue { attempts.userChangedQueue() }
         let attempt = attempts.beginStart()
+        foregroundRetry.attemptBegan(attempt)
         selfStartGate.startBegan(attempt)
         confirmReportedAttempt = nil
         #if DEBUG || AERODJ_P0_DIAG
@@ -1625,6 +1656,7 @@ final class MusicKitService: ObservableObject {
     /// The caller starts music only when `decision.resumeMusic` is true.
     func completeNarration(_ decision: NarrationResumeDecision) {
         releaseSessionAfterBreak()
+        foregroundRetry.breakEnded(resumesMusic: decision.resumeMusic)
         if let event = decision.audioEvent {
             stateMachine.apply(event)
         }
