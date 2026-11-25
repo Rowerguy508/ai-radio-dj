@@ -1,8 +1,11 @@
 name: iOS
 
-# No top-level path filter: these checks must always report so they can be
-# required. The `changes` job skips the macOS jobs when nothing iOS changed,
-# and a skipped job reports success.
+# No top-level path filter. `changes` skips the heavy jobs when those paths
+# did not change. A skipped job is not a success on GitHub, so each heavy
+# job's public name (the name merge-readiness requires) is reported by a
+# small ubuntu companion (`*-result`). The companion exits 0 when the path
+# filter skipped the work and exits 1 when the heavy job failed or was
+# cancelled. The heavy job itself keeps its id as its check name.
 on:
   push:
     branches: [main]
@@ -59,7 +62,6 @@ jobs:
               - 'docs/PRIVACY_MATRIX.md'
 
   core-tests:
-    name: AeroDJCore tests
     needs: changes
     if: needs.changes.outputs.core == 'true'
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
@@ -127,7 +129,6 @@ jobs:
   # Linux SwiftPM discovery. swift test here is the official Swift 6.2 image.
   # It does not replace the macOS AeroDJCore job or the iOS simulator gates.
   linux-core-tests:
-    name: AeroDJCore tests (Linux)
     needs: changes
     if: needs.changes.outputs.core == 'true'
     runs-on: ubuntu-latest
@@ -144,7 +145,6 @@ jobs:
         working-directory: ios/AeroDJCore
 
   simulator-build:
-    name: iOS simulator build
     needs: changes
     if: needs.changes.outputs.ios == 'true'
     # Always GitHub-hosted (Orion's call, #384): on the self-hosted Mac every SKTestSession call
@@ -302,7 +302,6 @@ jobs:
             --xcresult "$RUNNER_TEMP/sim-tests.xcresult" --log "$RUNNER_TEMP/sim-tests.log"
 
   device-build:
-    name: iOS device build (unsigned)
     needs: changes
     if: needs.changes.outputs.ios == 'true'
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
@@ -480,7 +479,6 @@ jobs:
     # Same image, Xcode, SDK, XcodeGen pin and `xcodebuild archive` invocation as testflight.yml's
     # "Archive (Release, manual signing)" step, with the same owner A/B compilation-condition
     # rule. No signing material, no secrets, no export and no upload. Always GitHub-hosted. -Echo
-    name: Release archive (Xcode 27.2, unsigned)
     needs: changes
     if: needs.changes.outputs.ios == 'true'
     runs-on: xcode-27
@@ -571,7 +569,6 @@ jobs:
           retention-days: 7
 
   runtime-mode:
-    name: Runtime mode on simulator (Debug vs Release)
     needs: changes
     if: needs.changes.outputs.ios == 'true'
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
@@ -695,7 +692,6 @@ jobs:
         run: ios/scripts/ci-selfhosted-cleanup.sh
 
   studio-screenshots:
-    name: Studio UI tests and screenshots (closed + open)
     needs: changes
     if: needs.changes.outputs.ios == 'true'
     # Mini when AERODJ_SELF_HOSTED=1 (all-mini) or AERODJ_MINI_STUDIO=1 (this job only),
@@ -1039,3 +1035,111 @@ jobs:
         if: always() && runner.environment == 'self-hosted'
         timeout-minutes: 3
         run: ios/scripts/ci-selfhosted-cleanup.sh
+
+  # Public check names. Each one stays success when the path filter skips the
+  # heavy job, and fails when that job fails or is cancelled. merge-readiness
+  # requires these names, not the heavy job ids.
+  core-tests-result:
+    name: AeroDJCore tests
+    needs: [changes, core-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report AeroDJCore tests
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          GATE: ${{ needs.changes.outputs.core }}
+          JOB_RESULT: ${{ needs.core-tests.result }}
+          JOB_NAME: AeroDJCore tests
+        run: bash .github/scripts/report-required-check.sh
+
+  linux-core-tests-result:
+    name: AeroDJCore tests (Linux)
+    needs: [changes, linux-core-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report AeroDJCore tests (Linux)
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          GATE: ${{ needs.changes.outputs.core }}
+          JOB_RESULT: ${{ needs.linux-core-tests.result }}
+          JOB_NAME: AeroDJCore tests (Linux)
+        run: bash .github/scripts/report-required-check.sh
+
+  simulator-build-result:
+    name: iOS simulator build
+    needs: [changes, simulator-build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report iOS simulator build
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          GATE: ${{ needs.changes.outputs.ios }}
+          JOB_RESULT: ${{ needs.simulator-build.result }}
+          JOB_NAME: iOS simulator build
+        run: bash .github/scripts/report-required-check.sh
+
+  device-build-result:
+    name: iOS device build (unsigned)
+    needs: [changes, device-build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report iOS device build (unsigned)
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          GATE: ${{ needs.changes.outputs.ios }}
+          JOB_RESULT: ${{ needs.device-build.result }}
+          JOB_NAME: iOS device build (unsigned)
+        run: bash .github/scripts/report-required-check.sh
+
+  release-archive-result:
+    name: Release archive (Xcode 27.2, unsigned)
+    needs: [changes, release-archive]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report Release archive (Xcode 27.2, unsigned)
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          GATE: ${{ needs.changes.outputs.ios }}
+          JOB_RESULT: ${{ needs.release-archive.result }}
+          JOB_NAME: Release archive (Xcode 27.2, unsigned)
+        run: bash .github/scripts/report-required-check.sh
+
+  runtime-mode-result:
+    name: Runtime mode on simulator (Debug vs Release)
+    needs: [changes, runtime-mode]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report Runtime mode on simulator (Debug vs Release)
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          GATE: ${{ needs.changes.outputs.ios }}
+          JOB_RESULT: ${{ needs.runtime-mode.result }}
+          JOB_NAME: Runtime mode on simulator (Debug vs Release)
+        run: bash .github/scripts/report-required-check.sh
+
+  studio-screenshots-result:
+    name: Studio UI tests and screenshots (closed + open)
+    needs: [changes, studio-screenshots]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report Studio UI tests and screenshots (closed + open)
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          GATE: ${{ needs.changes.outputs.ios }}
+          JOB_RESULT: ${{ needs.studio-screenshots.result }}
+          JOB_NAME: Studio UI tests and screenshots (closed + open)
+        run: bash .github/scripts/report-required-check.sh

@@ -1,0 +1,31 @@
+name: Merge readiness review relay
+
+# pull_request_review runs the workflow file from the pull request merge
+# commit. This file therefore has no permissions and does not check anything
+# out. The run name is only a pull request number. The gate treats that
+# string as untrusted, checks it is an integer, and loads the pull request
+# and its head sha from the API.
+run-name: ${{ github.event.pull_request.number }}
+
+on:
+  pull_request_review:
+    types: [submitted, edited]
+
+permissions: {}
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record the pull request number
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "pull request number is not an integer"
+              exit 1
+              ;;
+          esac
+          echo "$PR_NUMBER"

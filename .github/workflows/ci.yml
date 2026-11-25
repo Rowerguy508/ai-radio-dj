@@ -8,6 +8,7 @@ on:
 
 jobs:
   checks:
+    name: CI checks
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -35,6 +36,7 @@ jobs:
         run: npm run build
 
   tts-proxy:
+    name: CI tts-proxy
     runs-on: ubuntu-latest
     defaults:
       run:
