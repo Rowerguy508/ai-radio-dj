@@ -15,18 +15,35 @@ import Foundation
 ///   so a clip rendered during the window is neither withheld nor wiped. A key is marked under
 ///   the disk gate's lock together with its write, and the purge deletes under the same lock.
 /// Holds keys only, never clip content or item ids, and logs nothing.
+/// - #637 P1 (fail closed): a purge that could not remove every file it should have calls
+///   `purgeFailed()` instead of `finish()`. The gate stays pending (opened if it was not), so
+///   every earlier-launch personal clip, including the one that survived, stays withheld, and
+///   `needsRetry` makes the next `purgeExpired` sweep run the purge again. Only a purge whose
+///   removals all succeed calls `finish()`.
 final class CacheLaunchPurgeGate: @unchecked Sendable {
     private let lock = NSLock()
     private var pending = false
+    private var retry = false
     private var fresh: Set<String> = []
 
     var isPending: Bool { lock.withLock { pending } }
+    /// A launch purge failed to remove something; the next sweep must run it again.
+    var needsRetry: Bool { lock.withLock { retry } }
 
-    func begin() { lock.withLock { pending = true; fresh = [] } }
-    func finish() { lock.withLock { pending = false; fresh = [] } }
+    func begin() { lock.withLock { pending = true; retry = false; fresh = [] } }
+    func finish() { lock.withLock { pending = false; retry = false; fresh = [] } }
 
-    /// Call with the write, under the disk gate's lock. Records nothing once the purge is done.
+    /// #637 P1: keep (or start) withholding, and ask for a retry. Keys already stored in this
+    /// launch stay fresh; if the gate was not pending, nothing was, so nothing is kept.
+    func purgeFailed() { lock.withLock { if !pending { pending = true; fresh = [] }; retry = true } }
+
+    /// Call with the write, under the disk gate's lock, and only after the write succeeded.
+    /// Records nothing once the purge is done.
     func markStored(_ key: String) { lock.withLock { if pending { fresh.insert(key) } } }
+
+    /// #637 P1: a store whose write failed is not this launch's clip any more, whatever is left
+    /// at its key. Under the disk gate's lock.
+    func unmarkStored(_ key: String) { lock.withLock { _ = fresh.remove(key) } }
 
     /// True while a launch purge is pending and `key` was stored in this launch (purge keeps it).
     func storedThisLaunch(_ key: String) -> Bool { lock.withLock { pending && fresh.contains(key) } }
