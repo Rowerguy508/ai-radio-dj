@@ -212,6 +212,16 @@ public enum VoiceBetaDefaults {
 public enum AudioCacheRetention {
     public static let maximum: TimeInterval = 7 * 24 * 3600
     static func clamp(_ age: TimeInterval) -> TimeInterval { min(max(0, age), maximum) }
+
+    /// Whether a clip stamped `createdAt` may still be served or kept at `now` (#82 F2).
+    /// A stamp later than `now` means the clock was set back after the clip was stored (or it
+    /// was stored while the clock ran ahead), so its true age is unknown: it is not kept.
+    /// Re-stamping it to `now` instead would restart the 7 days on every rollback, and a clock
+    /// set back again and again could keep a personal clip forever.
+    static func isRetained(createdAt: Date, now: Date, maxAge: TimeInterval) -> Bool {
+        let age = now.timeIntervalSince(createdAt)
+        return age >= 0 && age <= maxAge
+    }
 }
 
 public protocol AudioCache: Sendable {
@@ -322,7 +332,9 @@ public actor InMemoryAudioCache: AudioCache {
     }
     public func audio(for key: String) -> CachedAudio? {
         guard let clip = clips[key] else { return nil }
-        guard now().timeIntervalSince(clip.createdAt) <= maxAge else { clips[key] = nil; return nil }
+        guard AudioCacheRetention.isRetained(createdAt: clip.createdAt, now: now(), maxAge: maxAge) else {
+            clips[key] = nil; return nil
+        }
         return clip
     }
     /// Stamps `createdAt` with the cache's clock, so retention is measured from when it was stored.
@@ -332,12 +344,11 @@ public actor InMemoryAudioCache: AudioCache {
     public func purge(sourceItemIDs: Set<UUID>) {
         clips = clips.filter { sourceItemIDs.isDisjoint(with: $0.value.sourceItemIDs) }
     }
-    /// A clip stamped later than now (stored while the clock ran ahead) is first re-stamped to
-    /// now, so its 7 days run from no later than the first sweep after the clock is corrected.
+    /// A clip stamped later than now (clock set back, or stored while it ran ahead) is removed
+    /// with the expired ones, never re-stamped (#82 F2).
     public func purgeExpired() {
         let t = now()
-        for (key, clip) in clips where clip.createdAt > t { clips[key]?.createdAt = t }
-        clips = clips.filter { t.timeIntervalSince($0.value.createdAt) <= maxAge }
+        clips = clips.filter { AudioCacheRetention.isRetained(createdAt: $0.value.createdAt, now: t, maxAge: maxAge) }
     }
     public func purgeAllPersonal() { clips = clips.filter { $0.value.sourceItemIDs.isEmpty } }
     /// `async`, matching the protocol requirement exactly (see `purgeClips`).
@@ -417,8 +428,8 @@ public struct FileAudioCache: AudioCache {
 
     public func audio(for key: String) async -> CachedAudio? {
         if let held = await memoryFallback.audio(for: key) { return held }
-        guard let clip = read(url(key)).map({ clampingFutureStamp($0, key: key) }) else { return nil }
-        guard now().timeIntervalSince(clip.createdAt) <= maxAge else {
+        guard let clip = read(url(key)) else { return nil }
+        guard AudioCacheRetention.isRetained(createdAt: clip.createdAt, now: now(), maxAge: maxAge) else {
             remove(group: key)
             return nil
         }
@@ -438,18 +449,6 @@ public struct FileAudioCache: AudioCache {
     private func groups() -> [(key: String, files: [URL], clip: CachedAudio?)] {
         Dictionary(grouping: allFiles(), by: { $0.deletingPathExtension().lastPathComponent })
             .map { key, files in (key, files, files.contains { $0.pathExtension == "json" } ? read(url(key)) : nil) }
-    }
-
-    /// Clock skew: a clip stamped later than now (stored while the clock ran ahead) is re-stamped
-    /// to now and saved, so its 7 days run from no later than the first sweep or read after the
-    /// clock is corrected, and it cannot outlive the cap by the size of the skew.
-    private func clampingFutureStamp(_ clip: CachedAudio, key: String) -> CachedAudio {
-        let t = now()
-        guard clip.createdAt > t else { return clip }
-        var clamped = clip
-        clamped.createdAt = t
-        if !diskGate.isClosed, let data = try? JSONEncoder().encode(clamped) { try? ProtectedFile.write(data, to: url(key)) }
-        return clamped
     }
 
     /// Deletes a key's metadata together with its audio, whatever the audio's extension.
@@ -473,10 +472,9 @@ public struct FileAudioCache: AudioCache {
     public func purgeExpired() async {
         await memoryFallback.purgeExpired()
         let t = now()
-        for group in groups() {
-            let clip = group.clip.map { clampingFutureStamp($0, key: group.key) }
-            guard clip.map({ t.timeIntervalSince($0.createdAt) > maxAge }) ?? true else { continue }
-            for file in group.files { try? FileManager.default.removeItem(at: file) }
+        // Expired, future-stamped (#82 F2: the clock was set back) or unreadable: all removed.
+        removeGroups { clip in
+            !(clip.map { AudioCacheRetention.isRetained(createdAt: $0.createdAt, now: t, maxAge: maxAge) } ?? false)
         }
     }
 
