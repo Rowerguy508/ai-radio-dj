@@ -95,7 +95,9 @@ extension SharedReviewStore {
             SharedReviewBackupOptOuts.shared.optOut(file)
             if (try? optInOps.remove(backupOptInFile)) == nil,
                (try? optInOps.write(Self.backupOptInOff, backupOptInFile)) == nil {
+                // #651 nit 1 (Sentinel, Echo): an `on` may still be on disk, so say so.
                 backupExclusionLog(Self.backupOptOutNotPersistedMessage)
+                throw SharedReviewError.backupOptOutNotPersisted
             }
             throw SharedReviewError.backupOptInUnverified
         }
@@ -106,13 +108,16 @@ extension SharedReviewStore {
         // (`includeFolderAfterVerifiedSave`).
         if isRevoked {
             removeSavedChoices()
-            guard !FileManager.default.fileExists(atPath: file.path), unreadableCopies().isEmpty else { return }
+            guard !FileManager.default.fileExists(atPath: file.path) else { return }
         }
         includeFolder()
     }
 
     /// Clears the folder's excluded flag. Best effort: on failure it stays excluded (private).
+    /// #651 N4 (Sentinel): never while a set-aside `.unreadable` copy is in the folder, revoked or
+    /// not, so a corrupt copy of old choices is never backed up.
     private func includeFolder() {
+        guard unreadableCopies().isEmpty else { return }
         do { try optInOps.markIncluded(file.deletingLastPathComponent()) } catch {
             backupExclusionLog(Self.backupInclusionFailureMessage)
         }
@@ -126,8 +131,10 @@ extension SharedReviewStore {
     }
 
     private func optOut() throws {
-        // Sentinel's nit (a) on #651: already off is a no-op.
-        guard isBackupOptedIn else { return }
+        // Sentinel's nit (a) on #651: already off is a no-op, but only when it is off on disk too.
+        // B3: after a failed opt-out the in-process off hides an `on` still on disk, so a retry
+        // must still remove it, or a relaunch would read on and back up the folder.
+        guard isBackupOptedIn || (try? optInOps.read(backupOptInFile)) == Self.backupOptInOn else { return }
         // Off for this process first, whatever the disk does next.
         SharedReviewBackupOptOuts.shared.optOut(file)
         var persisted = true

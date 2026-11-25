@@ -363,6 +363,70 @@ final class SharedReviewBackupOptInTests: XCTestCase {
         XCTAssertTrue(relaunched(s, marker).load().isEmpty, "the old approvals never load")
     }
 
+    // MARK: #651 second review
+
+    /// B3: a failed opt-out leaves `on` on disk behind the in-process off. The retry must still
+    /// remove it, so a relaunch reads off and a save keeps the folder excluded.
+    func testARetriedOptOutAfterAFailedOneRemovesTheOnFileSoARelaunchStaysExcluded() throws {
+        let marker = Marker(), included = Included()
+        var s = store(marker, included: included)
+        try s.setBackupOptIn(true)
+        XCTAssertEqual(included.dirs.count, 1)
+        s.optInOps.remove = { _ in throw Boom() }
+        s.optInOps.write = { _, _ in throw Boom() }
+        XCTAssertThrowsError(try s.setBackupOptIn(false)) {
+            XCTAssertEqual($0 as? SharedReviewError, .backupOptOutNotPersisted)
+        }
+        XCTAssertEqual(try Data(contentsOf: s.backupOptInFile), Data("on".utf8), "still on disk")
+
+        s.optInOps = .live
+        s.optInOps.markIncluded = { included.add($0) }
+        try s.setBackupOptIn(false)                     // the retry
+        XCTAssertFalse(exists(s.backupOptInFile), "the retry removed it")
+
+        SharedReviewBackupOptOuts.shared.clear(s.file)  // relaunch: only the disk remains
+        let fresh = store(marker, included: included, at: s.file)
+        XCTAssertFalse(fresh.isBackupOptedIn, "a relaunch reads off")
+        try fresh.save(approvals(1))
+        XCTAssertEqual(included.dirs.count, 1, "the save keeps the folder excluded")
+    }
+
+    /// Nit 1: the failed opt-in can neither remove nor overwrite the file, so it says so.
+    /// M7: and the in-process off holds even though an earlier `on` is still on disk.
+    func testAFailedOptInThatCanNotClearTheFileIsOffInThisProcessAndSaysSo() throws {
+        let marker = Marker(), lines = Lines()
+        var s = store(marker, lines: lines)
+        try s.setBackupOptIn(true)                       // an earlier opt-in left `on` on disk
+        s.optInOps.write = { _, _ in throw Boom() }
+        s.optInOps.remove = { _ in throw Boom() }
+        XCTAssertThrowsError(try s.setBackupOptIn(true)) {
+            XCTAssertEqual($0 as? SharedReviewError, .backupOptOutNotPersisted)
+        }
+        XCTAssertEqual(try Data(contentsOf: s.backupOptInFile), Data("on".utf8))
+        XCTAssertFalse(s.isBackupOptedIn, "off in this process although the disk says on")
+        XCTAssertEqual(lines.all, [SharedReviewStore.backupOptOutNotPersistedMessage], "one content-free line")
+        marker.readBack = false
+        XCTAssertThrowsError(try s.save(approvals(1))) {
+            XCTAssertEqual($0 as? SharedReviewError, .backupExclusionUnverified, "the mark is required again")
+        }
+    }
+
+    /// N4: a set-aside `.unreadable` copy keeps the folder excluded on opt-in and after a save,
+    /// outside any revocation.
+    func testAnUnreadableCopyKeepsTheFolderExcludedWithoutARevocation() throws {
+        let marker = Marker(), included = Included()
+        let s = store(marker, included: included)
+        try FileManager.default.createDirectory(at: s.file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("corrupt".utf8).write(to: s.file)
+        try s.save(approvals(1))                         // sets the corrupt file aside
+        XCTAssertTrue(exists(s.unreadableBackupPrefix))
+        XCTAssertFalse(s.isRevoked)
+        try s.setBackupOptIn(true)
+        XCTAssertTrue(s.isBackupOptedIn)
+        try s.save(approvals(1))
+        XCTAssertEqual(included.dirs.count, 0, "never backed up while a set-aside copy is there")
+    }
+
     // MARK: Review level
 
     private func review(items: Int, marker: Marker) throws -> (SharedInboxReview, URL, [UUID]) {
