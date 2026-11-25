@@ -109,6 +109,47 @@ final class BreakOutcomePurgeTests: XCTestCase {
         }
     }
 
+    /// Sentinel/Fry nit on #642: the break left the air without `endOnAir` (the briefing went off
+    /// while it spoke: `onAir` cleared, the briefing dropped, the queue re-planned), but its
+    /// unfinished personal line is still held for the ledger until the player reports the end.
+    /// The item is no longer in the briefing, a planned break or `onAir`; `purgeAllPersonal()`
+    /// must still find it there and clear it.
+    func testPurgeAllPersonalReachesLinesHeldAfterTheBreakLeftTheAir() async throws {
+        let itemID = UUID()
+        let (session, dj, studio) = await session(itemID: itemID, title: "Fixture dentist reminder 4417")
+        let offer = StationStartBriefing.offer(
+            for: .idlePlayStart,
+            briefing: session.briefingProvider(studio: studio, now: { Date() }, calendar: calendar))
+        await session.queueStarted(djTracks(8), briefing: offer.briefing, sources: offer.sources)
+        await session.songStarted(index: 0, remaining: .seconds(180))
+        for _ in 0..<500 { if case .ready = dj.studioState { break }; try? await Task.sleep(for: .milliseconds(10)) }
+        let handed = await session.naturalBoundary(afterTrack: 0)
+        let aired = try XCTUnwrap(handed, "the personal break is handed out")
+        let personalText = try XCTUnwrap(aired.cues.first { $0.isContent && $0.sourceItemID == itemID }?.text)
+        let audio = aired.clips.map(\.audio.data)
+
+        // A line-reporting player starts it; the lead plays, the personal line never finishes.
+        session.breakReportsLines(afterTrack: 0)
+        session.playbackStarted(afterTrack: 0)
+        if let lead = aired.clips.first?.cueID, !aired.cues.contains(where: { $0.id == lead && $0.isContent }) {
+            session.lineFinished(afterTrack: 0, cueID: lead)
+        }
+        var previous = StationConfiguration(commentary: .frequent)
+        previous.briefing.enabled = true
+        var active = previous
+        active.briefing.enabled = false
+        await session.stationChanged(StationConfigurationChange(previous: previous, active: active, applied: [], boundary: nil))
+
+        XCTAssertFalse(session.testHandedOutPersonalCueIDs.isEmpty, "fixture: the unfinished line is still held")
+        XCTAssertFalse(session.testPlannedBreaks.values.contains { $0.cues.contains { $0.sourceItemID == itemID } },
+                       "fixture: the item is no longer planned")
+
+        let ids = session.purgeAllPersonal()
+        XCTAssertTrue(ids.contains(itemID), "purgeAllPersonal finds the item held for the ledger")
+        XCTAssertEqual(session.testHandedOutPersonalCueIDs, [], "no personal line is left for the ledger")
+        assertNoPersonalContent(session, text: personalText, audio: audio, "after purgeAllPersonal()")
+    }
+
     /// The slim value carries exactly what the report read from the full outcome.
     func testCapOutcomeKeepsOnlyWhatTheReportReads() {
         let drop = DJTimeCheckDrop(cueID: UUID(), reason: .stale)

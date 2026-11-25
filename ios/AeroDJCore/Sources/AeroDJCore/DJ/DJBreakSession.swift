@@ -974,6 +974,7 @@ public final class DJBreakSession {
         if let live = onAir, !live.sources.isEmpty {
             ids.formUnion(live.sources)
         }
+        ids.formUnion(handedOutPersonal?.cues.compactMap(\.sourceItemID) ?? [])
         purge(sourceItemIDs: ids)
         return ids
     }
