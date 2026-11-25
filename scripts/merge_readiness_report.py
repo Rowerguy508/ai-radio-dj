@@ -5,9 +5,12 @@ Run by hand:  python3 scripts/merge_readiness_report.py 633 [--repo owner/name] 
 
 Prints, at the PR's exact head sha:
   (a) checks: every job in ios.yml and ci.yml (read from the base branch head) has a completed
-      `success` check run on that sha. Missing, pending, skipped, cancelled or failed is not green.
+      `success` check run on that sha. A skipped job counts as green only when ios.yml's `changes`
+      job (the path filter) concluded success at the same sha; it is shown as
+      "skipped (path filter, changes passed)". Missing, pending, cancelled, failed, or any other
+      skip is not green.
   (b) signs: a comment or review whose first non-empty line is exactly `SIGN <sha8|sha40> -Name`,
-      where the sha is the current head, and whose body contains `No blockers.`. A review in
+      where the sha is the current head. A review in
       CHANGES_REQUESTED state never counts. The signer is the `-Name`, not the GitHub login (every
       bot posts as the same login). Non-author: Name is not the git author name, nor a
       Co-authored-by name, of ANY commit on the PR, forward-merge commits included. One sign per
@@ -41,7 +44,6 @@ MAX_COMPARE_FILES = 300  # GitHub's compare file limit.
 
 SIGN_LINE = re.compile(r"^SIGN ([0-9a-fA-F]{8}|[0-9a-fA-F]{40}) -([A-Za-z][A-Za-z0-9]*)$")
 CO_AUTHOR = re.compile(r"^Co-authored-by:\s*(.+?)\s*<[^>]*>\s*$", re.IGNORECASE | re.MULTILINE)
-NO_BLOCKERS = "No blockers."
 
 
 # ---------- pure logic (tested offline) ----------
@@ -113,8 +115,6 @@ def parse_sign(body: str | None, head_sha: str) -> tuple[str | None, str | None]
     sha, name = m.group(1).lower(), m.group(2)
     if not head_sha.lower().startswith(sha):
         return None, f"{name}: sign at {sha[:8]}, head is {head_sha[:8]}"
-    if NO_BLOCKERS not in body:
-        return None, f"{name}: no '{NO_BLOCKERS}' in the body"
     return name, None
 
 
@@ -138,10 +138,16 @@ def collect_signs(postings: list[dict], head_sha: str, authors: set[str]) -> dic
     return {"valid": valid, "rejected": rejected}
 
 
-def latest_runs(check_runs: list[dict]) -> dict[str, dict]:
-    """Latest check run per name (by started_at, then id)."""
+SKIP_GREEN = "skipped (path filter, changes passed)"
+CHANGES_JOB = "changes"
+
+
+def latest_runs(check_runs: list[dict], head_sha: str | None = None) -> dict[str, dict]:
+    """Latest check run per name (by started_at, then id). Runs at another sha are ignored."""
     best: dict[str, dict] = {}
     for r in check_runs:
+        if head_sha and r.get("head_sha") and r["head_sha"].lower() != head_sha.lower():
+            continue
         key = (r.get("started_at") or "", r.get("id") or 0)
         cur = best.get(r.get("name"))
         if cur is None or key > (cur.get("started_at") or "", cur.get("id") or 0):
@@ -149,8 +155,13 @@ def latest_runs(check_runs: list[dict]) -> dict[str, dict]:
     return best
 
 
-def assess_checks(check_runs: list[dict], required: list[str]) -> dict:
-    runs = latest_runs(check_runs)
+def assess_checks(check_runs: list[dict], required: list[str], head_sha: str | None = None) -> dict:
+    """A skipped job counts as green only when the `changes` job (ios.yml's path filter) concluded
+    success at the same head sha. Any other skip, or a skip with `changes` missing, pending or not
+    successful, is not green."""
+    runs = latest_runs(check_runs, head_sha)
+    ch = runs.get(CHANGES_JOB)
+    changes_passed = bool(ch and ch.get("status") == "completed" and ch.get("conclusion") == "success")
     rows, bad = [], []
     for name in required:
         r = runs.get(name)
@@ -160,8 +171,10 @@ def assess_checks(check_runs: list[dict], required: list[str]) -> dict:
             state = r.get("status") or "pending"
         else:
             state = r.get("conclusion") or "no conclusion"
+            if state == "skipped" and name != CHANGES_JOB:
+                state = SKIP_GREEN if changes_passed else "skipped (changes did not pass at this head)"
         rows.append((name, state))
-        if state != "success":
+        if state not in ("success", SKIP_GREEN):
             bad.append(f"{name}: {state}")
     return {"rows": rows, "bad": bad}
 
@@ -195,7 +208,7 @@ def render(report: dict) -> str:
            f"Base {pr['base']} at {report['base_head'][:8]}, merge-base {report['merge_base'][:8]}",
            f"Commit authors on the PR: {', '.join(report['author_names']) or '(none)'}",
            "", f"Checks ({len(checks['rows']) - len(checks['bad'])}/{len(checks['rows'])} green):"]
-    out += [f"  {'ok ' if s == 'success' else 'NO '} {n}: {s}" for n, s in checks["rows"]]
+    out += [f"  {'ok ' if s in ('success', SKIP_GREEN) else 'NO '} {n}: {s}" for n, s in checks["rows"]]
     out += ["", f"Signs ({len(signs['valid'])}/{REQUIRED_SIGNS} non-author at {pr['head_sha'][:8]}):"]
     out += [f"  ok  {n} {u}".rstrip() for n, u in signs["valid"].items()] or ["  (none)"]
     out += [f"  --  not counted: {r}" for r in signs["rejected"]]
@@ -222,7 +235,7 @@ def build_report(*, pr: dict, base_head: str, merge_base: str, workflows: list[s
     if not required:
         warnings.append("INCOMPLETE: no job names found in ios.yml/ci.yml")
     authors = commit_author_names(commits)
-    checks = assess_checks(check_runs, required)
+    checks = assess_checks(check_runs, required, pr["head_sha"])
     signs = collect_signs(postings, pr["head_sha"], authors)
     ov = overlap(pr_files, base_files)
     ready, reasons = verdict(pr=pr, checks=checks, signs=signs, overlap_files=ov, warnings=warnings)

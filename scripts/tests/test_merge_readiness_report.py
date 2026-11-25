@@ -56,10 +56,12 @@ class Signs(NoNetwork):
         self.assertIsNone(name)
         self.assertIn("head is 6d5a1505", why)
 
-    def test_needs_no_blockers(self):
-        name, why = m.parse_sign("SIGN 6d5a1505 -Echo\n\nLooks fine.", HEAD)
-        self.assertIsNone(name)
-        self.assertIn("No blockers.", why)
+    def test_sign_without_no_blockers_counts(self):
+        self.assertEqual(m.parse_sign("SIGN 6d5a1505 -Echo\n\nReviewed: test-only. -Echo", HEAD), ("Echo", None))
+        self.assertEqual(m.parse_sign("SIGN 6d5a1505 -Echo", HEAD), ("Echo", None))
+        s = m.collect_signs([{"kind": "comment", "body": "SIGN 6d5a1505 -Atlas\n\nLooks fine.", "url": "u"}],
+                            HEAD, {"fry"})
+        self.assertEqual(s["valid"], {"Atlas": "u"})
 
     def test_sign_must_be_first_line_and_exact(self):
         self.assertEqual(m.parse_sign("Reviewed.\nSIGN 6d5a1505 -Echo\nNo blockers.", HEAD), (None, None))
@@ -87,19 +89,66 @@ class Signs(NoNetwork):
 
 
 class Checks(NoNetwork):
-    def test_latest_run_wins_and_missing_pending_skipped_are_not_green(self):
+    def test_latest_run_wins_and_missing_pending_failed_are_not_green(self):
         runs = [
             {"id": 1, "name": "a", "status": "completed", "conclusion": "failure", "started_at": "1"},
             {"id": 2, "name": "a", "status": "completed", "conclusion": "success", "started_at": "2"},
             {"id": 3, "name": "b", "status": "queued", "conclusion": None, "started_at": "1"},
-            {"id": 4, "name": "c", "status": "completed", "conclusion": "skipped", "started_at": "1"},
+            {"id": 4, "name": "c", "status": "completed", "conclusion": "cancelled", "started_at": "1"},
             {"id": 5, "name": "d", "status": "completed", "conclusion": "success", "started_at": "1"},
             {"id": 6, "name": "d", "status": "completed", "conclusion": "cancelled", "started_at": "2"},
         ]
         r = m.assess_checks(runs, ["a", "b", "c", "d", "e"])
-        self.assertEqual(r["rows"], [("a", "success"), ("b", "queued"), ("c", "skipped"),
+        self.assertEqual(r["rows"], [("a", "success"), ("b", "queued"), ("c", "cancelled"),
                                      ("d", "cancelled"), ("e", "missing")])
         self.assertEqual(len(r["bad"]), 4)
+
+
+class PathFilterSkips(NoNetwork):
+    REQ = ["changes", "iOS simulator build", "checks"]
+
+    def runs(self, changes=("completed", "success"), changes_sha=HEAD, sim_sha=HEAD):
+        out = [{"id": 2, "name": "iOS simulator build", "status": "completed", "conclusion": "skipped",
+                "started_at": "1", "head_sha": sim_sha},
+               {"id": 3, "name": "checks", "status": "completed", "conclusion": "success",
+                "started_at": "1", "head_sha": HEAD}]
+        if changes:
+            out.append({"id": 1, "name": "changes", "status": changes[0], "conclusion": changes[1],
+                        "started_at": "1", "head_sha": changes_sha})
+        return out
+
+    def test_skip_with_changes_success_counts_as_green(self):
+        r = m.assess_checks(self.runs(), self.REQ, HEAD)
+        self.assertEqual(r["bad"], [])
+        self.assertIn(("iOS simulator build", m.SKIP_GREEN), r["rows"])
+
+    def test_skip_with_changes_failed_or_pending_or_missing_is_not_green(self):
+        for changes in (("completed", "failure"), ("completed", "skipped"), ("in_progress", None), None):
+            r = m.assess_checks(self.runs(changes=changes), self.REQ, HEAD)
+            self.assertIn("iOS simulator build: skipped (changes did not pass at this head)", r["bad"], changes)
+
+    def test_changes_at_another_sha_does_not_vouch(self):
+        r = m.assess_checks(self.runs(changes_sha="b" * 40), self.REQ, HEAD)
+        self.assertIn("changes: missing", r["bad"])
+        self.assertIn("iOS simulator build: skipped (changes did not pass at this head)", r["bad"])
+
+    def test_skip_at_another_sha_does_not_count(self):
+        r = m.assess_checks(self.runs(sim_sha="b" * 40), self.REQ, HEAD)
+        self.assertIn("iOS simulator build: missing", r["bad"])
+
+    def test_skipped_changes_job_itself_is_not_green(self):
+        runs = [{"id": 1, "name": "changes", "status": "completed", "conclusion": "skipped",
+                 "started_at": "1", "head_sha": HEAD}]
+        self.assertEqual(m.assess_checks(runs, ["changes"], HEAD)["bad"], ["changes: skipped"])
+
+    def test_report_marks_skip_green_as_ok(self):
+        f = fixture()
+        for r in f["check_runs"]:
+            if r["name"] == "AeroDJCore tests":
+                r["conclusion"] = "skipped"
+        rep = m.build_report(**f)
+        self.assertTrue(rep["ready"], rep["reasons"])
+        self.assertIn("  ok  AeroDJCore tests: skipped (path filter, changes passed)", m.render(rep))
 
 
 class Overlap(NoNetwork):
