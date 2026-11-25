@@ -427,6 +427,50 @@ final class SharedReviewBackupOptInTests: XCTestCase {
         XCTAssertEqual(included.dirs.count, 0, "never backed up while a set-aside copy is there")
     }
 
+    // MARK: #651 third review
+
+    /// N5: with `on` on disk behind the in-process off, a failed read must not turn the retry into
+    /// a silent success; the retry goes ahead and removes the file.
+    func testARetriedOptOutWithAFailedReadStillRemovesTheOnFile() throws {
+        let marker = Marker()
+        var s = store(marker)
+        try s.setBackupOptIn(true)
+        s.optInOps.remove = { _ in throw Boom() }
+        s.optInOps.write = { _, _ in throw Boom() }
+        XCTAssertThrowsError(try s.setBackupOptIn(false))
+        XCTAssertEqual(try Data(contentsOf: s.backupOptInFile), Data("on".utf8))
+
+        s.optInOps.remove = SharedReviewBackupOptInOps.live.remove
+        s.optInOps.write = SharedReviewBackupOptInOps.live.write
+        s.optInOps.read = { _ in throw Boom() }
+        try s.setBackupOptIn(false)
+        XCTAssertFalse(exists(s.backupOptInFile), "the retry went ahead despite the failed read")
+        XCTAssertFalse(relaunched(s, marker).isBackupOptedIn)
+    }
+
+    /// N6: a corrupt state.json set aside by a save while opted in (folder already included) gets
+    /// the folder re-marked excluded; if that mark fails, the save fails closed.
+    func testACopySetAsideWhileOptedInReExcludesTheFolder() throws {
+        let marker = Marker(), included = Included()
+        let s = store(marker, included: included)
+        try s.setBackupOptIn(true)
+        XCTAssertEqual(included.dirs.count, 1)
+        XCTAssertEqual(marker.marks, 0)
+        try Data("corrupt".utf8).write(to: s.file)
+        let records = approvals(1)
+        try s.save(records)
+        XCTAssertTrue(exists(s.unreadableBackupPrefix))
+        XCTAssertEqual(marker.marks, 1, "re-marked excluded")
+        XCTAssertEqual(included.dirs.count, 1, "not included again")
+        XCTAssertEqual(s.load(), records)
+
+        marker.readBack = false
+        try Data("corrupt again".utf8).write(to: s.file)
+        XCTAssertThrowsError(try s.save(approvals(1))) {
+            XCTAssertEqual($0 as? SharedReviewError, .backupExclusionUnverified)
+        }
+    }
+
     // MARK: Review level
 
     private func review(items: Int, marker: Marker) throws -> (SharedInboxReview, URL, [UUID]) {

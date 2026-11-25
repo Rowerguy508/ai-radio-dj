@@ -100,6 +100,8 @@ public struct SharedReviewStore: Sendable {
         // set). Without it, #426's fail-closed rule holds.
         guard isBackupOptedIn || markFolderExcludedFromBackup() else { throw SharedReviewError.backupExclusionUnverified }
         try setAsideUnreadableFile()
+        // #651 N6: a copy set aside while opted in must not stay in an included folder.
+        guard reExcludeFolderForSetAsideCopy() else { throw SharedReviewError.backupExclusionUnverified }
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         let keyed = Dictionary(uniqueKeysWithValues: records.map { ($0.key.uuidString, $0.value) })

@@ -123,6 +123,20 @@ extension SharedReviewStore {
         }
     }
 
+    /// #651 N5: true only when the opt-in file is missing or reads back exactly `off`.
+    private var optInFileIsOff: Bool {
+        guard FileManager.default.fileExists(atPath: backupOptInFile.path) else { return true }
+        return (try? optInOps.read(backupOptInFile)) == Self.backupOptInOff
+    }
+
+    /// #651 N6 (Sentinel): `save` just set a copy aside while opted in, and the folder may already be
+    /// included. Re-mark it excluded with the read-back, so the copy is never backed up. False if
+    /// the mark could not be verified (the save then fails closed, as without the opt-in).
+    func reExcludeFolderForSetAsideCopy() -> Bool {
+        guard isBackupOptedIn, !unreadableCopies().isEmpty else { return true }
+        return markFolderExcludedFromBackup()
+    }
+
     /// Called by `save` after its write has completed and ended any revocation: with the opt-in
     /// on, the folder may now be backed up.
     func includeFolderAfterVerifiedSave() {
@@ -134,7 +148,9 @@ extension SharedReviewStore {
         // Sentinel's nit (a) on #651: already off is a no-op, but only when it is off on disk too.
         // B3: after a failed opt-out the in-process off hides an `on` still on disk, so a retry
         // must still remove it, or a relaunch would read on and back up the folder.
-        guard isBackupOptedIn || (try? optInOps.read(backupOptInFile)) == Self.backupOptInOn else { return }
+        // N5 (Sentinel): the retry is skipped only when the file is missing or reads exactly `off`;
+        // a failed read (or `on`, or anything else) goes ahead with the opt-out.
+        guard isBackupOptedIn || !optInFileIsOff else { return }
         // Off for this process first, whatever the disk does next.
         SharedReviewBackupOptOuts.shared.optOut(file)
         var persisted = true
