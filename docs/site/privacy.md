@@ -1,12 +1,20 @@
 # OnAirly Privacy Policy
 
-_Last updated: November 23, 2026_
+_Last updated: November 25, 2026_
 
 ## The short version
 
-OnAirly: Personal AI Radio DJ is a radio DJ that runs on your iPhone or iPad, with iOS 17 or iPadOS 17 or later and an Apple Music subscription. Your calendar, Markdown notes, the things you share to OnAirly, your music library and your station settings are read and kept on your device. There are no ads, no analytics, no tracking and no data brokers in OnAirly, and we don't sell or share your data.
+OnAirly: Personal AI Radio DJ is a radio DJ that runs on your iPhone or iPad, with iOS 17 or iPadOS 17 or later and an Apple Music subscription. Your calendar, Markdown notes, the things you share to OnAirly, your music library and your station settings are read and kept on your device. The one exception is the optional cloud voice in TestFlight tester builds: if you turn it on, the words of DJ lines that use them are sent, as described below. There are no ads, no analytics, no tracking and no data brokers in OnAirly. We don't sell your data, and we don't share it for advertising or tracking.
 
 Playback goes through Apple Music. Local weather and local news are off until you turn them on; then Apple's geocoding service looks up your area and Apple Weather gets a coarse point, and in TestFlight tester builds local news can send a city or region name to a news provider. On iOS 27 and later, OnAirly also asks our server for a few on/off settings each time it starts, without any account, ID or content. If you turn on the optional cloud voice, the text of every DJ line is sent to our voice server and on to ElevenLabs. Details are below.
+
+## Which version you have
+
+What leaves your device depends on the version of OnAirly you have.
+
+- **App Store version.** It has no cloud voice, no news provider and no App Attest. The DJ always speaks with an on-device voice. Apple Music, Apple Weather and Apple's geocoding service get what is described below, and only after you turn on the feature that needs them. OnAirly's own server gets only the settings check described below, with no account, ID or content.
+- **TestFlight tester version.** It adds three things, each described below: the optional cloud voice, which sends DJ lines to our voice server and to ElevenLabs; the App Attest security and usage records our voice server keeps for cloud voice; and local news, which sends a city or region name to the GDELT Project if you turn local news on.
+- **Internal test builds.** The developer's own test builds can also offer the cloud voice. They have no news provider.
 
 ## What stays on your device
 
@@ -22,11 +30,11 @@ Some TestFlight testers can try a cloud voice for the DJ. This voice is made onl
 
 What's sent: the text of every DJ line. That includes your personal items (calendar events, your shared email digest and other shared items, and notes), lines about songs from your music library, the station names you type, and the news and weather lines. Catalog song titles and artists can also be in those lines. OnAirly sends every line the DJ says to our voice server and on to ElevenLabs, which turns it into audio.
 
-What's never sent: your Apple ID, your contacts, your coordinates or your location itself, or anything you haven't approved for your briefing. Only the words the DJ speaks are sent, and a local news line can name your city or area.
+What's never sent: your Apple ID, your contacts, or anything you haven't approved for your briefing. Each request carries the words of one DJ line, the voice you picked and, so the audio flows smoothly, up to 300 characters of the DJ lines just before and after it. Those nearby lines follow the same consent rules.
 
 Your coordinates and your location itself are never sent, but a local news line can name your city or area.
 
-How it's stored: our server keeps a short technical log without the text, plus the App Attest security and quota records described under Data we collect below. Model training is turned off for our ElevenLabs account, but zero retention is not enabled, and ElevenLabs may keep the text and audio it receives under [its own privacy policy](https://elevenlabs.io/privacy-policy).
+How it's stored: our server keeps a short technical log for each request (a request ID, the result, any error code and the character count), without the text, plus the App Attest security and quota records described under Data we collect below. Model training is turned off for our ElevenLabs account, but zero retention is not enabled, and ElevenLabs may keep the text and audio it receives under [its own privacy policy](https://elevenlabs.io/privacy-policy). Our voice server runs on Vercel, which handles each request, including your IP address, to deliver it.
 
 You can switch back to the on-device voice at any time in Settings. Turning the cloud voice off stops future sends from the next line and deletes the saved cloud clips on your device. It does not delete text or audio already sent to ElevenLabs (governed by ElevenLabs' privacy policy), and server-side App Attest records expire automatically on the timers below. Cloud clips of library songs and station names are kept between launches, for up to 7 days, so the same words aren't sent again. "Delete DJ clips, ratings and location" deletes them, along with the cloud clips made from your calendar, notes and shared items.
 
@@ -48,7 +56,7 @@ Playback, search, charts and your library go through Apple's MusicKit under your
 
 ## Data we collect
 
-We use the data below only to run the features you turn on. We don't use it for tracking, advertising or analytics, and we don't sell it.
+This list applies to TestFlight builds. The App Store version sends none of it to us, to ElevenLabs or to GDELT. We use the data below only to run the features you turn on. We don't use it for tracking, advertising or analytics, and we don't sell it.
 
 OnAirly has no account for you. Some of this can still identify you, because a request can include your calendar, a shared email digest or your notes, and song titles can travel in the same request.
 
