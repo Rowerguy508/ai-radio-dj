@@ -490,7 +490,11 @@ final class CatalogTrackFactsTests: XCTestCase {
             consent: StaticIntegrationConsent([:]))
         await station.load()
         let preparer = DJBreakPreparer(renderer: djRenderer(), userID: "u", stationID: "s", cadence: config.cadence())
-        let session = DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 7, hour: { 14 })
+        // Fixed clock (-Fry): two sessions planned seconds apart must not straddle a 5-minute time bucket
+        // ("Just after 5:45." vs "Coming up on 5:50."), so every session in this suite plans at the same instant.
+        let fixedNow = Date(timeIntervalSince1970: 1_768_486_800)
+        let session = DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 7, hour: { 14 },
+                                     now: { fixedNow })
         session.catalogFactsSource = source
         return session
     }
