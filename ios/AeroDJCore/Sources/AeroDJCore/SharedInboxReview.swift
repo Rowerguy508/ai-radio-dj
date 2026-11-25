@@ -216,7 +216,7 @@ public actor SharedInboxReview: ContextSource {
                 entries[i].decision = .pending
                 entries[i].isReconfirmed = false
             }
-            try store?.removeSavedChoices()
+            store?.removeSavedChoices()
             throw SharedReviewError.reviewChoicesResetUnverified
         }
     }

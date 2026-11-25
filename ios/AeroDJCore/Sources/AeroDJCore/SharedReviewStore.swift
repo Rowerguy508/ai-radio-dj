@@ -46,6 +46,8 @@ public struct SharedReviewStore: Sendable {
     public let file: URL
     let backupExclusion: any BackupExclusionMarking
     let backupExclusionLog: @Sendable (String) -> Void
+    /// #593 (-Echo): file operations behind `removeSavedChoices`, injectable so tests can fail each step.
+    var fileOps: SharedReviewFileOps = .live
 
     public init(file: URL, backupExclusion: any BackupExclusionMarking = FoundationBackupExclusion(),
                 backupExclusionLog: @escaping @Sendable (String) -> Void = SharedReviewStore.emitBackupExclusionFailure) {
@@ -76,8 +78,9 @@ public struct SharedReviewStore: Sendable {
     }
 
     /// Missing or unreadable state loads as empty (fails closed: pending).
+    /// #593 (-Echo): also empty while the saved choices are revoked (see `removeSavedChoices`).
     public func load() -> [UUID: SharedReviewRecord] {
-        guard let decoded = decodedFile() else { return [:] }
+        guard !isRevoked, let decoded = decodedFile() else { return [:] }
         return Dictionary(uniqueKeysWithValues: decoded.compactMap { key, value in UUID(uuidString: key).map { ($0, value) } })
     }
 
@@ -94,15 +97,44 @@ public struct SharedReviewStore: Sendable {
         encoder.outputFormatting = .sortedKeys
         let keyed = Dictionary(uniqueKeysWithValues: records.map { ($0.key.uuidString, $0.value) })
         try ProtectedFile.write(encoder.encode(keyed), to: file)
+        // #593 (-Echo): the verified write replaced whatever was revoked, so the file is the truth
+        // again. If the marker can't be cleared the save throws and the file stays ignored (pending).
+        try fileOps.clearMarker(revokedMarker)
+        SharedReviewRevocations.shared.clear(file)
     }
 
     /// #426 (-Sentinel): removes the saved choices so every item loads as pending. Used when a
     /// change that reduces exposure can't be saved privately. Writes nothing. Set-aside
     /// `.unreadable` copies are never loaded and are left alone.
-    public func removeSavedChoices() throws {
+    ///
+    /// #593 (-Echo): fails closed and never throws. The old approvals and reconfirms must not load
+    /// again even if the file can't be removed. In order, stopping at the first that works:
+    /// 1. remove `state.json`;
+    /// 2. overwrite it in place with no records (`{}`, no content);
+    /// 3. write the empty `<file>.revoked` marker, so a relaunch ignores the file.
+    /// The file is also revoked in memory for this process first, so every store on this file
+    /// (the sheet builds one per open) loads pending even if all three fail. Steps 2 and 3 log one
+    /// content-free line. The next verified `save` replaces the file and ends the revocation.
+    public func removeSavedChoices() {
+        SharedReviewRevocations.shared.revoke(file)
         guard FileManager.default.fileExists(atPath: file.path) else { return }
-        try FileManager.default.removeItem(at: file)
+        if (try? fileOps.remove(file)) != nil { return }
+        backupExclusionLog(Self.savedChoicesNotRemovedMessage)
+        if (try? fileOps.overwriteEmpty(file)) != nil { return }
+        try? fileOps.writeMarker(revokedMarker)
     }
+
+    /// #593 (-Echo): true while this file's saved choices are revoked, by marker or in memory.
+    var isRevoked: Bool {
+        SharedReviewRevocations.shared.contains(file) || FileManager.default.fileExists(atPath: revokedMarker.path)
+    }
+
+    /// #593 (-Echo): zero-byte marker next to the store, `<file>.revoked`. While it exists the file is
+    /// never loaded. It holds nothing.
+    public var revokedMarker: URL { file.appendingPathExtension("revoked") }
+
+    /// #593 (-Echo): the only line logged when the saved choices could not be removed. No path, no error text.
+    public static let savedChoicesNotRemovedMessage = "AeroDJ.review saved choices not removed, ignored until next save"
 
     private func decodedFile() -> [String: SharedReviewRecord]? {
         guard let data = try? Data(contentsOf: file) else { return nil }
@@ -137,4 +169,46 @@ public struct SharedReviewStore: Sendable {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
         return names.filter { $0 == base || $0.hasPrefix(base + "-") }.map { dir.appendingPathComponent($0) }
     }
+}
+
+/// #593 (-Echo): the file steps `SharedReviewStore.removeSavedChoices` and `save` take, so a test can
+/// make any one of them fail. `live` uses `FileManager` and `FileHandle`.
+struct SharedReviewFileOps: Sendable {
+    var remove: @Sendable (URL) throws -> Void
+    var overwriteEmpty: @Sendable (URL) throws -> Void
+    var writeMarker: @Sendable (URL) throws -> Void
+    var clearMarker: @Sendable (URL) throws -> Void
+
+    static let live = SharedReviewFileOps(
+        remove: { try FileManager.default.removeItem(at: $0) },
+        overwriteEmpty: { url in
+            // In place, not atomic: an atomic write needs a rename in the same folder, which is what
+            // a failed remove suggests won't work. Truncate first, so a failed write leaves an empty
+            // (unreadable, so pending) file rather than the old approvals.
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+            try handle.truncate(atOffset: 0)
+            try handle.write(contentsOf: Data("{}".utf8))
+            try handle.synchronize()
+        },
+        writeMarker: { url in
+            guard FileManager.default.createFile(atPath: url.path, contents: Data()) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        },
+        clearMarker: { url in
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
+            try FileManager.default.removeItem(at: url)
+        })
+}
+
+/// #593 (-Echo): files whose saved choices were revoked in this process and not yet replaced by a
+/// verified save. Holds standardized paths only.
+final class SharedReviewRevocations: @unchecked Sendable {
+    static let shared = SharedReviewRevocations()
+    private let lock = NSLock()
+    private var paths: Set<String> = []
+    func revoke(_ file: URL) { lock.withLock { _ = paths.insert(file.standardizedFileURL.path) } }
+    func clear(_ file: URL) { lock.withLock { _ = paths.remove(file.standardizedFileURL.path) } }
+    func contains(_ file: URL) -> Bool { lock.withLock { paths.contains(file.standardizedFileURL.path) } }
 }
