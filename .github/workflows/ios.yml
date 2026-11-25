@@ -1273,10 +1273,31 @@ jobs:
         # One pass of the existing UI suite. Per-test allowance matches the Studio UI job
         # (10 min). testRecordedWalkthrough skips unless STUDIO_WALKTHROUGH=1, which this
         # job does not set. -Echo
+        #
+        # Three tests are skipped here, and only here, because they assume an iPhone window with
+        # no trailing status column. The iPhone Duo window is 466 x 678 with an 84 pt trailing
+        # safe-area column (run 45352651807: rail maxX 374 + 8 = 382 = 466 - 84). They still run
+        # in the iPhone and iPad steps of the Studio UI job. -Atlas
+        # - RailDLayoutTests/testIPhoneRail expects the iPhone's 8 pt trailing inset from the
+        #   window edge (midX 430). Build 58 (#616) puts the closed-Duo rail
+        #   DuoStationsLayout.closedRailTrailingInset(84) = 20 pt in when that column exists
+        #   (midX 418), so the iPhone expectation does not apply. The closed Duo frame is
+        #   covered by testClosedDuoRail and the closedRailTrailingInset unit tests.
+        # - StudioScreenTests/testCompactToRegularDoesNotSearchOrPlay and testPendingTuneSurvivesFold
+        #   tap probe.widen. On the Duo window the widened LayoutResizeProbe column came out as
+        #   layout.compact (860 x 610 frame) instead of layout.studio, because the probe
+        #   (StudioCapture.swift) is sized for an iPhone window's safe area. Fixing that is a
+        #   capture-harness change, not a workflow change.
         timeout-minutes: 100
         run: |
           set -euo pipefail
           mkdir -p "$SHOTS"
+          {
+            echo "### Duo UI: tests skipped on the iPhone Duo window (iPhone-window geometry)"
+            echo "- AeroDJUITests/RailDLayoutTests/testIPhoneRail"
+            echo "- AeroDJUITests/StudioScreenTests/testCompactToRegularDoesNotSearchOrPlay"
+            echo "- AeroDJUITests/StudioScreenTests/testPendingTuneSurvivesFold"
+          } >> "$GITHUB_STEP_SUMMARY"
           xcrun simctl boot "$DUO_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$DUO_UDID" -b
           ios/scripts/ui-launch-timeout-retry.sh --udid "$DUO_UDID" -- \
@@ -1284,6 +1305,9 @@ jobs:
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJStudioUI \
             -test-timeouts-enabled YES -default-test-execution-time-allowance 600 \
+            -skip-testing:AeroDJUITests/RailDLayoutTests/testIPhoneRail \
+            -skip-testing:AeroDJUITests/StudioScreenTests/testCompactToRegularDoesNotSearchOrPlay \
+            -skip-testing:AeroDJUITests/StudioScreenTests/testPendingTuneSurvivesFold \
             -destination "id=$DUO_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
             -resultBundlePath "$RUNNER_TEMP/duo-ui.xcresult" \
