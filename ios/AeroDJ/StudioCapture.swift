@@ -1040,7 +1040,9 @@ enum StudioCaptureSegment {
 
 /// #460 (-Nova): the collapsed-rail frames (`isRailDCollapsed`). `PlayingScreen` reads it once
 /// on appear, as `StudioCaptureSegment`, and sets its own Collapse state; Show rail still
-/// brings the rail back. Every other scenario leaves it false.
+/// brings the rail back. Every other scenario leaves it false. Main actor, as
+/// `StudioCaptureSegment` (Swift 6 rejects nonisolated mutable statics).
+@MainActor
 enum StudioCaptureCollapse {
     static var initial = false
 }
