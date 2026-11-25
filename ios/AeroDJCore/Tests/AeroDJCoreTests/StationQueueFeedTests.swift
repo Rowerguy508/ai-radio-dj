@@ -919,7 +919,7 @@ final class CreatedStationStartTests: XCTestCase {
     // restore starts nothing, and a new tap on the created station still starts it exactly once.
     func testAfterABuiltInCancelOnlyANewTapStartsTheCreatedStation() async throws {
         let catalog = QueueFakeCatalog()
-        await catalog.holdNextCall()
+        await catalog.holdAllCalls()
         let model = await makeStation(active: .default)
         let feed = makeFeed(catalog)
         feed.follow(model)
