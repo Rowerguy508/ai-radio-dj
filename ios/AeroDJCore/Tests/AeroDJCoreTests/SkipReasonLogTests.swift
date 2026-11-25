@@ -32,4 +32,35 @@ final class SkipReasonLogTests: XCTestCase {
         XCTAssertTrue(source.contains("PlaybackLog.noBreakReason(djSession.lastNoBreak)"))
         XCTAssertTrue(source.contains("PlaybackLog.handedOutReason(reason)"))
     }
+
+    // MARK: - #304 R3: nil or non-positive song duration logs .durationUnknown
+
+    func testSongStartSkipReasonFlagsMissingOrInvalidDuration() {
+        XCTAssertEqual(PlaybackLog.songStartSkipReason(duration: nil), .durationUnknown)
+        XCTAssertEqual(PlaybackLog.songStartSkipReason(duration: 0), .durationUnknown)
+        XCTAssertEqual(PlaybackLog.songStartSkipReason(duration: -12), .durationUnknown)
+        XCTAssertEqual(PlaybackLog.songStartSkipReason(duration: .nan), .durationUnknown)
+        XCTAssertEqual(PlaybackLog.songStartSkipReason(duration: .infinity), .durationUnknown)
+        XCTAssertNil(PlaybackLog.songStartSkipReason(duration: 185.0))
+        XCTAssertEqual(PlaybackLog.breakSkipped(after: 2, reason: .durationUnknown),
+                       "break skipped after=2 reason=durationUnknown")
+    }
+
+    func testDurationUnknownSkipStaysQuietInPresentationState() {
+        var presentation = DJPresentationModel()
+        let state = presentation.apply(.breakSkipped(afterTrack: 2, .durationUnknown))
+        XCTAssertEqual(state, .idle)
+    }
+
+    /// PlayerView logs `.durationUnknown` when `onSongStarted` receives no usable duration
+    /// and captures `music` weakly to avoid a retain cycle on `music.onSongStarted`.
+    func testPlayerViewLogsNilDurationSkip() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("AeroDJ/PlayerView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(source.contains("music.onSongStarted = { [djSession, talkover, weak music]"))
+        XCTAssertTrue(source.contains("PlaybackLog.songStartSkipReason(duration: duration)"))
+        XCTAssertTrue(source.contains("music?.logBreakSkipped(after: index, reason: skip)"))
+    }
 }
