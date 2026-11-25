@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 // revived API route ships to the internet as soon as it is pushed. This list
 // is the reviewed surface. Adding a route means updating it in a reviewed PR.
 const REVIEWED_ROUTES: Record<string, string[]> = {
+  'apple-music/token/route.ts': ['POST'],
   'commentary/route.ts': ['POST'],
   'messages/route.ts': ['GET', 'PATCH', 'POST'],
   'spotify/callback/route.ts': ['GET'],
