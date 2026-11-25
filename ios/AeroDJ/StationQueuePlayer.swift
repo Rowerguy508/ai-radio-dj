@@ -110,6 +110,14 @@ final class StationQueuePlayer {
         }
     }
 
+    /// #304 R1 (-Atlas): the next natural boundary has station work: a begun station intro, a
+    /// station switch, or station edits that apply there. Read-only, so it can be asked on every
+    /// poll; the player then keeps one song so that boundary runs as today.
+    var boundaryWorkPending: Bool {
+        createdStart.hasBegunIntro || station.hasPendingChanges
+            || feed.stationSwitchPending(active: station.active)
+    }
+
     /// Every natural boundary calls this once `airStationIntro` is set, so a begun intro is
     /// taken (aired, skipped, or dropped) and cannot keep a voice reservation.
     func stationIntroAtBoundary() async -> StationIntroDisposition? {
@@ -125,6 +133,9 @@ final class StationQueuePlayer {
             guard let self else { return }
             self.queueEpoch += 1
             if self.ownQueueStarting { self.ownQueueStarting = false; self.stationOwnsQueue = true; return }
+            // #217 (-Atlas): an external queue start (e.g. song tap) supersedes any in-flight
+            // station tap immediately, even while it is still inside authorize() or apply().
+            self.createdStart.cancelPending()
             self.stationOwnsQueue = false
             self.lastStartedStationKey = StationQueueKey(self.station.committedDisplayed)
             self.feed.queueStarted(for: self.station.committedDisplayed, songCount: self.music.queue.count)
@@ -159,6 +170,8 @@ final class StationQueuePlayer {
         // and when the app comes back to the foreground. A new day part re-plans the DJ's breaks
         // (same day part: nothing changes). Never captured at launch or station start.
         music.onUserResumed = { [weak self] in self?.djSession.timeOfDayMayHaveChanged() }
+        // #217 (-Atlas): an explicit Pause cancels any in-flight station start.
+        music.onUserPaused = { [weak self] in self?.cancelCreatedStationStart() }
         foregroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.djSession.timeOfDayMayHaveChanged() }

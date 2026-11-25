@@ -52,6 +52,17 @@ public enum PlaybackConfirmPolicy {
         return poll >= maxPolls ? .reportTimeoutKeepPlayer : .keepWaiting
     }
 
+    /// Whether the app's position poll, seeing MusicKit `.playing`, confirms the current attempt
+    /// (`confirmStart`). A `.preparing` start confirms (#109). #587 (-Fry): a start whose stall this
+    /// attempt already reported also confirms once it plays past 0:00, whatever the transport. The
+    /// skip path leaves transport `.playing`, so without this the banner outlived a playing song.
+    public static func pollConfirms(position: TimeInterval?, transportIsPreparing: Bool,
+                                    reportedThisAttempt: Bool) -> Bool {
+        if transportIsPreparing { return true }
+        guard reportedThisAttempt, let position else { return false }
+        return position > 0
+    }
+
     /// Whether a step lets the app touch the player. Always false: the confirm never pauses.
     public static func pausesPlayer(_ step: ConfirmStep) -> Bool {
         _ = step

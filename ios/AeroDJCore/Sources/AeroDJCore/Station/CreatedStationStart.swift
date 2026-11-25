@@ -134,6 +134,9 @@ public final class CreatedStationStarter<Item: Sendable> {
     /// The station the last tap applied (Fry #213 nit 3). Cleared by `cancelPending()`
     /// and by a failed apply, so only a station that is still the listener's choice is skipped.
     public private(set) var currentRecipeID: UUID?
+    /// #304 R1 (-Atlas): a station intro was begun and the next natural boundary takes it
+    /// (`songBoundary`). Read-only.
+    public var hasBegunIntro: Bool { begunIntro != nil }
 
     /// - Parameters:
     ///   - readyTimeout: how long a tap waits for its first song before giving up (retry starts again).

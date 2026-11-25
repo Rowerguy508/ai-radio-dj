@@ -88,7 +88,7 @@ public struct DJPresentationModel: Equatable, Sendable {
             case .costCap: failure = .budgetReached
             case .renderFailed, .overDuration, .timedOut, .overBreakBudget: failure = .voiceFailed
             case .notReadyAtBoundary, .notPlanned, .notNaturalBoundary, .cancelled, .sourceRevoked, .interrupted,
-                 .paidVoiceRevoked, .stationIntro: break  // music simply continues
+                 .paidVoiceRevoked, .stationIntro, .durationUnknown: break  // music simply continues
             }
         case .playbackStarted(let k):
             let briefing = pending.removeValue(forKey: k)?.includesBriefing ?? false
