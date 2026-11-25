@@ -207,7 +207,10 @@ struct PlayingScreen: View {
         .modifier(TentPoseGate(player: tentPlayer))
         .sheet(isPresented: $showWorkspace) {
             NavigationStack {
-                workspace
+                WorkspaceView(studio: studio, content: content, snapshot: snapshot, actions: actions,
+                              search: search, studioSearch: studioSearch, segment: $segment,
+                              onClose: { showWorkspace = false },
+                              outerHorizontalInset: StudioLayoutMetrics.edgeInset)
                     .environment(\.artStation, currentStation)
                     .padding(.horizontal, CGFloat(StudioLayoutMetrics.edgeInset))
                     .navigationTitle(heading.header.name)
