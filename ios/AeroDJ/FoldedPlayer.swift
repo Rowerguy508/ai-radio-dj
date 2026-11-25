@@ -538,7 +538,14 @@ struct FoldedPlayer: View {
                         if spread, let track = heroTrack {
                             spreadArtColumn(track: track, leftWidth: layout.leftWidth, height: size.height,
                                             isOnAir: orb.card == .talking)
+                                .scrollTargetLayout()
                         } else {
+                            // #578 (-Nova): no outer `.scrollTargetLayout()` here. `upper` marks its
+                            // own VStack, whose children carry the art, title and continuity row ids.
+                            // An outer one on this wrapper made the header and `upper` the only
+                            // targets, so after unfolding `scrollPosition` never found row 4 and the
+                            // guard stayed armed with the column at the top (run 45467620327).
+                            // `railColumn` already scrolls `upper` this way.
                             VStack(alignment: .leading, spacing: 0) {
                                 RailDStationHeader(name: heading.header.name)
                                 upper(artSide: CGFloat(min(layout.artSide, layout.leftWidth)), centered: false,
@@ -549,7 +556,6 @@ struct FoldedPlayer: View {
                         }
                     }
                     .frame(width: CGFloat(layout.leftWidth), alignment: .leading)
-                    .scrollTargetLayout()
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollContentBackground(.hidden)
