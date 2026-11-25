@@ -7,8 +7,9 @@ import XCTest
 private struct TimedVoice: VoiceProvider {
     /// Seconds of audio by cue text.
     let seconds: [String: Double]
+    var defaultSeconds: Double = 1
     func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
-        let s = seconds.first { text.contains($0.key) }?.value ?? 1
+        let s = seconds.first { text.contains($0.key) }?.value ?? defaultSeconds
         return VoiceArtifact(data: Data(text.utf8), durationSeconds: s, billableUnits: 0, provider: "avspeech", cacheKey: nil)
     }
 }
@@ -234,5 +235,139 @@ final class RenderedOrdinaryCapTests: XCTestCase {
         XCTAssertEqual(ready.cues.map(\.id), [opener.id, other.id, closing.id])
         XCTAssertEqual(ready.talkOverCueID, closing.id)
         XCTAssertEqual(ready.measuredSeconds, 8, accuracy: 0.001)
+    }
+}
+
+/// #329: `DJBreakSession` wires `DJSessionPlan.capReport(afterBreaks:)` and keeps
+/// `trimmedCueIDs` when `naturalBoundary` rebuilds a prepared break after filtering cues. -Echo
+@MainActor
+final class SessionOrdinaryCapReportTests: XCTestCase {
+    private func makeSession(
+        seconds: [String: Double] = [:],
+        defaultSeconds: Double = 1,
+        extra: (any DJBreakExtraLineSource)? = WeatherExtra(),
+        seed: UInt64 = 1
+    ) async -> (session: DJBreakSession, preparer: DJBreakPreparer, tracks: [DJTrack]) {
+        let config = StationConfiguration(commentary: .frequent)
+        let station = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config))),
+            consent: StaticIntegrationConsent([:]))
+        await station.load()
+        let route = VoiceRoute(providerID: "avspeech", provider: TimedVoice(seconds: seconds, defaultSeconds: defaultSeconds),
+                               voice: VoiceProfile(id: "standard", name: "Host"),
+                               timeout: .milliseconds(500), acceptsSSML: false)
+        let renderer = VoiceRenderer(routes: [route], budget: VoiceBudget(dailyCapMicrodollars: 0),
+                                     cache: InMemoryAudioCache(), revocations: NarrationRevocations())
+        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence())
+        let dj = DJPresentationStore()
+        let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: seed,
+                                     hour: { 14 }, extraLineSource: extra)
+        await session.start()
+        let tracks = (0..<24).map { DJTrack(id: "t\($0)", title: "Song \($0)", artist: "Artist \($0)", origin: .catalog) }
+        await session.queueStarted(tracks)
+        return (session, preparer, tracks)
+    }
+
+    /// Finds a planned ordinary break (not a show opener) that carries the optional `WeatherExtra`
+    /// line and a track-attributed cue, so we can trigger both render-time trimming and cue filtering.
+    private func firstTrimmableBreak(in session: DJBreakSession) throws -> (afterTrack: Int, djBreak: DJBreak) {
+        let match = session.testPlannedBreaks
+            .sorted { $0.key < $1.key }
+            .first { _, b in
+                !b.hasBriefing && b.shape != .showOpener && !b.optionalCueIDs.isEmpty
+                    && b.cues.count - b.optionalCueIDs.count == 2
+                    && b.cues.contains { $0.text.hasPrefix("Rain later") }
+                    && b.cues.contains { cue in
+                        guard case .trackMetadata = b.attributions[cue.id] else { return false }
+                        return !b.optionalCueIDs.contains(cue.id)
+                    }
+            }
+        let pair = try XCTUnwrap(match, "expected a planned ordinary break with an optional extra line")
+        return (pair.key, pair.value)
+    }
+
+    private func waitForPrepared(preparer: DJBreakPreparer, afterTrack k: Int) async {
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        await preparer.observe { event in
+            switch event {
+            case .prepared(let at, _, _) where at == k:
+                continuation.yield()
+                continuation.finish()
+            case .skipped(let at, _) where at == k:
+                continuation.yield()
+                continuation.finish()
+            default: break
+            }
+        }
+        for await _ in stream { break }
+    }
+
+    func testTrimmedOrdinaryBreakAppearsInSessionCapReport() async throws {
+        // Optional extra line pushes total over 12 s (9 s + remaining lines <= 10 s); without it, break fits.
+        let (session, preparer, _) = await makeSession(seconds: ["Rain later": 3.0], defaultSeconds: 5.5)
+        let (k, planned) = try firstTrimmableBreak(in: session)
+        let extraCue = try XCTUnwrap(planned.cues.first { $0.text.hasPrefix("Rain later") })
+
+        let waitTask = Task { await waitForPrepared(preparer: preparer, afterTrack: k) }
+        await Task.yield()
+        await session.songStarted(index: k, remaining: .seconds(10))
+        await waitTask.value
+
+        let rawAired = await session.naturalBoundary(afterTrack: k)
+        let aired = try XCTUnwrap(rawAired)
+        XCTAssertTrue(aired.trimmedCueIDs.contains(extraCue.id), "measured-audio cap should trim the optional extra line")
+        XCTAssertEqual(session.ordinaryCapReport.trimmedOptionalLines[k], aired.trimmedCueIDs.count)
+        XCTAssertFalse(session.ordinaryCapReport.skippedOverCap.contains(k))
+    }
+
+    func testTrimmedCueIDsSurviveNaturalBoundaryCueFilterRebuild() async throws {
+        let (session, preparer, tracks) = await makeSession(seconds: ["Rain later": 3.0], defaultSeconds: 5.5)
+        let (k, planned) = try firstTrimmableBreak(in: session)
+        let extraCue = try XCTUnwrap(planned.cues.first { $0.text.hasPrefix("Rain later") })
+        // Pick a track mentioned by one kept cue (so excluding it drops that cue and forces a rebuild,
+        // while at least one other cue survives so naturalBoundary still returns a break).
+        let mentionedTrackID: String? = planned.cues.compactMap { cue -> String? in
+            guard !planned.optionalCueIDs.contains(cue.id),
+                  case .trackMetadata(let ids, _)? = planned.attributions[cue.id] else { return nil }
+            let survives = planned.cues.contains { other in
+                guard !planned.optionalCueIDs.contains(other.id), other.id != cue.id else { return false }
+                guard case .trackMetadata(let otherIDs, _)? = planned.attributions[other.id] else { return true }
+                return Set(otherIDs).isDisjoint(with: ids)
+            }
+            return survives ? ids.first : nil
+        }.first
+        let excludedID = try XCTUnwrap(mentionedTrackID ?? tracks[k + 1].id)
+
+        let waitTask = Task { await waitForPrepared(preparer: preparer, afterTrack: k) }
+        await Task.yield()
+        await session.songStarted(index: k, remaining: .seconds(10))
+        await waitTask.value
+
+        session.songsExcluded([excludedID])
+        let rawRebuilt = await session.naturalBoundary(afterTrack: k)
+        let rebuilt = try XCTUnwrap(rawRebuilt)
+        XCTAssertLessThan(rebuilt.cues.count, planned.cues.count - rebuilt.trimmedCueIDs.count,
+                          "excluding a mentioned track must force the cue-filter rebuild path")
+        XCTAssertTrue(rebuilt.trimmedCueIDs.contains(extraCue.id),
+                      "rebuilding PreparedDJBreak after filtering cues must preserve trimmedCueIDs")
+        XCTAssertEqual(session.ordinaryCapReport.trimmedOptionalLines[k], rebuilt.trimmedCueIDs.count)
+    }
+
+    func testOverBreakBudgetSkipAppearsInSessionCapReportAndResetsOnStop() async throws {
+        // Every spoken cue renders to 13 s, so required lines alone exceed the 12 s ordinary cap.
+        let (session, preparer, _) = await makeSession(defaultSeconds: 7.0)
+        let (k, _) = try firstTrimmableBreak(in: session)
+
+        let waitTask = Task { await waitForPrepared(preparer: preparer, afterTrack: k) }
+        await Task.yield()
+        await session.songStarted(index: k, remaining: .seconds(10))
+        await waitTask.value
+
+        let aired = await session.naturalBoundary(afterTrack: k)
+        XCTAssertNil(aired, "required lines over 12 s must skip the ordinary break")
+        XCTAssertTrue(session.ordinaryCapReport.skippedOverCap.contains(k))
+
+        await session.stop()
+        XCTAssertEqual(session.ordinaryCapReport, OrdinaryBreakCapReport())
     }
 }

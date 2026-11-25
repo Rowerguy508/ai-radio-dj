@@ -110,6 +110,14 @@ final class StationQueuePlayer {
         }
     }
 
+    /// #304 R1 (-Atlas): the next natural boundary has station work: a begun station intro, a
+    /// station switch, or station edits that apply there. Read-only, so it can be asked on every
+    /// poll; the player then keeps one song so that boundary runs as today.
+    var boundaryWorkPending: Bool {
+        createdStart.hasBegunIntro || station.hasPendingChanges
+            || feed.stationSwitchPending(active: station.active)
+    }
+
     /// Every natural boundary calls this once `airStationIntro` is set, so a begun intro is
     /// taken (aired, skipped, or dropped) and cannot keep a voice reservation.
     func stationIntroAtBoundary() async -> StationIntroDisposition? {
