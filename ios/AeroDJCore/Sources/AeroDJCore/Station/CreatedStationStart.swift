@@ -238,12 +238,17 @@ public final class CreatedStationStarter<Item: Sendable> {
             return .notStarted(.notAvailableYet)
         }
         let alreadyCurrent = recipeID != nil && recipeID == currentRecipeID && liveRecipeID() == recipeID
+        // #298: a queue start from here on, while this tap applies or switches, is the listener's.
+        let epochBeforeApply = queueEpoch()
         if !alreadyCurrent {
             guard await apply() else {
                 if mine == tapGeneration { currentRecipeID = nil }
                 return .notApplied
             }
-            guard mine == tapGeneration else { return .notStarted(.superseded) }
+            guard mine == tapGeneration else {
+                keepListenerQueue(since: epochBeforeApply, queueEpoch: queueEpoch, playingStation: playingStation)
+                return .notStarted(.superseded)
+            }
             currentRecipeID = recipeID
         }
         let wasIdle = nothingQueued()
@@ -255,7 +260,10 @@ public final class CreatedStationStarter<Item: Sendable> {
         if !wasIdle {
             // A row tap switches now; the applied change would otherwise wait for the boundary.
             await switchNow()
-            guard mine == tapGeneration else { return .notStarted(.superseded) }
+            guard mine == tapGeneration else {
+                keepListenerQueue(since: epochBeforeApply, queueEpoch: queueEpoch, playingStation: playingStation)
+                return .notStarted(.superseded)
+            }
         }
         let config = active()
         guard let key = StationQueueKey(config) else { return .notStarted(.noStation) }
@@ -304,6 +312,17 @@ public final class CreatedStationStarter<Item: Sendable> {
             waited = true
             await sleep(pollInterval)
         }
+    }
+
+    /// #298 (-Atlas): this tap was superseded while it applied (or switched) its station. When the
+    /// listener's own queue started meanwhile (the queue changed and no station queue is playing),
+    /// that queue was attributed before this tap's recipe was staged, so it is attributed again to
+    /// the station committed now: the next boundary keeps the tapped songs instead of replacing
+    /// them with the station. A newer station start (a station queue is playing) is left alone.
+    private func keepListenerQueue(since epoch: Int, queueEpoch: @MainActor () -> Int,
+                                   playingStation: @MainActor () -> StationQueueKey?) {
+        guard queueEpoch() != epoch, playingStation() == nil else { return }
+        feed.listenerQueueKeptAfterStationTap()
     }
 
     /// The active station tapped again: playing is a no-op, paused resumes (Fry N4).

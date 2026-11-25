@@ -231,6 +231,8 @@ public final class StationQueueFeed<Item: Sendable> {
     public private(set) var queueStartReported = false
     private var observedKey: StationQueueKey?
     private var observing = false
+    /// The station `follow` follows (#298: `listenerQueueKeptAfterStationTap`).
+    private weak var followedStation: StationConfigurationModel?
     /// #204: the last hand-off, until its start reports. A failed start puts it back.
     private var pendingHandOff: PendingHandOff?
     /// The trigger of the hand-off just returned and not yet finished (#332, -Fry): lets the player
@@ -639,6 +641,17 @@ public final class StationQueueFeed<Item: Sendable> {
         if let songCount, songCount <= refillLead { prefetch(committed) }
     }
 
+    /// #298 (-Atlas): a song or search tap started the listener's queue while a station row tap was
+    /// still applying its recipe, so `queueStarted` gave that queue the station committed before the
+    /// recipe was staged. The later tap wins: the queue now belongs to the station committed now
+    /// (including the change the station tap staged), so the next natural boundary keeps the tapped
+    /// songs, the tapped station stays selected, and a later idle Play starts it. Never touches
+    /// playback or `staged`. No-op before `follow`.
+    public func listenerQueueKeptAfterStationTap() {
+        guard let station = followedStation else { return }
+        queueStarted(for: station.committedDisplayed)
+    }
+
     /// The one call at a natural boundary, after the break, before the next song loads. `queue` is
     /// the playing queue and `finishedIndex` the song that just ended. Returns the queue to start
     /// instead of loading `queue[finishedIndex + 1]`, or `nil` to load it exactly as today:
@@ -803,6 +816,7 @@ public final class StationQueueFeed<Item: Sendable> {
     public func follow(_ station: StationConfigurationModel) {
         guard !observing else { return }
         observing = true
+        followedStation = station
         track(station)
     }
 
