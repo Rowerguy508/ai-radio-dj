@@ -48,6 +48,8 @@ public struct SharedReviewStore: Sendable {
     let backupExclusionLog: @Sendable (String) -> Void
     /// #593 (-Echo): file operations behind `removeSavedChoices`, injectable so tests can fail each step.
     var fileOps: SharedReviewFileOps = .live
+    /// #592 (-Atlas): file operations behind the backup opt-in (`SharedReviewBackupOptIn.swift`).
+    var optInOps: SharedReviewBackupOptInOps = .live
 
     public init(file: URL, backupExclusion: any BackupExclusionMarking = FoundationBackupExclusion(),
                 backupExclusionLog: @escaping @Sendable (String) -> Void = SharedReviewStore.emitBackupExclusionFailure) {
@@ -91,7 +93,9 @@ public struct SharedReviewStore: Sendable {
 
     public func save(_ records: [UUID: SharedReviewRecord]) throws {
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        guard markFolderExcludedFromBackup() else { throw SharedReviewError.backupExclusionUnverified }
+        // #592 (-Atlas): with the user's verified backup opt-in, the exclusion is not required (nor
+        // set). Without it, #426's fail-closed rule holds.
+        guard isBackupOptedIn || markFolderExcludedFromBackup() else { throw SharedReviewError.backupExclusionUnverified }
         try setAsideUnreadableFile()
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
