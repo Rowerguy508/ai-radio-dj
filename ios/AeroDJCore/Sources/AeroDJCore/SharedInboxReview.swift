@@ -61,13 +61,21 @@ public actor SharedInboxReview: ContextSource {
 
     /// Reloads from disk, restoring persisted review state for items that
     /// still exist and pruning state for items that are gone.
+    ///
+    /// #313 (-Nova): with a store, the store is the one source of truth for every entry, not
+    /// only new ones. The app has two reviews over the same App Group files (the Connections
+    /// provider's and the "Shared with" sheet's). Before #313 an entry this instance had already
+    /// loaded kept its in-memory decision, so an approval made in the sheet never reached the
+    /// live briefing, and an exclusion or redaction there never reached it either (the old
+    /// decision and text stayed speakable) until relaunch. A missing record loads as pending
+    /// (fails closed). Without a store, in-memory state is all there is and is kept.
     @discardableResult
     public func refresh() throws -> SharedInboxLoadResult {
         let result = try reader.load(now: now())
         let saved = store?.load() ?? [:]
         let previous = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
         entries = result.items.map { item in
-            if let entry = previous[item.id] { return entry }
+            if store == nil, let entry = previous[item.id] { return entry }
             var entry = SharedReviewEntry(item: item)
             if let record = saved[item.id] {
                 entry.decision = record.decision
@@ -166,13 +174,20 @@ public actor SharedInboxReview: ContextSource {
         )
     }
 
+    /// Saves first, then commits (#313): `refresh()` reads the store as the truth, so an edit
+    /// that could not be saved must not linger in memory as if it had been. A failed save
+    /// throws and leaves this review unchanged.
     private func update(_ id: UUID, _ change: (inout SharedReviewEntry) -> Void) throws {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { throw SharedReviewError.unknownItem }
-        change(&entries[index])
-        try persist()
+        var next = entries
+        change(&next[index])
+        try persist(next)
+        entries = next
     }
 
-    private func persist() throws {
+    private func persist() throws { try persist(entries) }
+
+    private func persist(_ entries: [SharedReviewEntry]) throws {
         guard let store else { return }
         try store.save(Dictionary(uniqueKeysWithValues: entries.map {
             ($0.id, SharedReviewRecord(decision: $0.decision, label: $0.label, isRedacted: $0.redactedText != nil,

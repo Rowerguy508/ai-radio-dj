@@ -1,5 +1,5 @@
 import { MISCONFIG_RETRY_AFTER_SECONDS, STORE_RETRY_AFTER_SECONDS } from './attest-flags.js';
-import { LimiterStoreError, type ReserveResult, type UsageLimiter } from './limiter.js';
+import { LimiterStoreError, type InstallCharge, type InstallReserveOutcome, type ReserveResult, type UsageLimiter } from './limiter.js';
 
 /**
  * Durable-only rule for per-install state (note §4.3, Sentinel B3; PR 3 gate (b)).
@@ -11,9 +11,8 @@ import { LimiterStoreError, type ReserveResult, type UsageLimiter } from './limi
  * `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` does not apply here. The in-memory
  * limiter remains only for the legacy owner path's local dev tests.
  *
- * Nothing calls this from a request yet: PR 4 (`RESERVE2` on the attested
- * `/api/tts`) and the PR 3b `register` endpoint use it; PR 6 and PR 7 inherit
- * the same rule. Their own tests must show 503 `store` without Redis.
+ * #378: the install-token path on `/api/tts` calls it with a gate (tester reserve).
+ * Its tests show 503 `store` without Redis.
  */
 
 /** `Retry-After` for 503 `store` on the attest/install paths (note §4.4 table). */
@@ -21,6 +20,7 @@ export const INSTALL_STORE_RETRY_AFTER_SECONDS = STORE_RETRY_AFTER_SECONDS;
 
 export type InstallReserveResult =
   | ReserveResult
+  | InstallReserveOutcome
   | { readonly ok: false; readonly status: 503; readonly reason: 'store'; readonly retryAfterSeconds: number }
   | { readonly ok: false; readonly status: 500; readonly reason: 'misconfig'; readonly retryAfterSeconds: number };
 
@@ -59,9 +59,19 @@ export async function reserveForInstall(
   keyId: string,
   chars: number,
   now: number,
+  /**
+   * #378: the token's attest record + revocation keys. With a gate the reservation is the
+   * tester one (`reserveInstall`: record, revocation, global, tester pool, install, one script);
+   * a limiter without it is 503 `store`. Without a gate: the pre-#378 two-bucket reserve.
+   */
+  gate?: Omit<InstallCharge, 'id' | 'chars'>,
 ): Promise<InstallReserveResult> {
   if (!limiter || !isDurable(limiter)) return STORE_REFUSAL;
   try {
+    if (gate) {
+      if (!limiter.reserveInstall) return STORE_REFUSAL;
+      return await limiter.reserveInstall({ id: keyId, chars, recordKey: gate.recordKey, revokedKey: gate.revokedKey }, now);
+    }
     return await limiter.reserve({ kind: 'install', id: keyId }, chars, now);
   } catch (error) {
     if (error instanceof LimiterStoreError) return STORE_REFUSAL;

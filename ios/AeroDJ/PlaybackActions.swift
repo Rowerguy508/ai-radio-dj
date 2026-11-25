@@ -155,7 +155,8 @@ struct MusicSearch {
                     play: { try await music.play(tracks, station: station) },
                     scheduleBreakPrep: { reservation in
                         djSession.beginQueueInBackground(
-                            reservation, djTracks, briefing: briefingForQueue, sources: sources)
+                            reservation, djTracks, briefing: briefingForQueue, sources: sources,
+                            stationName: station.name, stationID: station.id)
                     },
                     release: { djSession.releaseQueueSetup($0) },
                     // #145: a tap during a hold loads the new queue and defers; its breaks apply.

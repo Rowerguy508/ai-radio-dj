@@ -70,7 +70,7 @@ public enum StationRecipeError: Error, Equatable, Sendable {
         case .limitReached: "You can keep up to \(StationRecipe.maxRecipes) recipes. Delete one first."
         case .notFound: "That recipe no longer exists."
         case .saveFailed: "Couldn't save. Nothing changed."
-        case .readOnlyNewerVersion: "Recipes were saved by a newer AeroDJ and can't be edited here."
+        case .readOnlyNewerVersion: "Recipes were saved by a newer \(AppName.display) and can't be edited here."
         case .notLoaded: "Recipes are still loading."
         case .invalidStation(let reason): reason.userMessage
         }

@@ -201,6 +201,14 @@ export interface UsageLimiter {
   reservePro?(charge: ProCharge, now: number): Promise<ProReserveResult>;
   /** Returns a Pro reservation's chars (global and Pro) and its render, at most once per `rid`. */
   releasePro?(reservation: ProReservation): Promise<boolean>;
+  /**
+   * Tester install (#378): ONE atomic check-and-add over key record + revocation, the global
+   * ceiling, the tester pool and the install's own bucket; any refusal changes NO counter.
+   * Durable limiter only; throws TypeError when the pool is not configured (500 `misconfig`).
+   */
+  reserveInstall?(charge: InstallCharge, now: number): Promise<InstallReserveOutcome>;
+  /** Refunds an install reservation on all its counters (install, global, pool), at most once per `rid`. */
+  releaseInstall?(reservation: Reservation): Promise<boolean>;
 }
 
 export interface LimiterOptions {
@@ -224,11 +232,57 @@ export interface LimiterOptions {
   ownerDailyCharCap?: number;
   /** Daily cap for one install's bucket. Default `DEFAULT_INSTALL_DAILY_CHAR_CAP`. */
   installDailyCharCap?: number;
+  /**
+   * Tester pool (#378): the daily chars ALL tester installs together may spend. Set by
+   * `limiterOptions` only when tester voice is on; absent = the install path is 500
+   * `misconfig` (fail closed). The effective pool is clamped to global − owner share
+   * (`effectiveTesterPoolCap`), so testers can never spend the owner's share.
+   */
+  testerPoolDailyCharCap?: number;
   requestsPerMinute: number;
 }
 
 export const DEFAULT_GLOBAL_DAILY_CHAR_CAP = 9_000;
 export const DEFAULT_INSTALL_DAILY_CHAR_CAP = 1_500;
+/** Owner decision 2026-11-02 (#378): tester pool 6,000 + owner share 3,000 = the 9,000 global ceiling. */
+export const DEFAULT_TESTER_POOL_DAILY_CHAR_CAP = 6_000;
+export const DEFAULT_OWNER_SHARE_DAILY_CHAR_CAP = 3_000;
+
+/**
+ * The tester pool actually enforced: the configured pool, never above global − owner cap,
+ * so the owner's share can't be spent by testers. Null (install path 500 `misconfig`) when
+ * the pool is unset or nothing is left after the owner share.
+ */
+export function effectiveTesterPoolCap(options: Pick<LimiterOptions, 'dailyCharCap' | 'ownerDailyCharCap' | 'testerPoolDailyCharCap'>): number | null {
+  const pool = options.testerPoolDailyCharCap;
+  if (pool === undefined || !Number.isSafeInteger(pool) || pool < 1) return null;
+  const owner = options.ownerDailyCharCap ?? options.dailyCharCap;
+  const room = options.dailyCharCap - owner;
+  const cap = Math.min(pool, room);
+  return cap >= 1 ? cap : null;
+}
+
+/** `aerodj-tts:chars:testerpool:<day>` (#378 §2): shared by every deployment, like the global key. */
+export function testerPoolDayKey(day: string): string {
+  return `aerodj-tts:chars:testerpool:${day}`;
+}
+
+/**
+ * One tester install's charge (#378). `recordKey` / `revokedKey` are the attest keyspace's
+ * key record and revocation entry for the token's keyId: the reserve script refuses when the
+ * record is gone or the key is revoked, so a revoke bites on the next request, not at expiry.
+ */
+export interface InstallCharge {
+  readonly id: string;
+  readonly chars: number;
+  readonly recordKey: string;
+  readonly revokedKey: string;
+}
+
+export type InstallRefusal = 'install_daily' | 'global_daily' | 'reattest';
+export type InstallReserveOutcome =
+  | { readonly ok: true; readonly reservation: Reservation }
+  | { readonly ok: false; readonly reason: InstallRefusal; readonly detail?: 'tester_pool' };
 /** Above this a configured cap is treated as a mistake and the default applies (never unlimited). */
 export const MAX_CONFIGURED_CHAR_CAP = 10_000_000;
 export const DEFAULT_REQUESTS_PER_MINUTE = 12;
@@ -468,6 +522,59 @@ for _, i in ipairs({1, 2, 3, 5}) do
 end
 return 1`;
 
+/**
+ * Tester install reserve (#378 §2). KEYS[1] install day counter, KEYS[2] global (shared by
+ * every deployment), KEYS[3] tester pool (shared), KEYS[4] attest key record, KEYS[5]
+ * revocation entry, optional KEYS[6] non-production sub-cap.
+ * ARGV = chars, install cap, global cap, pool cap, ttl s, [sub-cap].
+ * Order: -6 key record gone, -7 revoked, -2 global, -5 sub-cap, -3 tester pool, -1 install;
+ * any refusal changes NO counter. Otherwise increments every counter and returns the
+ * install's new total.
+ */
+export const INSTALL_RESERVE_SCRIPT = `if not redis.call('GET', KEYS[4]) then return -6 end
+if redis.call('GET', KEYS[5]) then return -7 end
+local c = tonumber(ARGV[1])
+local g = tonumber(redis.call('GET', KEYS[2]) or '0')
+if g + c > tonumber(ARGV[3]) then return -2 end
+if KEYS[6] then
+  local e = tonumber(redis.call('GET', KEYS[6]) or '0')
+  if e + c > tonumber(ARGV[6]) then return -5 end
+end
+local p = tonumber(redis.call('GET', KEYS[3]) or '0')
+if p + c > tonumber(ARGV[4]) then return -3 end
+local u = tonumber(redis.call('GET', KEYS[1]) or '0')
+if u + c > tonumber(ARGV[2]) then return -1 end
+local n = redis.call('INCRBY', KEYS[1], c)
+redis.call('EXPIRE', KEYS[1], ARGV[5])
+redis.call('INCRBY', KEYS[2], c)
+redis.call('EXPIRE', KEYS[2], ARGV[5])
+redis.call('INCRBY', KEYS[3], c)
+redis.call('EXPIRE', KEYS[3], ARGV[5])
+if KEYS[6] then
+  redis.call('INCRBY', KEYS[6], c)
+  redis.call('EXPIRE', KEYS[6], ARGV[5])
+end
+return n`;
+
+/**
+ * KEYS[1] install, KEYS[2] global, KEYS[3] tester pool, KEYS[4] refund marker, optional
+ * KEYS[5] sub-cap; ARGV = chars, marker ttl s. At most once per rid (SET NX), then chars off
+ * every counter, floored at zero, keeping TTLs. 1 applied, 0 already refunded.
+ */
+export const INSTALL_RELEASE_SCRIPT = `if not redis.call('SET', KEYS[4], '1', 'NX', 'EX', ARGV[2]) then return 0 end
+local c = tonumber(ARGV[1])
+for _, i in ipairs({1, 2, 3, 5}) do
+  if KEYS[i] then
+  local used = tonumber(redis.call('GET', KEYS[i]) or '0')
+  if used > 0 then
+    local n = used - c
+    if n < 0 then n = 0 end
+    redis.call('SET', KEYS[i], n, 'KEEPTTL')
+  end
+  end
+end
+return 1`;
+
 const KEY_PREFIX = 'aerodj-tts';
 const DAY_TTL_SECONDS = 2 * 24 * 60 * 60;
 const MINUTE_TTL_MS = 120_000;
@@ -661,6 +768,39 @@ export class RedisUsageLimiter implements UsageLimiter {
   async releasePro(reservation: ProReservation): Promise<boolean> {
     const keys = [...proDayKeys(reservation.bucket, reservation.day, this.deployment), refundMarkerKey(reservation.rid), ...this.subCap(reservation.day).keys];
     const result = await this.eval(PRO_RELEASE_SCRIPT, keys, [reservation.chars, REFUND_MARKER_TTL_SECONDS]);
+    if (result !== 0 && result !== 1) throw new LimiterStoreError('limiter store error');
+    return result === 1;
+  }
+
+  async reserveInstall(charge: InstallCharge, now: number): Promise<InstallReserveOutcome> {
+    const pool = effectiveTesterPoolCap(this.options);
+    if (pool === null) throw new TypeError('tester pool not configured');
+    if (!Number.isSafeInteger(charge.chars) || charge.chars < 1) throw new TypeError('invalid install charge');
+    if (typeof charge.recordKey !== 'string' || typeof charge.revokedKey !== 'string') throw new TypeError('invalid install charge');
+    const day = utcDay(now);
+    const bucket = subjectBucket({ kind: 'install', id: charge.id });
+    if (!bucket.startsWith('install:')) throw new TypeError('invalid install bucket');
+    const sub = this.subCap(day);
+    const [installKey, globalKey] = dayKeys(bucket, day, this.deployment);
+    const result = await this.eval(
+      INSTALL_RESERVE_SCRIPT,
+      [installKey, globalKey, testerPoolDayKey(day), charge.recordKey, charge.revokedKey, ...sub.keys],
+      [charge.chars, this.options.installDailyCharCap ?? DEFAULT_INSTALL_DAILY_CHAR_CAP, this.options.dailyCharCap, pool, DAY_TTL_SECONDS, ...sub.args],
+    );
+    if (result === -6 || result === -7) return { ok: false, reason: 'reattest' };
+    if (result === -1) return { ok: false, reason: 'install_daily' };
+    if (result === -3) return { ok: false, reason: 'global_daily', detail: 'tester_pool' };
+    if (result === -2 || (result === -5 && this.nonprodCap !== null)) return { ok: false, reason: 'global_daily' };
+    if (result < 0) throw new LimiterStoreError('limiter store error');
+    if (result < charge.chars) throw new LimiterStoreError('limiter store error');
+    return { ok: true, reservation: { rid: newReservationId(), bucket, day, chars: charge.chars } };
+  }
+
+  async releaseInstall(reservation: Reservation): Promise<boolean> {
+    if (!reservation.bucket.startsWith('install:')) throw new TypeError('invalid install bucket');
+    const [installKey, globalKey] = dayKeys(reservation.bucket, reservation.day, this.deployment);
+    const keys = [installKey, globalKey, testerPoolDayKey(reservation.day), refundMarkerKey(reservation.rid), ...this.subCap(reservation.day).keys];
+    const result = await this.eval(INSTALL_RELEASE_SCRIPT, keys, [reservation.chars, REFUND_MARKER_TTL_SECONDS]);
     if (result !== 0 && result !== 1) throw new LimiterStoreError('limiter store error');
     return result === 1;
   }

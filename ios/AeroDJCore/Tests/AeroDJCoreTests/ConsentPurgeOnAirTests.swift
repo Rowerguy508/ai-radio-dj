@@ -71,7 +71,7 @@ final class ConsentPurgeOnAirTests: XCTestCase {
     }
 
     /// Bounded wait (as the other suites' `until`): fails with `message` instead of hanging.
-    private func until(_ condition: @MainActor () -> Bool, _ message: String) async {
+    private func until(_ condition: @escaping @MainActor () -> Bool, _ message: String) async {
         for _ in 0..<500 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertTrue(condition(), message)
     }
@@ -84,7 +84,7 @@ final class ConsentPurgeOnAirTests: XCTestCase {
     private func ready(_ r: Rig) async {
         await r.session.queueStarted(djTracks(12), briefing: briefing(r.item), sources: [r.source])
         await r.session.songStarted(index: 0, remaining: .seconds(180))
-        await until({ breakZeroIsReady(r) }, "break 0 with the briefing is prepared")
+        await until({ self.breakZeroIsReady(r) }, "break 0 with the briefing is prepared")
     }
 
     /// Every later boundary: nothing handed out speaks about `item`.
@@ -193,7 +193,7 @@ final class ConsentPurgeOnAirTests: XCTestCase {
         XCTAssertEqual(r.tags(), [nil], "the purge adds no stop: queue 1's break ended with its queue")
         await r.session.songStarted(index: 0, remaining: .seconds(180))
         // songStarted moves the store off queue 1's stale `.ready` before this wait.
-        await until({ breakZeroIsReady(r) }, "queue 2's break 0 is prepared")
+        await until({ self.breakZeroIsReady(r) }, "queue 2's break 0 is prepared")
         let second = await r.session.naturalBoundary(afterTrack: 0)
         XCTAssertTrue(try XCTUnwrap(second, "queue 2's break for the same k").cues.contains { $0.sourceItemID == r.other })
         r.clip.play()
