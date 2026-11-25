@@ -12,6 +12,7 @@ const TELEGRAM_SECRET = 'fixture-telegram-secret-0123456789';
 
 // Every reviewed route (see api-route-inventory.test.ts) that needs the admin token.
 const ADMIN_ROUTES: Array<[string, string]> = [
+  ['POST', '/api/apple-music/token'],
   ['POST', '/api/commentary'],
   ['GET', '/api/messages'],
   ['POST', '/api/messages'],
