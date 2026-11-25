@@ -122,9 +122,17 @@ public struct PlaybackBoundaryDetector: Sendable {
     /// #585 review (Atlas): one rewind-derived cut, then none until a song is seen playing (or a
     /// clear or mid-song stop proves a real Next). If every song stalls at 0:00, this gives at most the
     /// one advance a real second press would and then stops instead of walking down the queue. Known
-    /// gap: the skip path arms no start-confirm watchdog, so if the next song also stalls after the
-    /// capped cut, nothing reports it. Tracked in #586.
+    /// gap (#586): the skip path arms no start-confirm watchdog, so a next song that also stalls after
+    /// the capped cut was never reported. The watch below reports it once instead.
     private var rewindCutSpent = false
+    /// #586 (-Fry): our own `play()` for a skip's song returned while the cap was spent, and no
+    /// sample since has shown it playing. That song is watched for a start that never begins
+    /// instead of for the rewind shape, so the cap and this report never both fire for one load.
+    private var cappedLoadAwaitingStart = false
+    /// The first stopped-at-start sample of that song after our `play()` returned: entry and uptime.
+    private var cappedLoadStoppedAtStart: (entry: String, uptime: TimeInterval)?
+    /// Set once when that song outlasted the start-confirm deadline. Read with `takeSkipStartStalled()`.
+    private var skipStartStalledPending = false
 
     // Build 18 P0 (-Fry): sticky per-entry facts that a system interruption cannot clear.
     /// Share of the catalog duration that counts as "this entry played through".
@@ -222,6 +230,9 @@ public struct PlaybackBoundaryDetector: Sendable {
         ownPlayReturnedUnobserved = false
         ownPlayReturnedNotSeenPlaying = false
         stoppedAtStartAfterOwnPlay = nil
+        cappedLoadAwaitingStart = false
+        cappedLoadStoppedAtStart = nil
+        skipStartStalledPending = false
         endedEntryID = nil
         interruptionBeganNearEnd = false
         queueFinishedSinceInterruption = false
@@ -256,6 +267,32 @@ public struct PlaybackBoundaryDetector: Sendable {
         // song at 0:00 while it loaded. Judged by `confirmsRewoundBeforePlaying`.
         ownPlayReturnedNotSeenPlaying = skipLoadOpen && !rewindCutSpent
         stoppedAtStartAfterOwnPlay = nil
+        // #586 (-Fry): with the cap spent the rewind shape is not taken, so watch the start instead.
+        cappedLoadAwaitingStart = skipLoadOpen && rewindCutSpent
+        cappedLoadStoppedAtStart = nil
+    }
+
+    /// #586 (-Fry): true once when this sample shows the capped load's song still stopped at 0:00
+    /// `rewoundBeforePlayingStallSeconds` (#109's deadline) after the first such sample, under the
+    /// same conditions as `confirmsRewoundBeforePlaying`. Any playing sample, hold, interruption,
+    /// unknown position or uptime, progress, or closed load ends the watch without a report.
+    private mutating func confirmsCappedLoadNeverStarted(_ observation: PlaybackObservation, entry: String) -> Bool {
+        guard cappedLoadAwaitingStart else { return false }
+        let minimum = Self.minimumProgress(duration: observation.duration ?? lastDuration)
+        guard skipLoadOpen, !observation.isPlaying, let position = observation.position, position < minimum,
+              let now = observation.uptime, !heldByUserOrRoute, !interruptionSinceLastPlayingSample else {
+            cappedLoadAwaitingStart = false
+            cappedLoadStoppedAtStart = nil
+            return false
+        }
+        if let first = cappedLoadStoppedAtStart, first.entry == entry {
+            guard now - first.uptime >= Self.rewoundBeforePlayingStallSeconds else { return false }
+            cappedLoadAwaitingStart = false
+            cappedLoadStoppedAtStart = nil
+            return true
+        }
+        cappedLoadStoppedAtStart = (entry, now)
+        return false
     }
 
     /// #444 (-Fry): true once when this sample confirms that the skip's song, whose own `play()`
@@ -347,6 +384,18 @@ public struct PlaybackBoundaryDetector: Sendable {
         if let cut = skipLoadCutPending, cut.shape == .clear || cut.targetSeenPlaying { rewindCutSpent = false }
         defer { skipLoadCutPending = nil }
         return skipLoadCutPending != nil
+    }
+
+    /// #586 (-Fry): true once when the song a skip loaded while the one-rewind-cut cap was spent (in
+    /// practice the capped cut's own target) stayed stopped at 0:00 past #109's start-confirm
+    /// deadline after our `play()` returned, with the load still open and no hold, interruption or
+    /// newer app change. The skip path arms no start-confirm watchdog, so this is its deadline: the
+    /// app reports it as #109's `reportTimeoutKeepPlayer` (banner, transport kept out of `.playing`,
+    /// the player never paused, a late `.playing` still confirms). Never a cut, never a failed
+    /// start, never an advance. Only one report per load; a playing sample ends the watch.
+    public mutating func takeSkipStartStalled() -> Bool {
+        defer { skipStartStalledPending = false }
+        return skipStartStalledPending
     }
 
     /// #444 (-Atlas): the cut `takeSkipLoadCut()` will report, with its shape and whether the cut
@@ -505,6 +554,8 @@ public struct PlaybackBoundaryDetector: Sendable {
             // #444 (-Fry): a clear is not the rewind shape; the clear checks here decide it.
             ownPlayReturnedNotSeenPlaying = false
             stoppedAtStartAfterOwnPlay = nil
+            cappedLoadAwaitingStart = false
+            cappedLoadStoppedAtStart = nil
             // Queue emptied. A natural finish of the last item is a boundary.
             let finished = entryID
             if finished != nil, interruptedEntryPlayedThrough { queueFinishedSinceInterruption = true }
@@ -542,6 +593,7 @@ public struct PlaybackBoundaryDetector: Sendable {
         ownPlayReturnedUnobserved = false
         // #444 (-Fry): judged before the entry bookkeeping below resets this entry's hold flags.
         let rewoundBeforePlaying = confirmsRewoundBeforePlaying(observation, entry: current)
+        let cappedLoadNeverStarted = confirmsCappedLoadNeverStarted(observation, entry: current)
         // #585 review: a song really played, so a later stall may again be a rewound Next.
         if observation.isPlaying { rewindCutSpent = false }
         guard let previous = entryID else {
@@ -578,6 +630,10 @@ public struct PlaybackBoundaryDetector: Sendable {
             // to 0:00 before any poll saw it play. Not a failed start and not a natural end: the
             // caller routes it like any other cut (after our `play()` returned, it is a Next).
             skipLoadCutPending = SkipLoadCut(shape: .rewind, targetSeenPlaying: false)
+        }
+        if cappedLoadNeverStarted {
+            // #586 (-Fry): the capped cut's target never started. Report it, decide nothing else.
+            skipStartStalledPending = true
         }
         if let duration = observation.duration { lastDuration = duration }
         /// #149: the previous sample's playhead, before this sample updates it.

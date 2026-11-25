@@ -90,9 +90,11 @@ final class TentPoseTests: XCTestCase {
         }
         save(app, "duo-tent")
 
-        // One tap brings the controls up.
+        // One tap brings the controls up. The wait is 10 s, not 3 s: hosted Macs take about 4 s
+        // per exists check, so a 3 s wait could expire before the first poll (#602 run 45337381163).
         app.buttons["tent.showControls"].tap()
-        XCTAssertTrue(app.buttons["tent.playPause"].waitForExistence(timeout: 3), "a tap shows the transport")
+        XCTAssertTrue(app.buttons["tent.playPause"].waitForExistence(timeout: 10),
+                      "a tap shows the transport\n\(app.debugDescription)")
     }
 
     @MainActor

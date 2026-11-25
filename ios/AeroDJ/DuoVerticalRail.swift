@@ -603,7 +603,10 @@ private struct DuoSystemRailAttacher: ViewModifier {
             content
         }
         #else
-        // Compiled out of the Xcode 26.6 / iphoneos 26.5 build. The custom rail is the bar.
+        // Compiled out of every `ios.yml` job that builds with the runner's default `Xcode.app`
+        // (Xcode 26.6 / Swift 6.3 on the self-hosted Mac). Only the Release archive, pinned
+        // to Xcode 27.2 (iOS 27.2 SDK), takes the branch above;
+        // `usesSystemBar` is still false, so the custom rail is the bar either way.
         let _ = (hooks?.dj.onAirBadge, keepBehavior)
         content
         #endif

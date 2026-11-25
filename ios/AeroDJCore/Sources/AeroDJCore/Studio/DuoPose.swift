@@ -7,9 +7,12 @@ import Foundation
 // `nonisolated func onHingeChange(isEnabled: Bool = true, _ action: @escaping (DeviceHingeContext, DeviceHingeContext) -> Void) -> some View`.
 // It hands over a `DeviceHingeContext` whose optional `hinge` has a `status`
 // (.closed / .partiallyOpen / .fullyOpen) and an `angle`. That API is
-// iOS 27.1 and needs the Xcode 27 SDK; the required CI build is Xcode 26.6 with the iOS 26.5
-// SDK, so the app reads the hinge only under `#if compiler(>=6.4.2)` and
-// `if #available(iOS 27.1, *)`, and hands this file a plain `DuoHingeSample`.
+// iOS 27.1 and needs the Xcode 27 SDK. In `ios.yml` only the Release archive job pins
+// Xcode 27.2 (iOS 27.2 SDK), so it is the one required job that compiles the hinge path,
+// and it runs no tests. The other macOS jobs build with the runner's default `Xcode.app`
+// (on the self-hosted Mac that is checked to be Xcode 26.6 / Swift 6.3) and compile the
+// hinge out under `#if compiler(>=6.4.2)`. At runtime the hinge path still runs only under
+// `if #available(iOS 27.1, *)`. The app hands this file a plain `DuoHingeSample`.
 //
 // Everything here is pure and UI-free, so the decision is driven by Linux tests and by the
 // StudioCapture `duoTent` scenario. No playback, DJ session or device model is read.

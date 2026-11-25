@@ -12,9 +12,10 @@ import Foundation
 /// `.phone`. Callers render the screen exactly as before for `.phone`: no inset, one column,
 /// nothing measured differently. Narrow Split View (340 pt) is the phone path too.
 ///
-/// **Seams.** `foldDivision` (item 2, fold awareness) and `arrangement` (item 4, the
-/// `ArrangementView` two-pane layout) are slots that default to nil and change nothing yet,
-/// so those PRs plug in here instead of each screen growing its own check.
+/// **Seams.** `foldDivision` (item 2, fold awareness) is a slot that defaults to nil and
+/// changes nothing yet, so that PR plugs in here instead of each screen growing its own
+/// check. The unused item 4 `arrangement` input was removed: Rail D owns the open Duo,
+/// and `decide` never read it, so layout output is unchanged on every device.
 ///
 /// Pure and UI-free so it is unit tested on Linux. Points of the container, never a device.
 public enum AppWideLayout {
@@ -27,43 +28,10 @@ public enum AppWideLayout {
         case onboarding
     }
 
-    /// TODO(#465 item 2): one `reservedRegions(kind: .division)` region in the container's
-    /// points. Carried, never read: until item 2 lands every screen ignores it, and nil (the
-    /// default) is today's behaviour on every device.
-    ///
-    /// The fields and init match `FoldAwareness.Division` in Fry's #510 one for one, so the
-    /// forward-merge replaces this struct with one line,
-    /// `public typealias FoldDivision = FoldAwareness.Division`, and the host passes the
-    /// division `FoldDivisionProbe` reports. No conversion, and no second copy of the type.
-    public struct FoldDivision: Equatable, Sendable {
-        public var minX: Double
-        public var minY: Double
-        public var width: Double
-        public var height: Double
-        public var isActive: Bool
-
-        public init(minX: Double, minY: Double, width: Double, height: Double, isActive: Bool) {
-            self.minX = minX
-            self.minY = minY
-            self.width = width
-            self.height = height
-            self.isActive = isActive
-        }
-
-        public var maxX: Double { minX + width }
-        public var maxY: Double { minY + height }
-        /// A book fold runs vertically (the same rule as #510).
-        public var isVertical: Bool { height > width }
-    }
-
-    /// What `ArrangementView` gives the screen (#465 item 4): `ArrangementPaneLayout.Decision`
-    /// maps onto it with `appWideArrangement` (`.split` is `.twoPane`, `.singleColumn` is
-    /// `.single`, `.unchanged` is nil). Carried, not read yet: every screen ignores it, and
-    /// nil (the default) is today's behaviour.
-    public enum Arrangement: Equatable, Sendable {
-        case single
-        case twoPane
-    }
+    /// #465 item 2: one `reservedRegions(kind: .division)` region in the container's
+    /// points, aliased directly to `FoldAwareness.Division` so `FoldDivisionProbe` feeds
+    /// `Input.foldDivision` with no conversion.
+    public typealias FoldDivision = FoldAwareness.Division
 
     /// Everything the decision reads. Build one per screen from the environment and the
     /// container's measured size.
@@ -83,15 +51,13 @@ public enum AppWideLayout {
         /// (missing counts as compact). Every iPhone in landscape, Plus and Max included, is
         /// vertically compact and stays the phone path (#515 B1).
         public var heightIsContent: Bool
-        /// TODO(#465 item 2): nil until fold awareness supplies it. Ignored today.
+        /// #465 item 2: active vertical fold division from `FoldDivisionProbe`, or nil.
         public var foldDivision: FoldDivision?
-        /// `ArrangementPaneLayout.Decision.appWideArrangement` for this container. Ignored today.
-        public var arrangement: Arrangement?
 
         public init(hasRegularWidth: Bool, containerWidth: Double, containerHeight: Double,
                     accessibilityTextSize: Bool = false, hasRegularHeight: Bool? = nil,
                     heightIsContent: Bool = false,
-                    foldDivision: FoldDivision? = nil, arrangement: Arrangement? = nil) {
+                    foldDivision: FoldDivision? = nil) {
             self.hasRegularWidth = hasRegularWidth
             self.containerWidth = containerWidth
             self.containerHeight = containerHeight
@@ -99,7 +65,6 @@ public enum AppWideLayout {
             self.hasRegularHeight = hasRegularHeight
             self.heightIsContent = heightIsContent
             self.foldDivision = foldDivision
-            self.arrangement = arrangement
         }
     }
 
@@ -119,10 +84,14 @@ public enum AppWideLayout {
 
     public struct Decision: Equatable, Sendable {
         public var mode: Mode
-        /// Added to each side, on top of the screen's own gutter, so the content stays at
-        /// `readableWidth`. Zero on the phone path.
+        /// Symmetric inset when `leadingInset == trailingInset`, otherwise `min(leadingInset, trailingInset)`.
+        /// Zero on the phone path.
         public var sideInset: Double
-        /// The content's width after `sideInset` on both sides (the screen's own gutter
+        /// Inset added on the leading edge on top of the screen's own gutter. Zero on the phone path.
+        public var leadingInset: Double
+        /// Inset added on the trailing edge on top of the screen's own gutter. Zero on the phone path.
+        public var trailingInset: Double
+        /// The content's width after `leadingInset` and `trailingInset` (the screen's own gutter
         /// is still inside it). The container width on the phone path.
         public var readableWidth: Double
         /// Columns the screen's list or grid uses. 1 on the phone path, so a caller that
@@ -133,6 +102,19 @@ public enum AppWideLayout {
         public init(mode: Mode, sideInset: Double, readableWidth: Double, columns: Int, gutter: Double) {
             self.mode = mode
             self.sideInset = sideInset
+            self.leadingInset = sideInset
+            self.trailingInset = sideInset
+            self.readableWidth = readableWidth
+            self.columns = columns
+            self.gutter = gutter
+        }
+
+        public init(mode: Mode, leadingInset: Double, trailingInset: Double,
+                    readableWidth: Double, columns: Int, gutter: Double) {
+            self.mode = mode
+            self.sideInset = min(leadingInset, trailingInset)
+            self.leadingInset = leadingInset
+            self.trailingInset = trailingInset
             self.readableWidth = readableWidth
             self.columns = columns
             self.gutter = gutter
@@ -140,9 +122,12 @@ public enum AppWideLayout {
 
         public var adapts: Bool { mode == .wide }
 
-        /// Debug readout for captures and UI tests: "wide 2 40".
+        /// Debug readout for captures and UI tests: "wide 2 40" when symmetric.
         public var decisionText: String {
-            "\(mode.name) \(columns) \(Int(sideInset.rounded()))"
+            if abs(leadingInset - trailingInset) < 0.5 {
+                return "\(mode.name) \(columns) \(Int(sideInset.rounded()))"
+            }
+            return "\(mode.name) \(columns) \(Int(leadingInset.rounded()))/\(Int(trailingInset.rounded()))"
         }
     }
 
@@ -204,8 +189,35 @@ public enum AppWideLayout {
         return tall
     }
 
+    /// Picks the active vertical fold division for an app-wide container in book pose (#465 item 2).
+    /// Matches `FoldAwareness`: closed or fully open hinges return nil, horizontal (laptop) divisions
+    /// and inactive or short regions return nil, and hinge angle is never read.
+    public static func activeBookFold(in divisions: [FoldDivision],
+                                      hinge: FoldAwareness.HingeSample?,
+                                      containerWidth: Double,
+                                      containerHeight: Double,
+                                      heightIsContent: Bool = false) -> FoldDivision? {
+        guard containerWidth.isFinite, containerWidth > 0 else { return nil }
+        if let hinge {
+            switch hinge.status {
+            case .closed, .fullyOpen:
+                return nil
+            case .partiallyOpen, .unknown:
+                break
+            }
+        }
+        return divisions
+            .filter { validFold($0, containerWidth: containerWidth,
+                                containerHeight: containerHeight, heightIsContent: heightIsContent) }
+            .max { lhs, rhs in
+                if lhs.height != rhs.height { return lhs.height < rhs.height }
+                return lhs.width < rhs.width
+            }
+    }
+
     public static func decide(_ input: Input, for screen: Screen) -> Decision {
         let width = finite(input.containerWidth)
+        let height = finite(input.containerHeight)
         guard isWide(input) else {
             return Decision(mode: .phone, sideInset: 0, readableWidth: width, columns: 1, gutter: 0)
         }
@@ -213,10 +225,81 @@ public enum AppWideLayout {
         let inset = max(0, (width - readable) / 2)
         let inner = max(0, readable - screenGutter(screen) * 2)
         let columns = input.accessibilityTextSize ? 1 : columnCount(inner: inner, minColumn: minColumnWidth(screen))
-        // TODO(#465 item 2): with a `foldDivision`, keep the column gap on the fold.
-        // TODO(#465 item 4): with `.twoPane`, Stations shows the grid beside the detail.
-        return Decision(mode: .wide, sideInset: inset, readableWidth: readable, columns: columns,
-                        gutter: columns > 1 ? columnGutter : 0)
+        let ordinary = Decision(mode: .wide, sideInset: inset, readableWidth: readable, columns: columns,
+                                gutter: columns > 1 ? columnGutter : 0)
+        guard let fold = input.foldDivision,
+              validFold(fold, containerWidth: width, containerHeight: height, heightIsContent: input.heightIsContent) else {
+            return ordinary
+        }
+        return foldAwareDecision(ordinary: ordinary, input: input, screen: screen, width: width, fold: fold)
+    }
+
+    private static func validFold(_ division: FoldDivision, containerWidth: Double,
+                                  containerHeight: Double, heightIsContent: Bool) -> Bool {
+        guard division.isActive, division.isVertical,
+              division.minX.isFinite, division.minY.isFinite,
+              division.width.isFinite, division.height.isFinite,
+              division.width > 0, division.height > 0 else { return false }
+        let foldMin = min(max(division.minX, 0), containerWidth)
+        let foldMax = min(max(division.maxX, foldMin), containerWidth)
+        guard foldMax > foldMin, foldMin > 0, foldMax < containerWidth else { return false }
+        if !heightIsContent {
+            guard containerHeight > 0,
+                  division.height >= containerHeight * 0.5,
+                  division.maxY > 0, division.minY < containerHeight else { return false }
+        }
+        return true
+    }
+
+    /// #465 item 2: keep every column and single-column reading band out of an active vertical fold.
+    private static func foldAwareDecision(ordinary: Decision, input: Input, screen: Screen,
+                                          width: Double, fold: FoldDivision) -> Decision {
+        let foldMin = min(max(fold.minX, 0), width)
+        let foldMax = min(max(fold.maxX, foldMin), width)
+        let contentStart = ordinary.leadingInset
+        let contentEnd = width - ordinary.trailingInset
+        // If the centred content band already clears the fold, leave it untouched.
+        guard contentStart < foldMax && contentEnd > foldMin else { return ordinary }
+
+        let screenPad = screenGutter(screen)
+        let maxReadable = readableMaxWidth(screen)
+        let minCol = minColumnWidth(screen)
+
+        // Multi-column screens: place 2 equal columns (one per side of the fold) with the gutter
+        // covering the fold band.
+        if !input.accessibilityTextSize, minCol.isFinite {
+            let foldWidth = foldMax - foldMin
+            let gutter = max(columnGutter, foldWidth)
+            let extra = (gutter - foldWidth) / 2
+            let gapStart = max(0, foldMin - extra)
+            let gapEnd = min(width, gapStart + gutter)
+            let actualGutter = gapEnd - gapStart
+            let maxHalf = (maxReadable - actualGutter) / 2
+            let side = min(min(gapStart, width - gapEnd), maxHalf)
+            let colWidth = side - screenPad
+            if colWidth >= minCol, colWidth >= StudioLayoutMetrics.touchTargetMin {
+                let leading = max(0, gapStart - side)
+                let trailing = max(0, (width - gapEnd) - side)
+                let readable = max(0, width - leading - trailing)
+                return Decision(mode: .wide, leadingInset: leading, trailingInset: trailing,
+                                readableWidth: readable, columns: 2, gutter: actualGutter)
+            }
+        }
+
+        // Single-column screens (or when the narrower side can't fit a column): move the column
+        // to the wider side of the fold (leading on a tie, matching `FoldAwareness.bookColumn`).
+        let leadingSpan = foldMin
+        let trailingSpan = width - foldMax
+        let useTrailing = trailingSpan > leadingSpan
+        let chosenSpan = useTrailing ? trailingSpan : leadingSpan
+        guard chosenSpan >= FoldAwareness.bookColumnMinSideWidth else { return ordinary }
+        let readable = min(chosenSpan, maxReadable)
+        let pad = max(0, (chosenSpan - readable) / 2)
+        let leading = useTrailing ? (foldMax + pad) : pad
+        let trailing = max(0, width - leading - readable)
+        return Decision(mode: .wide, leadingInset: leading, trailingInset: trailing,
+                        readableWidth: readable, columns: 1, gutter: 0)
+
     }
 
     static func columnCount(inner: Double, minColumn: Double) -> Int {
