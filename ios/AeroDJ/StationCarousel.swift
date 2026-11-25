@@ -18,8 +18,16 @@ struct StationCarousel: View {
     let onSelect: (Station.ID) -> Void
 
     /// The card nearest the centre. Focus only: changing it never selects.
-    @State private var focusedID: Station.ID?
+    /// Scene storage, not `@State`: the compact/regular `if` destroys this view.
+    @SceneStorage("aerodj.stations.scrollAnchor") private var storedFocus = ""
     @State private var containerWidth: CGFloat = 0
+
+    private var focusBinding: Binding<Station.ID?> {
+        Binding(
+            get: { storedFocus.isEmpty ? nil : UUID(uuidString: storedFocus) },
+            set: { storedFocus = $0?.uuidString ?? "" }
+        )
+    }
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -96,12 +104,12 @@ struct StationCarousel: View {
         // morphing header's top margin would be added again inside the arc.
         .contentMargins(.vertical, 0, for: .scrollContent)
         .scrollTargetBehavior(.viewAligned)
-        .scrollPosition(id: $focusedID)
+        .scrollPosition(id: focusBinding)
         .scrollClipDisabled()
         // On the scroll view itself: the split root puts `split.sidebar` on the whole column.
         .accessibilityIdentifier("stations.carousel")
         // Only when focus moves between cards, not when it is first set on appear.
-        .sensoryFeedback(.selection, trigger: focusedID) { old, new in old != nil && new != nil }
+        .sensoryFeedback(.selection, trigger: storedFocus) { old, new in !old.isEmpty && !new.isEmpty }
         .background {
             GeometryReader { geo in
                 Color.clear
@@ -110,16 +118,26 @@ struct StationCarousel: View {
             }
         }
         .onAppear {
-            // Open on the selected station (a restored one too), else the first. Focus only.
-            if focusedID == nil { focusedID = selectedID ?? stations.first?.id }
+            #if DEBUG
+            if DisplayContinuityLaunch.shouldReset("stations") { storedFocus = "" }
+            #endif
+            // A fold destroys this carousel. The stored card wins; the selected
+            // station is only the default when nothing was scrolled.
+            let session = DisplayContinuity.Session(
+                selectedStationID: selectedID?.uuidString,
+                scrollAnchor: storedFocus.isEmpty ? nil : storedFocus,
+                playbackToken: "",
+                loadCount: 0
+            ).appeared(defaultAnchor: (selectedID ?? stations.first?.id)?.uuidString)
+            if let anchor = session.scrollAnchor, anchor != storedFocus { storedFocus = anchor }
         }
         .onChange(of: selectedID) { _, id in
             // A restored selection can arrive after the first render; bring it to the centre.
-            guard let id, id != focusedID else { return }
+            guard let id, id.uuidString != storedFocus else { return }
             if flat {
-                focusedID = id
+                storedFocus = id.uuidString
             } else {
-                withAnimation(.snappy) { focusedID = id }
+                withAnimation(.snappy) { storedFocus = id.uuidString }
             }
         }
     }

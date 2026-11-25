@@ -17,8 +17,23 @@ public enum CloudVoiceConsentState: String, Equatable, Sendable {
 /// is stored, and turning it off applies to the very next render. Reads go straight to
 /// `UserDefaults` (thread-safe), so every copy of this store agrees. Fail-closed: a missing,
 /// unknown or older-version value reads as `.undecided`, which is not granted. -Nova
+///
+/// #441 (-Sentinel): the answer and the copy version it answers are one value, `recordKey`
+/// ("<version>:<state>", e.g. "2:accepted"), read with one `string(forKey:)` and written with one
+/// `set`. Every reader sees a whole old record or a whole new one, never a state from one write
+/// paired with a version from another, so a decline can never pass through "v2 + accepted".
+/// The two-key layout before 2.0 (`stateKey`, `versionKey`) is legacy and is only ever read
+/// conservatively (`legacyState`): a legacy decline stays a decline, and a legacy acceptance of
+/// any version, v2 included, reads `.undecided`, because "accepted + v2" is exactly the shape a
+/// torn v1-accept-then-v2-decline left behind and its provenance cannot be proven. Existing
+/// testers who accepted v2 under the old layout are therefore asked once more; nothing is sent
+/// until they tap "Use cloud voice" again. The next write removes the legacy keys.
 public struct CloudVoiceConsentStore: @unchecked Sendable {
+    /// The single atomic record: "<copy version>:<state raw value>".
+    public static let recordKey = "AeroDJ.cloudVoiceConsent.record"
+    /// Legacy (before #441): read only by the fail-closed migration, removed on the next write.
     public static let stateKey = "AeroDJ.cloudVoiceConsent.state"
+    /// Legacy (before #441): read only by the fail-closed migration, removed on the next write.
     public static let versionKey = "AeroDJ.cloudVoiceConsent.version"
     /// Bump when the sheet copy changes materially: earlier acceptances then read `.undecided`.
     public static let currentVersion = CloudVoiceConsentCopy.version
@@ -48,45 +63,86 @@ public struct CloudVoiceConsentStore: @unchecked Sendable {
     }
 
     public var state: CloudVoiceConsentState {
-        let raw: String?
-        let version: Int
-        if let memory {
-            (raw, version) = memory.read()
-        } else if let defaults {
-            raw = defaults.string(forKey: Self.stateKey)
-            version = defaults.integer(forKey: Self.versionKey)
-        } else {
-            return .undecided
+        if let memory { return Self.decode(memory.read()) }
+        guard let defaults else { return .undecided }
+        // One read of one key: the record is never assembled from two reads.
+        if let record = defaults.object(forKey: Self.recordKey) {
+            return Self.decode(record as? String)
         }
-        guard let raw, let stored = CloudVoiceConsentState(rawValue: raw) else { return .undecided }
+        return Self.legacyState(defaults)
+    }
+
+    /// The stored record for `state` at the current copy version.
+    public static func encode(_ state: CloudVoiceConsentState, version: Int = currentVersion) -> String {
+        "\(version):\(state.rawValue)"
+    }
+
+    /// Strict, fail-closed parse of a record. Anything that is not exactly "<version>:<state>",
+    /// with a canonical non-negative version and a known state, reads `.undecided`. An acceptance
+    /// counts only for the current copy version (older or newer reads `.undecided`). A decline of
+    /// any version stays a decline.
+    public static func decode(_ record: String?) -> CloudVoiceConsentState {
+        guard let record else { return .undecided }
+        let parts = record.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, let version = Int(parts[0]), version >= 0, String(version) == parts[0],
+              let stored = CloudVoiceConsentState(rawValue: String(parts[1])) else { return .undecided }
         switch stored {
-        case .accepted:
-            // Consent covers only the copy the listener saw.
-            return version == Self.currentVersion ? .accepted : .undecided
-        case .declined, .undecided:
-            return stored
+        case .accepted: return version == currentVersion ? .accepted : .undecided
+        case .declined, .undecided: return stored
         }
     }
 
+    /// The two-key layout before #441, read so a legacy decline is kept. Never grants: the two
+    /// keys may be from different writes (a torn decline leaves "accepted" with the new version).
+    static func legacyState(_ defaults: UserDefaults) -> CloudVoiceConsentState {
+        guard let raw = defaults.string(forKey: stateKey),
+              let stored = CloudVoiceConsentState(rawValue: raw) else { return .undecided }
+        return stored == .declined ? .declined : .undecided
+    }
+
     private func write(_ state: CloudVoiceConsentState) {
+        let record = Self.encode(state)
         if let memory {
-            memory.write(state.rawValue, Self.currentVersion)
+            memory.write(record)
         } else if let defaults {
-            defaults.set(Self.currentVersion, forKey: Self.versionKey)
-            defaults.set(state.rawValue, forKey: Self.stateKey)
+            defaults.set(record, forKey: Self.recordKey)       // the one write that decides
+            // Legacy keys are ignored once the record exists, and never grant anyway.
+            defaults.removeObject(forKey: Self.stateKey)
+            defaults.removeObject(forKey: Self.versionKey)
         }
     }
 
     private final class MemoryBox: @unchecked Sendable {
         private let lock = NSLock()
-        private var raw: String?
-        private var version = 0
-        func read() -> (String?, Int) { lock.lock(); defer { lock.unlock() }; return (raw, version) }
-        func write(_ raw: String, _ version: Int) { lock.lock(); self.raw = raw; self.version = version; lock.unlock() }
+        private var record: String?
+        func read() -> String? { lock.lock(); defer { lock.unlock() }; return record }
+        func write(_ record: String) { lock.lock(); self.record = record; lock.unlock() }
     }
 
     /// True only for an accepted answer to the current copy version.
     public var isGranted: Bool { state == .accepted }
+
+    /// The copy version whose acceptance unlocks every DJ line (owner, Nov 9 2026: "I want it all
+    /// elevenlabs."; OnAirly 2.0, #432). Version 1 said personal items never leave the device;
+    /// version 2 (#433) is superseded by v3, which adds the ElevenLabs training and retention
+    /// facts, so a v1 or v2 acceptance reads `.undecided`, sends nothing and is asked again.
+    public static let allLinesVersion = 3
+
+    /// What `VoiceRenderer` may send off the device (`VoiceRenderer.cloudScope`): every attributed
+    /// line once the all-lines copy (v3) is accepted, nothing otherwise. An acceptance of v1 or v2
+    /// reads `.undecided` (asked again) and so sends nothing, not even the v1 transitions, until
+    /// the listener accepts the new copy. Read straight from the store on every call. -Fry
+    /// #432 (-Sentinel): the grant must be of exactly `allLinesVersion`; the record is decoded
+    /// once, so the state and the version it answers come from the same write (#441).
+    public var scope: CloudVoiceScope {
+        Self.grantsAllLines(state: state, copyVersion: Self.currentVersion) ? .allLines : .noLines
+    }
+
+    /// The all-lines rule on its own, so it is testable apart from the store: accepted, and the
+    /// accepted copy is the all-lines copy.
+    public static func grantsAllLines(state: CloudVoiceConsentState, copyVersion: Int) -> Bool {
+        state == .accepted && copyVersion == allLinesVersion
+    }
 
     /// Same shape as `PaidVoiceConsentProviding.hasPaidVoiceConsent()` in Fry's #244, so the
     /// stacked paywall PR adds only `extension CloudVoiceConsentStore: PaidVoiceConsentProviding {}`.
@@ -98,6 +154,31 @@ public struct CloudVoiceConsentStore: @unchecked Sendable {
 
     /// "Keep on-device voice", or the toggle turned off. Takes effect on the next render.
     public func decline() { write(.declined) }
+}
+
+extension VoiceRenderer {
+    /// This renderer with its cloud scope read from `store` on every cue (`CloudVoiceConsentStore.scope`):
+    /// `.allLines` after copy v2 is accepted, `.noLines` for v1 only, undecided, declined or off.
+    /// The tester and owner A/B builds both build their live renderer this way (#433). -Fry
+    public func gated(by store: CloudVoiceConsentStore) -> VoiceRenderer {
+        VoiceRenderer(routes: routes, budget: budget, cache: cache, revocations: revocations,
+                      cloudScope: { store.scope })
+    }
+}
+
+extension VoiceRenderer {
+    /// #397 (-Sentinel): the launch purge for cloud clips. While consent is not granted now
+    /// (declined, never answered, or an acceptance of a superseded copy version: v2 or earlier
+    /// while v3 is current), every cached clip not rendered by an on-device, free route is
+    /// deleted. Such clips are never served (`CloudVoiceConsentCache`), but they must not wait on
+    /// disk for a decline or the 7-day expiry. While consent is granted nothing is touched.
+    /// Returns whether it purged. Reads `isGranted` once, at the call.
+    @discardableResult
+    public func purgeCloudClipsAtLaunch(isGranted: @Sendable () -> Bool) async -> Bool {
+        guard !isGranted() else { return false }
+        await purgeCloudClips()
+        return true
+    }
 }
 
 /// When the sheet must be shown. A cloud voice is offered only when the build allows paid
@@ -134,24 +215,29 @@ public enum CloudVoiceConsentPrompt {
     }
 }
 
-/// Sheet copy, verbatim from docs/privacy/disclosure-copy.md §1 (#174, draft), with the app
-/// name from `AppName.display`. Owner-pending items are left out, not invented: the
-/// briefing clause (briefing cues never leave the device, `VoiceRenderer.mayLeaveDevice`),
-/// ElevenLabs retention/training wording, and the app's own Privacy Policy URL.
+/// Sheet copy, from docs/privacy/disclosure-copy.md §1 (#174, draft), with the app name from
+/// `AppName.display`. Version 2 (owner, Nov 9 2026: "I want it all elevenlabs."): every DJ line,
+/// personal items and news/weather included, is sent (`CloudVoiceScope.allLines`). Version 3
+/// (OnAirly 2.0, #432, -Sentinel): the same scope, said plainly, plus the ElevenLabs facts
+/// confirmed on Nov 9 2026: model training is off for our account (R1), and ElevenLabs may still
+/// keep what it receives (zero retention is Enterprise-only, so it is never claimed).
+/// Still owner-pending and left out, not invented: the app's own Privacy Policy URL.
 public enum CloudVoiceConsentCopy {
     /// Version of the copy below. A material change must bump it (asks everyone again).
-    public static let version = 1
+    /// 1: transitions only (#176). 2: every DJ line (#433). 3: every DJ line, with the ElevenLabs
+    /// training and retention facts (#432, `CloudVoiceConsentStore.allLinesVersion`).
+    public static let version = 3
 
     public static let title = "Use a cloud voice?"
     public static var intro: String {
-        "This voice is generated online, not on your iPhone. To speak each DJ break, \(AppName.display) sends the words of that break to our voice server, and on to ElevenLabs, which turns them into audio."
+        "This voice is made online, not on your iPhone. With the cloud voice on, \(AppName.display) sends every line the DJ says to our voice server and on to ElevenLabs, which turns it into audio."
     }
     public static let sentHeading = "What's sent:"
-    public static let sent = "only the text the DJ is about to say, such as song and artist names, your station's name, and time-of-day lines."
+    public static let sent = "the text of every DJ line. That includes your personal items (calendar events, your shared email digest and other shared items, and notes), lines about songs from your music library, the station names you type, and the news and weather lines."
     public static let neverSentHeading = "What's never sent:"
-    public static let neverSent = "your Apple ID, your contacts, your location, your music library when a station is built from your library (those stations always use the on-device voice), or anything you haven't approved for your briefing."
+    public static let neverSent = "your Apple ID, your contacts, your coordinates or your location itself, or anything you haven't approved for your briefing. Only the words the DJ speaks are sent, and a local news line can name your city or area."
     public static let storedHeading = "How it's stored:"
-    public static let stored = "our server keeps a short technical log without the text. ElevenLabs may keep the text and audio under its own privacy policy."
+    public static let stored = "our server keeps a short technical log without the text. Model training is turned off for our ElevenLabs account, but ElevenLabs may keep the text and audio it receives under its own privacy policy."
     public static let switchBack = "You can switch back to the on-device voice at any time in Settings."
     public static let accept = "Use cloud voice"
     public static let decline = "Keep on-device voice"
@@ -161,6 +247,6 @@ public enum CloudVoiceConsentCopy {
     public static let elevenLabsPolicyLabel = "ElevenLabs Privacy Policy"
     public static let elevenLabsPolicyURL = URL(string: "https://elevenlabs.io/privacy-policy")!
     /// Short footer under the Cloud voice toggle (§1 "Short footer").
-    public static let footer = "Cloud voice: the DJ's words are sent to ElevenLabs to make audio. On-device voices never leave your iPhone."
+    public static let footer = "Cloud voice: every DJ line, including your calendar, email digest, notes, library songs, station names, news and weather, is sent to ElevenLabs to make audio. ElevenLabs may keep it. On-device voices never leave your iPhone."
     public static let toggleTitle = "Cloud voice"
 }

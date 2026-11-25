@@ -5,7 +5,10 @@ import Foundation
 /// credential differs (an App Attest install token, `X-OnAirly-Install-Token`).
 ///
 /// - The route is `leavesDevice: true`, so `VoiceRenderer` skips it for any line without
-///   `mayLeaveDevice` (private text stays on-device exactly as today).
+///   `mayLeaveDevice` under the renderer's `cloudScope` (#433): `.noLines` (nothing is sent)
+///   until cloud-voice copy v2 is accepted, then `.allLines`: every attributed line, personal
+///   briefing items, library songs, typed station names, news and weather included, as the v2
+///   sheet says. Unattributed lines stay on the device.
 /// - Consent is checked per request by the token source before any network call: until the
 ///   sheet is accepted every cue goes on-device and nothing is sent.
 /// - Priced at 0 µ$ like the owner route: spend is capped server-side (#378 §2: per-install,
@@ -54,7 +57,10 @@ extension PremiumVoiceRoutes {
                                                             backoff: backoff),
                                voice: VoiceProfile(id: option.id, name: option.displayName),
                                microdollarsPerThousandCharacters: 0, timeout: timeout, acceptsSSML: false,
-                               leavesDevice: true)
+                               leavesDevice: true,
+                               // Same stitching context as the owner ElevenLabs route. The per-cue
+                               // check still decides which lines may be context (#365).
+                               sendsSpeechContext: true, supportsAudioTags: false)
         return AttestedComposition(routes: [route] + onDevice, decision: .included(catalogIndex: index))
     }
 }

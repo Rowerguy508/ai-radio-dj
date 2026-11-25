@@ -367,7 +367,12 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
            lineCueIDs.indices.contains(index) {
             onPlayback?(.lineFinished(afterTrack: breakTrack, cueID: lineCueIDs[index]))
         }
-        if queue.isEmpty { finishBreak(.finished); return }
+        if queue.isEmpty {
+            #if DEBUG || AERODJ_P0_DIAG
+            recordAirPlayGapHandoff(.lastFinish)
+            #endif
+            finishBreak(.finished); return
+        }
         if !startNextClip() { finishBreak(.failed) }
     }
 
@@ -494,6 +499,10 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         music.pausePlayerForBreak()
         music.beginInterlude() // transition -> voice
         outcome = .cancelled
+        // #525 (-Atlas): music is paused; on AirPlay (remote flag on) the clip plays in a
+        // long-form session so it follows the music's route. Flag on, any other route: one local
+        // probe-and-restore `setCategory` pair, then today's session. Flag off: no session call.
+        let sessionShape = DJRouteSession.beginGapBreak(afterTrack: breakTrack)
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             finish = continuation
@@ -509,11 +518,17 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             // The line is reported as started only once audio is really playing.
             if start() {
                 TalkoverAudioSession.noteImplicitActivation() // AVAudioPlayer.play activates the session
+                #if DEBUG || AERODJ_P0_DIAG
+                recordAirPlayGapHandoff(.firstPlay, outputLatency: AVAudioSession.sharedInstance().outputLatency)
+                #endif
                 self.log.notice("\(PlaybackLog.breakStart(after: self.breakTrack), privacy: .public)")
                 music.djStarted(line)
                 onPlayback?(.started(afterTrack: breakTrack))
                 startLevelMeter()
             } else {
+                #if DEBUG || AERODJ_P0_DIAG
+                recordAirPlayGapHandoff(outcome: .failed)
+                #endif
                 finishBreak(.failed)
             }
         }
@@ -523,7 +538,11 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         let end = NarrationResumePolicy.narrationEnd(for: outcome)
         let decision = NarrationResumePolicy.decide(end, mayAutoResume: music.mayAutoResume, phase: music.audioState)
         music.completeNarration(decision)
+        #if DEBUG || AERODJ_P0_DIAG
+        recordAirPlayGapHandoff(.sessionOff)
+        #endif
         TalkoverAudioSession.noteReleased() // completeNarration deactivated the session
+        DJRouteSession.endGapBreak(sessionShape) // #525: today's category again, before music resumes
         switch outcome {
         case .finished:
             onPlayback?(.finished(afterTrack: breakTrack))
@@ -554,6 +573,9 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// Timeout and decode-error ends. Follows `BreakEndSequence`: the clip is silenced and its
     /// delegate cleared before `finishBreak`, which lets `completeNarration` release the session.
     private func endBreakSilencingClip(_ trigger: BreakEndTrigger, result: BreakPlayerOutcome) {
+        #if DEBUG || AERODJ_P0_DIAG
+        recordAirPlayGapHandoff(outcome: trigger == .timeout ? .timedOut : .failed)
+        #endif
         for step in BreakEndSequence.appSteps(for: trigger) {
             switch step {
             case .stopClip:
@@ -866,10 +888,13 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         // now; a paused one is unchanged), or already ended (a stale copy: ignored).
         if beganForwarded <= beganSeen, !sessionInterrupted { return true }
         let action = interruption.interruptionBegan(at: ProcessInfo.processInfo.systemUptime)
-        switch action {
-        case .stopTalkover: return false
-        case .none: return interruption.isHolding
-        default:
+        // Core's policy (#377): a speaking gap break is paused, not halted. Talk-over still halts.
+        switch BreakTimelineStopPolicy.untaggedInterruption(action, isHolding: interruption.isHolding) {
+        case .halt:
+            return false
+        case .ignore:
+            return true
+        case .apply:
             applyInterruption(action)
             return true
         }
@@ -992,6 +1017,26 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             self.ackRender = nil
         }
     }
+
+    // MARK: #526 S0b (-Echo): DIAG-only handoff stamps.
+
+#if DEBUG || AERODJ_P0_DIAG
+    /// One hook for the AirPlay gap-break handoff row. Records a timestamp on the same
+    /// clock `P0EventTrace.record(_:at:)` uses. Talk-over (`duckedFor != nil`) is a no-op.
+    /// No await and no session call. `outputLatency` is passed in only from first `play()`,
+    /// never from clip-finish or `setActive(false)`. Compiled out of Release.
+    private func recordAirPlayGapHandoff(_ step: AirPlayGapHandoffTrace.Step? = nil,
+                                         outputLatency: TimeInterval? = nil,
+                                         outcome: AirPlayGapHandoffTrace.Outcome? = nil) {
+        guard duckedFor == nil else { return }
+        #if AERODJ_P0_DIAG
+        P0EventTraceHost.shared.talkover { trace, t in
+            if let outcome { trace.airPlayGapHandoffNote(outcome) }
+            if let step { _ = trace.airPlayGapHandoffMark(step, outputLatency: outputLatency, at: t) }
+        }
+        #endif
+    }
+#endif
 
     // MARK: AVAudioPlayerDelegate
 

@@ -112,6 +112,39 @@ final class LockScreenSkipBoundaryTests: XCTestCase {
         }
     }
 
+    /// #377 checking #373: Siri ducking our music (the song keeps playing) or pausing it (the
+    /// entry stays loaded and the playhead holds) is not a lock-screen Skip. A skip is only a
+    /// mid-song clear or a rewind below the minimum. A duck does not record a system
+    /// interruption, so a later real clear is still a skip.
+    func testSiriDuckOrPauseIsNotALockScreenSkip() {
+        var ducked = BoundaryInterpreter()
+        let t = play(&ducked)
+        for i in 0..<4 {
+            XCTAssertNil(ducked.interpret(PlaybackObservation(entryID: "song-0", isPlaying: true,
+                                                              position: 61 + Double(i), duration: song,
+                                                              uptime: t + Double(i)),
+                                          queueIndex: 0, queueCount: 3))
+        }
+        XCTAssertFalse(ducked.takeRemoteSkip(), "a duck keeps the song playing")
+        XCTAssertNil(ducked.interpret(cleared(at: t + 4), queueIndex: 0, queueCount: 3))
+        XCTAssertTrue(ducked.takeRemoteSkip(), "the duck did not consume a later mid-song clear")
+
+        var paused = BoundaryInterpreter()
+        let p = play(&paused)
+        XCTAssertNil(paused.interpret(PlaybackObservation(entryID: "song-0", isPlaying: false, position: 60,
+                                                          duration: song, uptime: p),
+                                      queueIndex: 0, queueCount: 3))
+        XCTAssertFalse(paused.takeRemoteSkip(), "a pause holds the playhead: not a clear and not a rewind")
+
+        var held = BoundaryInterpreter()
+        let h = play(&held)
+        held.pausedByApp(.systemInterruption)
+        XCTAssertNil(held.interpret(PlaybackObservation(entryID: "song-0", isPlaying: false, position: 60,
+                                                        duration: song, uptime: h),
+                                    queueIndex: 0, queueCount: 3))
+        XCTAssertFalse(held.takeRemoteSkip(), "a system pause with the playhead held is not a skip")
+    }
+
     func testAppRequestedChangeIsNotASkip() {
         for shape in [cleared(at: 161), rewound(at: 161)] {
             var b = BoundaryInterpreter()

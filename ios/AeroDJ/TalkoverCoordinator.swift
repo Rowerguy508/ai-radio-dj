@@ -223,6 +223,8 @@ final class TalkoverCoordinator {
     private var book = TalkoverBook()
     /// A break taken early that has not been spoken: played in the gap at the natural end.
     private var held: (afterTrack: Int, prepared: PreparedDJBreak)?
+    /// #525: the boundary whose AirPlay fallback was already reported.
+    private var routeFallbackReported: Int?
     /// The run in flight; `book` retires it on every terminal path.
     private var run: TalkoverRun? {
         get { book.run }
@@ -235,6 +237,8 @@ final class TalkoverCoordinator {
     private var handedOut: Int?
     /// #388 (-Nova): what each line of the talk-over on air names, for a never while it speaks.
     private var ratingCut = StationRatingTalkoverCut()
+    /// #525: `routeChangeNotification` marks the next talk-over for the route re-check.
+    private let routeChanges = DJRouteChangeObserver()
 
     init(music: MusicKitService, interlude: InterludePlaybackAdapter, djSession: DJBreakSession,
          defaults: UserDefaults = .standard,
@@ -252,6 +256,7 @@ final class TalkoverCoordinator {
     /// Starts the position watch. 1 Hz until the arm window, 10 Hz inside it; nothing when off.
     func start() {
         guard ticker == nil else { return }
+        routeChanges.start()
         ticker = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 let interval = self?.tick() ?? 1.0
@@ -347,6 +352,10 @@ final class TalkoverCoordinator {
         apply(action, afterTrack: index)
     }
 
+    /// #304 R1 (-Atlas): whether this coordinator holds song k's boundary. Read-only, unlike
+    /// `claimsBoundary`, which is the boundary itself.
+    func ownsBoundary(_ k: Int) -> Bool { book.owns(key(k)) }
+
     /// The natural end of song k, synchronously from the binder. True: this coordinator owns
     /// the boundary; the binder must not hand out or take a break, and awaits `boundary(k)`.
     func claimsBoundary(_ k: Int) -> Bool {
@@ -432,6 +441,17 @@ final class TalkoverCoordinator {
     private func tick() -> Double {
         guard isEnabled, let song, let duration = song.duration, music.isPlaying else { return 1.0 }
         let k = song.index
+        // #525 (-Atlas): on AirPlay (remote flag on) a talk-over cannot duck, so this boundary is
+        // never taken here: the boundary path airs the break in the gap, prepared by
+        // `DJBreakPreparer` on its gap-break path (`DJLongFormRouteState.preparerTalkOverEnabled`).
+        // Reported once per boundary as a hard break with reason `airPlayRoute`.
+        guard DJRouteSession.talkoverAllowed else {
+            if routeFallbackReported != k {
+                routeFallbackReported = k
+                decide(.hardBreak(.airPlayRoute), afterTrack: k)
+            }
+            return 1.0
+        }
         let position = music.playbackTime
         guard let armAt = TalkoverPlanner.armAt(duration: duration, config: config) else { return 1.0 }
         if position < armAt - 1 { return 1.0 }
@@ -441,6 +461,8 @@ final class TalkoverCoordinator {
         let token = generation
         run = nil // a finished run for an earlier boundary
         book.claim(key(k))
+        // #304 R1 (-Atlas): this boundary now has work: a queued next song is trimmed at once.
+        music.boundaryWorkWasArmed(afterTrack: k)
         taking = Task { @MainActor [weak self] in
             await self?.take(k, token: token)
             self?.taking = nil
@@ -475,9 +497,21 @@ final class TalkoverCoordinator {
             return // a MAIN clip failed: the boundary path skips it, as today
         }
         let next = music.queue.indices.contains(k + 1) ? music.queue[k + 1].duration : nil
-        let decision = TalkoverPlanner.decide(flag: isEnabled,
-                                              track: TalkoverTrack(duration: song?.duration, position: music.playbackTime),
-                                              voice: resolved.voice, nextTrackDuration: next, config: config)
+        let planned = TalkoverPlanner.decide(flag: isEnabled,
+                                             track: TalkoverTrack(duration: song?.duration, position: music.playbackTime),
+                                             voice: resolved.voice, nextTrackDuration: next, config: config)
+        // #525, Echo's N1 and Orion's route-change call (-Atlas): the route is re-checked right
+        // before the talk-over is committed (synchronous on the main actor, before the duck). Music
+        // is playing, so there is no probe and no session call (Fry's bar): the re-check reads the
+        // last probe's route, the route-change mark (`DJRouteChangeObserver`) and the session's
+        // route as it is. AirPlay -> `airPlayRoute`; a route change since the last probe ->
+        // `routeChanged`. Either way the held break loses its talk-over marker and airs in the gap
+        // like a gap-path break, whose probe reads the real route. Killed, or any other route with
+        // no change: `planned`, unchanged.
+        let decision = DJRouteSession.talkoverDecision(planned, afterTrack: k)
+        if decision != planned, let h = held, h.afterTrack == k {
+            held = (k, DJTalkoverRouteCheck.gapBreak(from: h.prepared))
+        }
         decide(decision, afterTrack: k)
         guard let plan = decision.plan else { return }
         run = TalkoverRun(afterTrack: k, plan: plan)
@@ -490,6 +524,9 @@ final class TalkoverCoordinator {
             if song?.index == k, !music.isPlaying { cancelRun(.userStop) }
             return
         }
+        // #304 R1 (-Atlas): the queued next song (if any) is gone before the duck starts, so the
+        // voice never talks over it. Usually already trimmed at the claim; this is the last gate.
+        music.boundaryWorkWasArmed(afterTrack: k)
         guard interlude.duckForTalkover(afterTrack: k) else {
             // The duck did not activate (or the system holds playback): the gap break takes it.
             if var r = run, r.cancelled == nil, r.phase != .done {

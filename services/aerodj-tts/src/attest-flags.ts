@@ -27,6 +27,28 @@ export function testerVoiceOn(env: Env): boolean {
 }
 
 /**
+ * iOS 26 no-category TestFlight fallback switch (#407 N1/N2).
+ *
+ * Requires `AERODJ_TTS_TESTER_VOICE_ENABLED === 'true'` and is enabled when
+ * `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK` is unset or exactly `'true'` so current
+ * TestFlight deploys keep working unchanged until pre-App-Store tightening. Fails
+ * closed on any other value (including `'false'` or a typo): new no-category
+ * registrations get no tier, and `/api/attest/token` refuses existing
+ * `no_category_fallback` (and legacy un-reasoned) tester keys with 403
+ * `no_entitlement` while `testflight_category` keys stay unaffected.
+ *
+ * TODO(#407, App Store release gate): launch-checklist step, not a code change. Before
+ * submitting an App Store build, set `AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK=false` on
+ * production aerodj-tts and redeploy (README "Before App Store submission"), so iOS 26
+ * App Store installs cannot reach the tester tier. Rollback: unset it (or `true`) and redeploy.
+ */
+export function noCategoryFallbackAllowed(env: Env): boolean {
+  if (!testerVoiceEnabled(env)) return false;
+  const value = env.AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK;
+  return value === undefined || value === 'true';
+}
+
+/**
  * Master stop for every paid path, owner included (note §4.7, Fry D1; PR 3).
  * Fails closed: ANY value except exactly `false` (including empty) stops (a typo stops
  * rather than runs). Only unset or exactly `false` = normal. Checked first,

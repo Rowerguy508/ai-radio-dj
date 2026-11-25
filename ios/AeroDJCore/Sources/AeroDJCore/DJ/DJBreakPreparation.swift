@@ -33,6 +33,11 @@ public enum DJBreakSkipReason: String, Codable, Equatable, Sendable, CaseIterabl
     /// this break was rendered with a cloud voice: it is not played (Echo's N2 on #395). Same
     /// case and raw value as #258's paid-voice revocation, so the two converge when it lands.
     case paidVoiceRevoked
+    /// This boundary's planned break did not air because the station intro took the boundary.
+    /// One break per boundary: the intro is the speech, and this break is not played after it.
+    case stationIntro
+    /// #304 R3: the catalog song reported no usable duration at start, so no break was planned.
+    case durationUnknown
 }
 
 /// Why a planned time-check line did not air (#347). Only that line is dropped; the rest of
@@ -51,6 +56,9 @@ public enum DJTimeCheckDropReason: String, Equatable, Sendable, CaseIterable {
     case taken
     /// At the take the clock no longer reads the rendered time (pause, seek back).
     case stale
+    /// The rounded local time is not on the listener's clock: a daylight-saving gap, or a fold
+    /// inside the rounding window (#360). Only this line is omitted. No clock time was spoken.
+    case notOnTheClock
 }
 
 /// A dropped time-check line: its cue ID and the reason code. No text.
@@ -145,6 +153,8 @@ public actor DJBreakPreparer {
     /// (-Fry): the 4 s closing cap is a talk-over cap, so it only applies while this is true.
     private let talkOverEnabled: @Sendable () -> Bool
     private var tasks: [Int: Task<Void, Never>] = [:]
+    /// Generation that owns the render at a boundary. A late cancel for an older generation does nothing.
+    private var breakOwner: [Int: Int] = [:]
     private var results: [Int: DJBreakOutcome] = [:]
     private var planned: [Int: DJBreak] = [:]
     /// Song scrubbing (-Atlas): boundaries a seek may still re-arm. Opened when song `k`
@@ -224,7 +234,7 @@ public actor DJBreakPreparer {
             self.renderer = VoiceRenderer(routes: renderer.routes, budget: renderer.budget,
                                           cache: CloudVoiceConsentCache(base: renderer.cache, localProviders: local,
                                                                         isGranted: consent),
-                                          revocations: renderer.revocations)
+                                          revocations: renderer.revocations, cloudScope: renderer.cloudScope)
         } else {
             self.renderer = renderer
         }
@@ -305,12 +315,17 @@ public actor DJBreakPreparer {
     /// renderer as for every cue), and added only if it finishes before the deadline, before the
     /// break is taken, and within the break's cap. Otherwise the line is dropped and the rest of
     /// the prepared break airs unchanged.
-    public func prepare(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool) {
+    /// Returns whether this break was accepted: false (nothing changes) when a render for `k` is
+    /// in flight or ready, or `k` was taken, so the caller can tell which break's audio it holds (#445).
+    @discardableResult
+    public func prepare(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool) -> Bool {
         let k = djBreak.afterTrack
-        guard tasks[k] == nil, results[k] == nil, !taken.contains(k) else { return }
+        guard tasks[k] == nil, results[k] == nil, !taken.contains(k) else { return false }
         planned[k] = djBreak
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
-        let renderer = onDeviceOnly ? self.renderer.onDeviceOnly : self.renderer
+        // Owner, Nov 9 2026: with consent to copy v2 (`.allLines`) a library station's lines may use
+        // the cloud voice too; each cue is still checked by `mayLeaveDevice` as it renders. -Fry
+        let renderer = onDeviceOnly && self.renderer.cloudScope() != .allLines ? self.renderer.onDeviceOnly : self.renderer
         let userID = userID, stationID = stationID, cap = breakCap(djBreak).talkOver(talkOverEnabled())
         // The time check is held back from the first step (its plan-time words never render).
         // Looked up here, outside the async task: no non-escaping closure is formed inside it
@@ -350,6 +365,7 @@ public actor DJBreakPreparer {
                 await self?.addTimeCheck(k, line, clip, airTime: airTime, to: main, in: djBreak, cap: cap)
             }
         }
+        return true
     }
 
     deinit {
@@ -388,13 +404,29 @@ public actor DJBreakPreparer {
         // The time it will be on air (Echo, #347): now plus what is left before the boundary.
         let toAir = end - ContinuousClock.now + boundaryMargin
         let airTime = now().addingTimeInterval(seconds(toAir))
+        // No truthful wall clock at the air time (DST). Drop before any voice call, paid or free.
+        guard DJTimeCheck.roundedInstant(at: airTime, calendar: timeCheck.calendar) != nil else {
+            return .dropped(.notOnTheClock)
+        }
         guard let text = timeCheck.text(at: airTime) else { return .dropped(.renderFailed) }
         let line = cue(plannedLine, saying: text)
         let attribution = djBreak.attributions[line.id]
         let left = end - ContinuousClock.now
         guard left > .zero else { return .dropped(.late) }
+        // Still rendered alone and late (#347). Stitching context is the lines that will air
+        // (`main`), with this line in its planned slot: a held-back reading and any line the cap
+        // trimmed are not in that break, so they are not sent as neighbours (#365). The other
+        // lines were rendered from `rest`, which does not contain this cue, so their cache keys
+        // do not include this minute's reading.
+        let before = Set(djBreak.cues.prefix { $0.id != line.id }.map(\.id))
+        let slot = main.cues.filter { before.contains($0.id) }.count
+        var aired = main.cues
+        aired.insert(line, at: min(slot, aired.count))
+        let cues = aired
+        let attributions = djBreak.attributions
         let work: @Sendable () async -> Result<RenderedClip, VoiceRenderer.Failure> = {
-            await voice.render(line, userID: userID, stationID: stationID, attribution: attribution)
+            await voice.render(line, userID: userID, stationID: stationID, attribution: attribution,
+                               breakCues: cues, breakAttributions: attributions)
         }
         guard let rendered = try? await VoiceRenderer.withTimeout(left, work) else {
             return Task.isCancelled ? .cancelled : .dropped(.late)
@@ -442,7 +474,7 @@ public actor DJBreakPreparer {
         guard let last = main.clips.last,
               let route = renderer.routes.first(where: { $0.providerID == last.audio.providerID && $0.voice.id == last.audio.voiceID })
         else { return nil }
-        return VoiceRenderer(routes: [route], budget: renderer.budget, cache: renderer.cache, revocations: renderer.revocations)
+        return renderer.narrowed(to: [route])
     }
 
     /// The planned time-check cue with its render-time words.
@@ -664,8 +696,10 @@ public actor DJBreakPreparer {
     ///   - "Almost / Coming up on T": −210 s ≤ now − T < 0 (never at or after T);
     ///   - "Just after T": 0 ≤ now − T ≤ 210 s (never before T);
     ///   - "It's T": |now − T| < 120 s.
-    /// T is an instant, so midnight and the 12 h/24 h wrap need no special case. The words must be
-    /// the line rendered for `airTime`; anything else, or no air time, fails closed.
+    /// T is an instant, so midnight and the 12 h/24 h wrap need no special case. A daylight-saving
+    /// gap or fold has no T (`roundedTime` is nil): the line is not true, including a cue whose
+    /// words name the hour the paper rounding would have invented. The words must be the line
+    /// rendered for `airTime`; anything else, or no air time, fails closed.
     nonisolated static func timeCheckStillTrue(_ timeCheck: DJPlannedTimeCheck, saying text: String,
                                                airTime: Date?, now: Date) -> Bool {
         guard let airTime, abs(now.timeIntervalSince(airTime)) <= timeCheckTolerance,
@@ -701,7 +735,62 @@ public actor DJBreakPreparer {
         openForRearm.removeAll()
         rearmed.removeAll()
         taken.removeAll()
+        breakOwner.removeAll()
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
+    }
+
+    /// Test only. Suspends inside `noteBreakOwner` after the owner is recorded, so a cancel can land during that await.
+    var testSuspendAfterNotingOwner: (@MainActor () async -> Void)?
+
+    /// Test only. Installs the suspend above.
+    public func noteOwnerSuspend(_ hook: @escaping @MainActor () async -> Void) {
+        testSuspendAfterNotingOwner = hook
+    }
+
+    /// Records which intro generation owns the render at `k`. Set when that render begins.
+    public func noteBreakOwner(_ owner: Int, afterTrack k: Int) async {
+        breakOwner[k] = owner
+        if let hook = testSuspendAfterNotingOwner { await hook() }
+    }
+
+    /// Cancels the render at `k` only when `owner` is still the generation that began it.
+    /// A late cancel for an older intro does not touch a newer one on the same slot.
+    public func cancelIfOwner(_ owner: Int, afterTrack k: Int) async {
+        guard breakOwner[k] == owner else { return }
+        let task = tasks.removeValue(forKey: k)
+        let result = results.removeValue(forKey: k)
+        planned[k] = nil
+        timeChecks[k] = nil
+        timeCheckDrops[k] = nil
+        timeCheckDeadlines[k] = nil
+        openForRearm.remove(k)
+        rearmed.remove(k)
+        taken.remove(k)
+        if breakOwner[k] == owner { breakOwner[k] = nil }
+        let wasReady = if case .ready? = result { true } else { false }
+        task?.cancel()
+        await task?.value
+        guard breakOwner[k] == nil || breakOwner[k] == owner else { return }
+        if task != nil || wasReady { emit(.skipped(afterTrack: k, .cancelled)) }
+    }
+
+    /// Cancels one boundary and waits until its render task has stopped, so a paid-voice
+    /// reservation made for it is released before the caller starts another render.
+    /// Same skip report as `cancelAll` when a render was in flight or audio was ready.
+    public func cancelAndWait(afterTrack k: Int) async {
+        let task = tasks.removeValue(forKey: k)
+        let result = results.removeValue(forKey: k)
+        planned[k] = nil
+        timeChecks[k] = nil
+        timeCheckDrops[k] = nil
+        timeCheckDeadlines[k] = nil
+        openForRearm.remove(k)
+        rearmed.remove(k)
+        taken.remove(k)
+        let wasReady = if case .ready? = result { true } else { false }
+        task?.cancel()
+        await task?.value
+        if task != nil || wasReady { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
     /// `cancelAll`, except the boundaries in `kept`: those keep rendering, or stay prepared.
@@ -930,6 +1019,21 @@ public actor DJBreakPreparer {
                                       trimmedCueIDs: fitted.trimmed))
     }
 
+    /// Cues whose text may be sent as stitching context while `cue` renders. Routes that do not
+    /// send context keep the plan (the request never carries it). A context-sending route omits
+    /// a held-back time check and every optional line: the measured cap can still drop an
+    /// optional, and that drop happens after this request, so a dropped line must not already
+    /// have left as a neighbour. The cue itself stays, so its required neighbours resolve. The
+    /// late time check is rendered after the fit and uses the lines that remain.
+    private static func contextCues(for cue: NarrationCue, in djBreak: DJBreak, sendingContext: Bool) -> [NarrationCue] {
+        guard sendingContext else { return djBreak.cues }
+        let optional = Set(djBreak.optionalCueIDs)
+        let heldBack = djBreak.timeCheck?.cueID
+        let stable = Set(djBreak.cues.map(\.id).filter { !optional.contains($0) && $0 != heldBack })
+        let included = stable.union([cue.id])
+        return djBreak.cues.filter { included.contains($0.id) }
+    }
+
     private static func renderCues(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
                                    bundled: BundledClipResolver?) async
         -> Result<(cues: [NarrationCue], clips: [RenderedClip]), Skip> {
@@ -946,8 +1050,15 @@ public actor DJBreakPreparer {
             let resolved = await bundled?.gatedClip(for: cue, attribution: djBreak.attributions[cue.id], renderer: renderer)
             let result: Result<RenderedClip, VoiceRenderer.Failure>
             if let resolved { result = .success(resolved) }
-            else { result = await renderer.render(cue, userID: userID, stationID: stationID,
-                                                  attribution: djBreak.attributions[cue.id]) }
+            else {
+                // Context is the lines that will air, not the whole plan. A held-back time check
+                // and every optional line (the cap may trim it after this request) stay out. -Echo
+                let breakCues = contextCues(for: cue, in: djBreak,
+                                            sendingContext: renderer.routes.contains(where: \.sendsSpeechContext))
+                result = await renderer.render(cue, userID: userID, stationID: stationID,
+                                               attribution: djBreak.attributions[cue.id],
+                                               breakCues: breakCues, breakAttributions: djBreak.attributions)
+            }
             switch result {
             case .success(let clip):
                 cue.renderedSeconds = clip.audio.seconds
