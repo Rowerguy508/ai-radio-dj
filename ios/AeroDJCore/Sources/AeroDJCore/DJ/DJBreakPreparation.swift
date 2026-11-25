@@ -1039,12 +1039,15 @@ public actor DJBreakPreparer {
     }
 
     /// Renders every cue in order. With `stopWhenDiscarded` (the first pass), it stops making
-    /// requests once the required clips other than the closing line already exceed the main
-    /// cap (`BreakCap.fitting` can only drop optional lines from there, since clips only add
-    /// seconds) and returns `complete == false`, so later cues are not charged for a pass that
-    /// will be thrown away and retried on the last on-device route (the remaining #293 spend
-    /// fix). Optional lines do not trigger the stop: they can still be trimmed and the pass
-    /// kept. The retry runs with `stopWhenDiscarded: nil`.
+    /// requests once the required clips already cannot fit, and returns `complete == false`, so
+    /// later cues are not charged for a pass that will be thrown away and retried on the last
+    /// on-device route (the remaining #293 / #646 spend fix):
+    /// - the required clips other than the closing line already exceed the main cap;
+    /// - or, when `cap.whole` is set, the required clips (opener and closing as rendered, still
+    ///   excluding optionals) already exceed that whole-break cap, gap included.
+    /// `BreakCap.fitting` can only drop optional lines from there, since clips only add seconds.
+    /// Optional lines do not trigger the stop: they can still be trimmed and the pass kept.
+    /// The retry runs with `stopWhenDiscarded: nil`.
     private static func renderCues(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
                                    bundled: BundledClipResolver?,
                                    stopWhenDiscarded cap: BreakCap?) async
@@ -1079,10 +1082,19 @@ public actor DJBreakPreparer {
                 cue.audioCacheKey = clip.cacheKey
                 cues.append(cue)
                 clips.append(clip)
-                // Optional lines may still be trimmed by `BreakCap.fitting`, so only the
-                // required clips other than the closing line count toward the early stop.
-                if let cap, measured(clips.filter { $0.cueID != cap.closingCueID && !cap.optional.contains($0.cueID) }) > cap.main {
-                    return .success((cues, clips, false))
+                // Optional lines may still be trimmed by `BreakCap.fitting`, so they do not
+                // count toward either early stop.
+                if let cap {
+                    if measured(clips.filter { $0.cueID != cap.closingCueID && !cap.optional.contains($0.cueID) }) > cap.main {
+                        return .success((cues, clips, false))
+                    }
+                    // The whole-break cap includes the closing line and the pause before it.
+                    if let whole = cap.whole {
+                        let required = clips.filter { !cap.optional.contains($0.cueID) }
+                        if BreakCap.spokenSeconds(required, closingCueID: cap.closingCueID) > whole {
+                            return .success((cues, clips, false))
+                        }
+                    }
                 }
             case .failure(let failure):
                 // A render cut short by the deadline is a timeout, whichever side of the race

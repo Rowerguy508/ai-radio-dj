@@ -1,12 +1,12 @@
 import XCTest
 @testable import AeroDJCore
 
-/// Remaining #293 delta on integration: once required (non-optional, non-closing) clips on the
-/// first pass already exceed `BreakCap.main`, later cues are not sent to a cloud or paid route
-/// that would be charged and then discarded before the last-route retry. Optional lines still
-/// reach `BreakCap.fitting` so they can be trimmed without abandoning a pass that can still play.
-/// The #293 whole-break up-front on-device route is not recut: #432 lets attributed lines use
-/// the cloud voice behind consent copy v3, per cue.
+/// Remaining #293 / #646 delta on integration: once required clips on the first pass already
+/// cannot fit `BreakCap.main` or `BreakCap.whole`, later cues are not sent to a cloud or paid
+/// route that would be charged and then discarded before the last-route retry. Optional lines
+/// still reach `BreakCap.fitting` so they can be trimmed without abandoning a pass that can
+/// still play. The #293 whole-break up-front on-device route is not recut: #432 lets attributed
+/// lines use the cloud voice behind consent copy v3, per cue.
 private final class OverCapCountingVoice: VoiceProvider, @unchecked Sendable {
     let provider: String
     let seconds: Double
@@ -126,5 +126,82 @@ final class OverCapEarlyStopTests: XCTestCase {
         XCTAssertEqual(ready.clips.map(\.audio.providerID), ["cloud", "cloud", "cloud"])
         XCTAssertEqual(cloud.calls, 3)
         XCTAssertEqual(device.calls, 0)
+    }
+
+    /// The 12 s ordinary `whole` cap: the opener already cannot fit it, while it still fits
+    /// `main`, so only the whole-cap stop should fire. Later optional and closing cloud cues
+    /// are not sent. The last-route retry can still play.
+    func testOverTheWholeCapStopsRequestingLaterOptionalCues() async {
+        let cloud = OverCapCountingVoice(provider: "cloud", seconds: 13)
+        let device = OverCapCountingVoice(provider: "device", seconds: 3)
+        let djBreak = presenterBreak([
+            "Good evening, this is the late show.",
+            "A little more about that one.",
+            "Next up, a familiar one."
+        ], optional: [1], closing: 2)
+        let cap = DJBreakPreparer.BreakCap(main: 15, closingCueID: djBreak.talkOverCueID, closing: 4,
+                                           whole: 12, optional: djBreak.optionalCueIDs)
+        let outcome = await DJBreakPreparer.render(djBreak, renderer: renderer(cloud, device),
+                                                   userID: "u", stationID: "s", cap: cap)
+        guard case .ready(let ready) = outcome else {
+            return XCTFail("over the whole cap on the cloud pass must fall back, not skip: \(outcome)")
+        }
+        XCTAssertEqual(ready.clips.map(\.audio.providerID), ["device", "device", "device"])
+        XCTAssertEqual(cloud.calls, 1, "opener 13 s is already over the 12 s whole cap: later cues never sent")
+        XCTAssertEqual(device.calls, 3, "one on-device retry of the whole break")
+    }
+
+    /// A first pass that still fits `whole` is kept on the cloud voice: either every line fits,
+    /// or an optional line that is over `whole` is trimmed rather than triggering the early stop.
+    func testABreakThatFitsTheWholeCapKeepsTheFirstPass() async {
+        let cloud = OverCapCountingVoice(provider: "cloud", seconds: 3)
+        let device = OverCapCountingVoice(provider: "device", seconds: 3)
+        let djBreak = presenterBreak([
+            "Good evening, this is the late show.",
+            "A little more about that one.",
+            "Next up, a familiar one."
+        ], optional: [1], closing: 2)
+        let cap = DJBreakPreparer.BreakCap(main: 15, closingCueID: djBreak.talkOverCueID, closing: 4,
+                                           whole: 12, optional: djBreak.optionalCueIDs)
+        let outcome = await DJBreakPreparer.render(djBreak, renderer: renderer(cloud, device),
+                                                   userID: "u", stationID: "s", cap: cap)
+        guard case .ready(let ready) = outcome else {
+            return XCTFail("a break that fits the whole cap must play: \(outcome)")
+        }
+        XCTAssertEqual(ready.cues.map(\.text), [
+            "Good evening, this is the late show.",
+            "A little more about that one.",
+            "Next up, a familiar one."
+        ])
+        XCTAssertEqual(ready.trimmedCueIDs, [])
+        XCTAssertEqual(ready.clips.map(\.audio.providerID), ["cloud", "cloud", "cloud"])
+        XCTAssertEqual(cloud.calls, 3)
+        XCTAssertEqual(device.calls, 0, "a pass that fits is kept; no last-route retry")
+    }
+
+    func testAnOptionalLineOverTheWholeCapIsTrimmedNotAnEarlyStop() async {
+        let cloud = OverCapCountingVoice(provider: "cloud", seconds: 5)
+        let device = OverCapCountingVoice(provider: "device", seconds: 2)
+        let djBreak = presenterBreak([
+            "Good evening, this is the late show.",
+            "A little more about that one.",
+            "Next up, a familiar one."
+        ], optional: [1], closing: 2)
+        // 5 + 5 + 5 + 0.3 s gap is over 12 s; opener + closing + gap (10.3 s) still fits.
+        let cap = DJBreakPreparer.BreakCap(main: 15, closingCueID: djBreak.talkOverCueID, closing: 6,
+                                           whole: 12, optional: djBreak.optionalCueIDs)
+        let outcome = await DJBreakPreparer.render(djBreak, renderer: renderer(cloud, device),
+                                                   userID: "u", stationID: "s", cap: cap)
+        guard case .ready(let ready) = outcome else {
+            return XCTFail("optional over the whole cap must trim, not retry or skip: \(outcome)")
+        }
+        XCTAssertEqual(ready.cues.map(\.text), [
+            "Good evening, this is the late show.",
+            "Next up, a familiar one."
+        ])
+        XCTAssertEqual(ready.trimmedCueIDs, [djBreak.cues[1].id])
+        XCTAssertEqual(ready.clips.map(\.audio.providerID), ["cloud", "cloud"], "the kept first pass stays on the cloud voice")
+        XCTAssertEqual(cloud.calls, 3, "the optional line still renders so fitting can trim it")
+        XCTAssertEqual(device.calls, 0, "no last-route retry")
     }
 }
