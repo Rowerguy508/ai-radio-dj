@@ -7,6 +7,7 @@ import {
   clientAddress,
   permitTokenRequest,
   resetTokenRateLimitForTests,
+  tokenBucketCountForTests,
   TOKEN_REQUESTS_PER_WINDOW,
   TOKEN_WINDOW_MS,
   UNKNOWN_CLIENT,
@@ -102,6 +103,20 @@ describe('apple music token limiter (#78)', () => {
       }
       expect(permitTokenRequest('198.51.100.30', t0 + TOKEN_WINDOW_MS - 1)).toBe(false);
       expect(permitTokenRequest('198.51.100.30', t0 + TOKEN_WINDOW_MS)).toBe(true);
+    });
+
+    it('drops expired buckets on write so the Map does not grow per address', () => {
+      const t0 = 1_700_000_000_000;
+      for (let i = 0; i < 50; i += 1) permitTokenRequest(`198.51.100.${i}`, t0);
+      permitTokenRequest('203.0.113.1', t0 + TOKEN_WINDOW_MS / 2);
+      expect(tokenBucketCountForTests()).toBe(51);
+      permitTokenRequest('203.0.113.2', t0 + TOKEN_WINDOW_MS);
+      // The 50 from t0 have expired; the mid-window bucket is still live and keeps its count.
+      expect(tokenBucketCountForTests()).toBe(2);
+      for (let i = 1; i < TOKEN_REQUESTS_PER_WINDOW; i += 1) {
+        expect(permitTokenRequest('203.0.113.1', t0 + TOKEN_WINDOW_MS + i)).toBe(true);
+      }
+      expect(permitTokenRequest('203.0.113.1', t0 + TOKEN_WINDOW_MS + 20)).toBe(false);
     });
 
     it('uses a module-level Map with no shared store, and says so in the code', () => {

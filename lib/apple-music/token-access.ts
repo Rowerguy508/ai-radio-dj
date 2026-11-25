@@ -27,9 +27,26 @@ export const UNKNOWN_CLIENT = 'unknown';
 
 type Bucket = { start: number; count: number };
 const buckets = new Map<string, Bucket>();
+let lastEviction = 0;
 
 export function resetTokenRateLimitForTests(): void {
   buckets.clear();
+  lastEviction = 0;
+}
+
+export function tokenBucketCountForTests(): number {
+  return buckets.size;
+}
+
+// Drops buckets whose window has ended, so the Map does not grow by one entry per
+// distinct address until a cold start. Runs on write, at most once per window, so
+// the cost stays O(live buckets) per minute.
+function evictExpired(now: number): void {
+  if (now - lastEviction < TOKEN_WINDOW_MS) return;
+  lastEviction = now;
+  buckets.forEach((bucket, address) => {
+    if (now - bucket.start >= TOKEN_WINDOW_MS) buckets.delete(address);
+  });
 }
 
 /**
@@ -47,6 +64,7 @@ export function clientAddress(headers: Headers): string {
 export function permitTokenRequest(address: string, now = Date.now()): boolean {
   const current = buckets.get(address);
   if (!current || now - current.start >= TOKEN_WINDOW_MS) {
+    evictExpired(now);
     buckets.set(address, { start: now, count: 1 });
     return true;
   }
