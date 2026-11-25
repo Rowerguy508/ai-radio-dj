@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Render Sentinel's docs/site/{privacy,support}.md into site/{privacy,support}.html.
 
-The page copy is kept word for word: only Markdown syntax becomes HTML, and every
-[owner ...] / [PENDING ...] marker stays as literal text inside <mark>. The leading
-"> " block is the editorial note for the owner, not page copy, so it is left out and
-replaced by the site's draft banner. The page shell (head, header, footer) is kept
+The page copy is kept word for word: only Markdown syntax becomes HTML. The pages are
+live, so an [owner ...] / [PENDING ...] marker or a "> " editorial block in the .md is an
+error: rendering (and --check) fails instead of publishing it. docs/site/HOLD-pro.md is
+held copy and is never rendered. The page shell (head, header, footer) is kept
 from the existing HTML file. No dependencies. Usage: python3 site/render-copy.py [--check]
 (--check exits 1 if a page is out of date with its .md instead of writing it.)
 """
@@ -14,9 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "site"
 PAGES = {"privacy": "p", "support": "s"}
-BANNER = ('<div class="draft-banner" role="note">\n'
-          '  <p>Draft, not for publication. Every highlighted [owner] and [PENDING] marker has to be '
-          'resolved by the owner, and nothing marked [PENDING] goes live until it ships.</p>\n</div>')
+MARKER = re.compile(r"\[\s*(owner|pending)\b", re.I)
 
 def inline(text):
     out, i = [], 0
@@ -61,9 +59,11 @@ def render(md, prefix):
         else:
             body.extend(b.replace("      ", "    ", 1) for b in blocks)
         blocks = []
-    for ln in lines:
+    for n, ln in enumerate(lines, 1):
         if ln.startswith(">"):
-            continue
+            raise SystemExit(f"FAIL: editorial '>' block at line {n}; strip it before publishing")
+        if MARKER.search(ln):
+            raise SystemExit(f"FAIL: [owner]/[PENDING] marker at line {n}: {ln.strip()[:80]}")
         if ln.startswith("# "):
             flush(); blocks.append(f"      <h1>{inline(ln[2:])}</h1>")
         elif ln.startswith("## "):
@@ -99,7 +99,7 @@ def main():
         end = shell.index("</main>")
         main_html = ('<main id="main" class="doc">\n  <div class="wrap narrow">\n'
                      f'    <!-- Copy: docs/site/{name}.md from sentinel/site-copy (#261) at bd58531, rendered by site/render-copy.py. Do not edit the copy here; change the .md and re-render. -->\n'
-                     f"    {BANNER}\n\n{render(md_path.read_text(), prefix)}\n  </div>\n")
+                     f"\n{render(md_path.read_text(), prefix)}\n  </div>\n")
         new = shell[:start] + main_html + shell[end:]
         if check:
             if new != shell:

@@ -54,8 +54,14 @@ How to read this:
 - The negative reports change the category and call `setActive(true)` on a session that was most
   likely **already active**. Ducking starts on an activation, so that may be a no-op.
 - The positive report deactivates first, so its `setActive(true)` really activates.
-- Our path is the positive one: since Build 10 the app never activates its session while music
-  plays, so `TalkoverAudioSession.duck` makes a real activation.
+- **Correction (session-order fix, -Fry):** our path was NOT the positive one. `decodeTalkover`
+  called `AVAudioPlayer.prepareToPlay()`, which activates the session (Apple doc), with the
+  mix-only category, about 1.5 s before the duck. The duck then set `.duckOthers` on an already
+  active session. Now the talk-over prepares nothing, and the duck runs Core's
+  `TalkoverSessionSequence.duck` (quiet `setActive(false)`, `.duckOthers`, `setActive(true)`)
+  `duckLead` (0.6 s) before the voice, so the activation is real and the ramp is down before the
+  first word. A duck whose voice never speaks is released (`TalkoverSessionSequence.release`).
+  Our voice fades in and out over 0.2 s (`TalkoverVoiceRamp`). Code reading only.
 - That is a plausible explanation, not a proof. iOS versions differ, and there may be no Apple
   statement either way.
 
@@ -71,6 +77,13 @@ session's own report, as codes only:
   `secondaryAudioShouldBeSilencedHint`) **before** `setActive(true)`;
 - `activated`;
 - `otherAfter` and `hintAfter` right after.
+
+Added with the session-order fix: `activeBefore` (the app's own record; there is no getter),
+`preOff` (error code of the quiet pre-deactivation, 0 none), `opts` (`categoryOptions` read
+back, bitmask) and `duckSet`, `outVol` (`outputVolume` percent); a `duckSettled` row 0.5 s after
+the activation (`otherAudio`, `secondaryHint`, `outVol`); a `duckVoice` row with the
+duck-to-voice delay in `ms`; and an `unduckProbe` row (or `duckReleased` for a duck that never
+spoke) with the deactivation's `err` code and the same three values.
 
 If `otherAudio=true` while only our music is playing, the system counts `ApplicationMusicPlayer`
 as another session. That is the precondition for `.duckOthers` to reach it. It does not show the
@@ -182,22 +195,25 @@ the planner inserts the gap with `play(atTime:)` rather than expecting it in the
 
 ## Flag
 
-- `DJTalkoverFlag`. The key is `AeroDJTalkoverEnabled` (UserDefaults). Talk-over is ON only when the
-  build is an owner A/B build **and** that value is true (unset counts as true there). Any other build
-  ignores the stored value without deleting it, so a normal build installed over an owner A/B build
-  never talks over (build 26 QA T-15). The decision is `DJTalkoverFlag.isEnabled(ownerABBuild:saved:)`.
-- The build default is **ON only when `AERODJ_OWNER_AB` is defined**. That happens only in a
-  TestFlight workflow_dispatch with `owner_ab: true`; see
-  `ios/scripts/testflight-swift-conditions.sh`.
-- It is **OFF** everywhere else, including Debug, fixture mode, the test station
-  (`unsetDefault: false`: OFF unless an owner A/B toggle was explicitly set ON) and unit tests.
-- The on-device toggle "DJ talk-over" is a toolbar button on the Player screen (top right, waveform
-  icon, id `owner.talkoverToggle`). It exists **only in an `AERODJ_OWNER_AB` build**
-  (`ios/AeroDJ/TalkoverToggle+App.swift`), with or without `p0_diag`. A normal owner build
-  (`owner_ab: true`) has it. Every other build compiles `talkoverToggleEntry()` to a no-op.
+- `DJTalkoverFlag`. The key is `AeroDJTalkoverEnabled` (UserDefaults). Since the owner's 2026-11-02
+  decision it is a **user setting in every build** (this replaces #225's owner A/B-only gate). The
+  saved value is honoured in every build; unset means the unset default. The decision is
+  `DJTalkoverFlag.isEnabled(saved:unsetDefault:)` = `saved ?? unsetDefault`.
+- The unset default is **ON on a live station** and **OFF on the fixture test station**
+  (`DJTalkoverFlag.unsetDefault(isTestStation:)`), so fixture mode stays OFF unless the toggle was
+  explicitly set ON. `swift test` tests pass `unsetDefault` explicitly where it matters.
+- The key is unchanged, so a value saved by the old owner A/B toolbar toggle carries over: a saved
+  OFF stays OFF until the listener turns it back on in Settings.
+- Live and fixture modes share the one key, so a value saved in either mode applies in both.
+- The toggle is **Settings > DJ > "DJ talk-over & fades"**, footnote "Recommended" (id
+  `settings.talkoverToggle`, `ios/AeroDJ/TalkoverToggle+App.swift`). Settings is a sheet opened from
+  the gear (id `stations.settings`) at the top left of the Stations list (`ios/AeroDJ/SettingsView.swift`).
+  The Player toolbar button (`owner.talkoverToggle`) is gone. Flipping it applies from the next break.
+- Flag OFF always means a hard break (`TalkoverPlanner` returns `.hardBreak(.flagOff)`).
+- Audibility of the duck is still **not proven on device**: `ApplicationMusicPlayer` has no volume
+  API, so the dip is the system's `.duckOthers`. Turning the setting on does not prove the fade is
+  heard.
 - `p0_diag: true` is optional. It adds only the trace rows below.
-- Flipping it ON for everyone after the device test is a one-line change: make
-  `DJTalkoverFlag.buildDefault` return `true`. The owner wants it ON once it is device-tested.
 
 ## DIAG fields (P0 trace, event `talkover`)
 
@@ -207,19 +223,22 @@ the planner inserts the gap with `play(atTime:)` rather than expecting it in the
 | `miss` | `reason` (voiceStartLate, endedBeforeVoice, nextStartLate, nextStartEarly, endAfterPlayCue, voiceEndedFirst), `ms` |
 | `cancel` | `reason` (seekOutOfWindow, seekWhileSpeaking, skip, userStop, interruption, routeRemoved, revoked, voiceFailed) |
 | `latency` | `measured` (ms), `lat` (new L, ms) |
-| `duckProbe` | `otherAudio`, `secondaryHint` (before activation), `activated`, `otherAfter`, `hintAfter` (booleans) |
+| `duckProbe` | `otherAudio`, `secondaryHint` (before activation), `activated`, `otherAfter`, `hintAfter` (booleans); `activeBefore`, `preOff`, `opts`, `duckSet`, `outVol` |
+| `duckSettled` | `otherAudio`, `secondaryHint`, `outVol`, 0.5 s after the duck activation |
+| `duckVoice` | `ms` from the duck activation to the voice's real start |
+| `unduckProbe` / `duckReleased` | `err` (deactivation error code, 0 ok), `otherAudio`, `secondaryHint`, `outVol` |
 
 The same lines go to the unified log (subsystem AeroDJ, category talkover) as `.public`. They hold
 numbers and codes only.
 
-## On-device checklist (owner TestFlight A/B; NOT yet run)
+## On-device checklist (TestFlight; NOT yet run)
 
-Build: workflow_dispatch with `owner_ab: true` (`p0_diag: true` is optional and adds the trace).
+Build: any TestFlight build (the setting is in every build). `p0_diag: true` is optional and adds the trace.
 Use the iPhone, then the Duo.
 
 1. **Flag**
-   - On the Player screen, confirm the "DJ talk-over" toolbar button (waveform icon, top right) is ON by
-     default in this build.
+   - Stations list > gear (top left) > Settings: confirm "DJ talk-over & fades" (Recommended) is ON.
+     If it shows OFF, an old saved OFF from the owner A/B toolbar carried over: turn it ON.
    - Turn it OFF and play two boundaries: they must sound exactly like today (gap break, music
      stopped).
    - Turn it back ON.
@@ -318,7 +337,6 @@ Use the iPhone, then the Duo.
 - The interruption policy sees `breakActive` during the intro overlap, which is slightly different
   from today.
 - A fade that finishes naturally reports `.finished` (minor).
-- The owner-only toggle (`#if AERODJ_OWNER_AB`) is compiled only by the TestFlight owner_ab
-  build. CI checks the build settings for that flag, not an app build with it.
+- The Settings toggle is app-target code, compiled in every build; only iOS CI builds it.
 - App-target code is compiled only by iOS CI. Linux `swift test` covers only the AeroDJCore planner,
   state machine, loudness, seam and logs.

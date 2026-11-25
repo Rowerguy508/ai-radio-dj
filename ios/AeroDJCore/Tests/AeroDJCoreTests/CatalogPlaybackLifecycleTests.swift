@@ -207,11 +207,15 @@ final class CatalogPlaybackLifecycleTests: XCTestCase {
         await preparer.observe { event in
             if case .skipped(let track, _) = event, track == djBreak.afterTrack { settled.fulfill() }
         }
+        // #582 flake (-Atlas): the claim is "returns without waiting out the deadline", so the bar is
+        // relative to that deadline, not a fixed 0.5 s of wall clock on a shared hosted Mac (one run
+        // measured 0.72 s). The `.renderFailed` outcome below, not `.deadline`, proves why it returned.
+        let deadline = Duration.seconds(30)
         let started = ContinuousClock.now
-        await preparer.prepare(djBreak, deadline: .seconds(30), onDeviceOnly: false)
-        await fulfillment(of: [settled], timeout: 2)
+        await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: false)
+        await fulfillment(of: [settled], timeout: 5)
         let elapsed = ContinuousClock.now - started
-        XCTAssertLessThan(elapsed, .milliseconds(500), "a failed render returns without waiting out the deadline")
+        XCTAssertLessThan(elapsed, deadline / 6, "a failed render returns without waiting out the deadline")
 
         let outcome = await preparer.takeBreak(afterTrack: djBreak.afterTrack)
         XCTAssertEqual(outcome, .skipped(.renderFailed))

@@ -125,6 +125,8 @@ struct WorkspaceView: View {
     let search: MusicSearch?
     @ObservedObject var studioSearch: StudioSearchModel
     @Binding var segment: WorkspaceSegment
+    var onClose: (() -> Void)? = nil
+    var outerHorizontalInset: Double = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -142,7 +144,7 @@ struct WorkspaceView: View {
                 QueueList(content: content, snapshot: snapshot, applyEdit: actions.editUpNext,
                           search: search, studioSearch: studioSearch)
             case .tune:
-                TuneForm(studio: studio)
+                TuneForm(studio: studio, onClose: onClose, outerHorizontalInset: outerHorizontalInset)
             case .connections:
                 ConnectionsList(model: studio.connections)
             }
@@ -199,7 +201,9 @@ struct QueueList: View {
                         .foregroundStyle(AeroDJPalette.secondaryText)
                         .padding(.top, 8)
                 }
-                if let search {
+                // #454: a station that is starting (or failed to) keeps its own screen; the search
+                // comes back once it plays or the listener leaves the start state.
+                if let search, !content.isStationStart {
                     sectionTitle(content.showsTransport ? "Play something else" : "Start listening")
                     StartListeningView(search: search, model: studioSearch)
                 }
