@@ -2,7 +2,7 @@
 
 Part of [#24](https://github.com/Rowerguy508/ai-radio-dj/issues/24). Written against `integration/device-duo` at `5a57269f`. This file is documentation only.
 
-**Nothing paid was run for this document.** The paid cap stays $0: `VoiceBetaDefaults.paidDailyCapMicrodollars = 0` (`VoiceRendering.swift:208`) and `BetaVoicePolicy.paidSpendAllowedMicrodollars = 0` (`EditorialNarration.swift:750`). Running the bake-off needs explicit owner approval and a budget. The on-device provider is free, and it was not run here either.
+**Nothing paid was run for this document.** The paid cap stays $0: `VoiceBetaDefaults.paidDailyCapMicrodollars = 0` (`VoiceRendering.swift:208`) and `BetaVoicePolicy.paidSpendAllowedMicrodollars = 0` (`EditorialNarration.swift:749`). Running the bake-off needs explicit owner approval and a budget. The on-device provider is free, and it was not run here either.
 
 No provider is recommended in this document. Issue #24 allows a recommendation only after representative listening scores average at least 4 out of 5.
 
@@ -79,16 +79,16 @@ Text is generic or public catalog sample copy only. There is no private calendar
 | BO-09 | time and weather | 169 | p.m., date, a pause, a question |
 | BO-10 | time and weather | 152 | Mid-day, Queens, a question |
 | BO-11 | hard names | 156 | Bad Bunny, Tití Me Preguntó, Celia Cruz, Café Tacvba |
-| BO-12 | hard names | 187 | A train, Washington Heights, BQE, Kosciuszko, LIRR, a pause |
+| BO-12 | hard names | 167 | A train, Washington Heights, BQE, Kosciuszko, LIRR, a pause |
 | BO-13 | hard names | 176 | MoMA, CUNY, JFK, MTA, LGA, EWR, Q train |
 | BO-14 | hard names | 153 | Luis Fonsi, Juanes, Despechá |
-| BO-15 | hard names | 154 | Dates and ordinals (3rd of March, November 24) |
+| BO-15 | hard names | 154 | Dates and ordinals (2nd of March, November 24) |
 | BO-16 | long break | 594 | Morning wrap: NYC terms, Spanish names, a question |
 | BO-17 | long break | 590 | Back-announce chain, pause, weather, a question |
 | BO-18 | intro | 157 | Opening pause, restrained tone |
 | BO-19 | back-announce | 172 | WNYC, José González, Q train, a question |
 | BO-20 | long break | 599 | Close: names, NYC map, date |
-| **Total** | **20 clips** | **4,254** | |
+| **Total** | **20 clips** | **4,234** | |
 
 ### 2.1 Exact text
 
@@ -136,9 +136,9 @@ It's 12:15 p.m. on a bright Saturday in Queens. Clear skies, a light breeze, and
 
 Up next: Bad Bunny with Tití Me Preguntó, then Celia Cruz, La Vida Es un Carnaval, and a little Café Tacvba with Eres. That's a lot of joy in a small space.
 
-**BO-12** (hard names, 187)
+**BO-12** (hard names, 167)
 
-If you're on the A train through Washington Heights, or stuck on the BQE near the Kosciuszko Bridge, or waiting on the LIRR at Jamaica... breathe. We'll be right here until you get there.
+If you're on the A train through Washington Heights, or stuck on the BQE near the Kosciuszko Bridge, or waiting on the LIRR at Jamaica... breathe. We'll be right here.
 
 **BO-13** (hard names, 176)
 
@@ -150,7 +150,7 @@ Coming up: Luis Fonsi with Despacito, Juanes with A Dios le Pido, and Rosalía w
 
 **BO-15** (hard names, 154)
 
-This hour was put together on Monday, the 3rd of March, 2026, and we're playing it again today, Tuesday, November 24. Same calm hour. No need to catch up.
+This hour was put together on Monday, the 2nd of March, 2026, and we're playing it again today, Tuesday, November 24. Same calm hour. No need to catch up.
 
 **BO-16** (long break, 594)
 
@@ -174,11 +174,11 @@ We're at the end of this set, so here's a short close. Today is Tuesday, Novembe
 
 ## 3. Providers on integration (`5a57269f`)
 
-Taken only from the tree as it stands. `BetaVoicePolicy.disabledProviderIDs` is `["cartesia", "dessa", "elevenlabs"]` (`EditorialNarration.swift:751`). `BetaVoicePolicy.paidProvidersEnabled` is `false` (`:749`). Production audio still comes from `VoiceRenderer.onDeviceDefault()` (`OnDeviceSpeechProvider.swift:207–219`).
+Taken only from the tree as it stands. `BetaVoicePolicy.disabledProviderIDs` is `["cartesia", "dessa", "elevenlabs"]` (`EditorialNarration.swift:751`). `BetaVoicePolicy.paidProvidersEnabled` is `false` (`:748`). Production audio still comes from `VoiceRenderer.onDeviceDefault()` (`OnDeviceSpeechProvider.swift:207–219`).
 
 | Provider | Repo id | Leaves the device? | Repo rate (`microdollarsPerThousandCharacters`) | Status on this tip |
 | --- | --- | --- | --- | --- |
-| On-device Apple speech | `avspeech` (`OnDeviceSpeechProvider.swift:13–14`) | No | 0 (default). `billableUnits` is 0 (`OnDeviceSpeechProvider.swift:60`). | Shipping last route. `VoiceRoute.onDeviceRoutes()` (`:199–211`) uses a 20 s timeout and `acceptsSSML: true`. `BetaVoicePolicy.onDeviceRoute` names the same kind of route `device` (`EditorialNarration.swift:754`). |
+| On-device Apple speech | `avspeech` (`OnDeviceSpeechProvider.swift:13–14`) | No | 0 (default). `billableUnits` is 0 (`OnDeviceSpeechProvider.swift:59`). | Shipping last route. `VoiceRoute.onDeviceRoutes()` (`:199–211`) uses a 20 s timeout and `acceptsSSML: true`. `BetaVoicePolicy.onDeviceRoute` names the same kind of route `device` (`EditorialNarration.swift:753`). |
 | Phonon (on-device) | `phonon` (`PhononSpeechSelection.swift:11`) | No | 0 (`PhononSpeechProvider.swift:68`) | Optional extra route in `PhononSpeechRoutes.make()`, only when the flag is on and the runtime is iOS 18 arm64. It throws when the model is missing and the renderer continues to `avspeech`. Not in `disabledProviderIDs`. `acceptsSSML: false`. |
 | ElevenLabs via the TTS proxy | `elevenlabs` (`PremiumVoiceCatalog.swift:107`); `ProxyVoiceProvider.Upstream.elevenlabs` (`ProxyVoiceProvider.swift:30`) | Yes (`PremiumVoiceCatalog.swift:167–171`; `TesterVoiceRoute.swift:55–64`) | **0 in the app.** Spend is meant to be capped upstream, so `VoiceBudget` does not block it (`PremiumVoiceCatalog.swift:159–161`). | Named in `disabledProviderIDs`. The deployed proxy accepts only `upstream: "elevenlabs"` (`handler.ts:677`). Default model is `eleven_flash_v2_5` (`handler.ts:36`, `:686`). Owner A/B and attested tester compositions exist, and both still need an owner decision plus the existing gates before a bake-off can use them. |
 | Cartesia via the TTS proxy | `cartesia` (`ProxyVoiceProvider.Upstream.cartesia`, `ProxyVoiceProvider.swift:30`) | Would be yes (any `ProxyVoiceProvider` route) | No shipping route, so no repo rate. | Named in `disabledProviderIDs`. The client enum exists; `services/aerodj-tts` has no Cartesia adapter, and the proxy returns 400 for any upstream other than `elevenlabs`. A Cartesia bake-off cannot run on this tip without new proxy work and a separate owner approval. |
@@ -192,7 +192,7 @@ Roadmap items that are not `VoiceProvider`s on this tip (for example OpenAI real
 
 ## 4. Cost write-up
 
-One pass of the clip list is **4,254 characters**. The planning example is **3 listeners × 2 takes = 6 passes**, which is **25,524 characters per provider**, if every take is actually re-rendered (cache off or bypassed).
+One pass of the clip list is **4,234 characters**. The planning example is **3 listeners × 2 takes = 6 passes**, which is **25,404 characters per provider**, if every take is actually re-rendered (cache off or bypassed).
 
 ### 4.1 Rates in the repo
 
@@ -204,7 +204,7 @@ A comment at `PremiumVoiceCatalog.swift:60–62` (2026-10-29) notes an ElevenLab
 
 The proxy's own character caps, independent of vendor list prices (`limiter.ts` and `services/aerodj-tts/README.md`):
 
-| Cap | Default | One pass (4,254) | Six passes (25,524) |
+| Cap | Default | One pass (4,234) | Six passes (25,404) |
 | --- | --- | --- | --- |
 | Per request | 600 (`handler.ts:35`) | Each clip fits | Each clip fits |
 | Global daily | 9,000 (`DEFAULT_GLOBAL_DAILY_CHAR_CAP`) | Fits | Over — would need more than one UTC day, or an owner-approved cap change |
@@ -244,18 +244,18 @@ USD per character is therefore **derived** (plan price ÷ included credits, or t
 
 Formula, using spoken characters only: `USD = characters / 1000 × dollars_per_thousand`. This is the vendor list (or derived plan) arithmetic, not `VoiceRoute.cost`, which would be 0 on today's routes.
 
-| Provider | Rate used | Source | One pass (4,254 chars) | 3 listeners × 2 takes (25,524 chars) |
+| Provider | Rate used | Source | One pass (4,234 chars) | 3 listeners × 2 takes (25,404 chars) |
 | --- | --- | --- | --- | --- |
-| On-device `avspeech` | $0 | Repo (`OnDeviceSpeechProvider.swift:60`) | $0 | $0 |
+| On-device `avspeech` | $0 | Repo (`OnDeviceSpeechProvider.swift:59`) | $0 | $0 |
 | Phonon | $0 | Repo (`PhononSpeechProvider.swift:68`) | $0 | $0 |
 | Dessa stub | n/a | Repo (`VoiceRendering.swift:1127–1129`) | $0 (no call) | $0 (no call) |
-| ElevenLabs Flash / Turbo (default `eleven_flash_v2_5`) | $0.04 / 1,000 characters | [elevenlabs.io/pricing/api](https://elevenlabs.io/pricing/api), 24 November 2026 | **$0.1702** | **$1.0210** |
-| ElevenLabs v3 / v4 / Multilingual v2 (only if the model is changed) | $0.08 / 1,000 characters | Same page | $0.3403 | $2.0419 |
-| Cartesia Sonic, credits | ~1 credit / character | [docs.cartesia.ai/pricing](https://docs.cartesia.ai/pricing), 24 November 2026 | 4,254 credits | 25,524 credits |
-| Cartesia, derived Pro included ($5 / 100k credits) | $0.0500 / 1,000 characters | Arithmetic from [cartesia.ai/pricing](https://www.cartesia.ai/pricing), 24 November 2026 | $0.2127 | $1.2762 |
-| Cartesia, published Pro overage | $65 / 1M credits | Same page, FAQ | $0.2765 | $1.6591 |
+| ElevenLabs Flash / Turbo (default `eleven_flash_v2_5`) | $0.04 / 1,000 characters | [elevenlabs.io/pricing/api](https://elevenlabs.io/pricing/api), 24 November 2026 | **$0.1694** | **$1.0162** |
+| ElevenLabs v3 / v4 / Multilingual v2 (only if the model is changed) | $0.08 / 1,000 characters | Same page | $0.3387 | $2.0323 |
+| Cartesia Sonic, credits | ~1 credit / character | [docs.cartesia.ai/pricing](https://docs.cartesia.ai/pricing), 24 November 2026 | 4,234 credits | 25,404 credits |
+| Cartesia, derived Pro included ($5 / 100k credits) | $0.0500 / 1,000 characters | Arithmetic from [cartesia.ai/pricing](https://www.cartesia.ai/pricing), 24 November 2026 | $0.2117 | $1.2702 |
+| Cartesia, published Pro overage | $65 / 1M credits | Same page, FAQ | $0.2752 | $1.6513 |
 
-If both ElevenLabs Flash and Cartesia Pro (included-rate) were run for six passes, the sum of those two planning rows is about **$2.30**, plus whatever a monthly plan itself costs if one is not already in place. Cartesia cannot actually be called on this tip (see §3). ElevenLabs also cannot be called while the paid cap stays $0 and `disabledProviderIDs` still includes `elevenlabs`, unless the owner explicitly approves a bake-off path and budget.
+If both ElevenLabs Flash and Cartesia Pro (included-rate) were run for six passes, the sum of those two planning rows is about **$2.29**, plus whatever a monthly plan itself costs if one is not already in place. Cartesia cannot actually be called on this tip (see §3). ElevenLabs also cannot be called while the paid cap stays $0 and `disabledProviderIDs` still includes `elevenlabs`, unless the owner explicitly approves a bake-off path and budget.
 
 Cost per break is the clip's character count times the same rate. The most expensive single clip is BO-20 (599 characters): about $0.0240 on ElevenLabs Flash, $0.0479 on ElevenLabs v3/v4, 599 Cartesia credits, and about $0.0300 on the derived Cartesia Pro included rate.
 
