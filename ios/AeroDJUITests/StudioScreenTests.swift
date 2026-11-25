@@ -565,8 +565,10 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(timeline.waitForExistence(timeout: 5), "up-next timeline missing\n\(app.debugDescription)")
         XCTAssertGreaterThanOrEqual(timeline.frame.midX, contentFrame.minX - 4, "timeline stays in the content column")
         XCTAssertLessThanOrEqual(timeline.frame.midX, contentFrame.maxX + 4, "timeline stays in the content column")
-        XCTAssertTrue(timeline.label.contains("Morning Light"))
-        XCTAssertTrue(timeline.label.contains("DJ break after this song"))
+        // Build 58 (-Nova): Up Next lists only upcoming songs, never duplicating the
+        // currently playing track or the DJ break pill already shown above it.
+        XCTAssertFalse(timeline.label.contains("Morning Light"))
+        XCTAssertFalse(timeline.label.contains("DJ break after this song"))
         XCTAssertTrue(timeline.label.contains("Slow Burn"))
         timeline.tap()
         XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5), "tapping the timeline opens the queue")
@@ -992,6 +994,48 @@ final class StudioScreenTests: XCTestCase {
         expand.tap()
         XCTAssertTrue(bar.waitForExistence(timeout: 5), "Show rail did not bring the rail back\n\(app.debugDescription)")
         app.terminateIfRunning()
+    }
+
+    /// #461 PR 1 (-Nova): Open-Duo Landscape (820 x 640) Station Tuner renders two scrollable panes
+    /// (Sound left, DJ + Briefings + Recipes right) with a 32 pt center gutter straddling the
+    /// device midpoint (x = 410 pt) and a 56 pt trailing rail holding Close and Save (>= 44 pt).
+    @MainActor
+    func testDuoLandscapeStationTunerTwoPane() throws {
+        try XCTSkipUnless(isOpenLayout, "The 820 × 640 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoLandscapeTune")
+        let any = app.descendants(matching: .any)
+        guard let (_, box) = openDuoContainer(app) else { return }
+
+        // The "tune.twoPane" HStack fills the 820 x 640 container, so the accessibility tree folds it
+        // into capture.duoOpenContainer (run 45380997049). The DJ pane only renders in two-pane mode,
+        // so wait on it instead.
+        XCTAssertTrue(app.scrollViews["tune.pane.dj"].waitForExistence(timeout: 15), app.debugDescription)
+        let soundPane = app.scrollViews["tune.form"]
+        let djPane = app.scrollViews["tune.pane.dj"]
+        let rail = any["tune.rail"]
+        let closeButton = app.buttons["tune.rail.close"]
+        let saveButton = app.buttons["tune.rail.save"]
+
+        XCTAssertTrue(soundPane.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(djPane.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(rail.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(saveButton.waitForExistence(timeout: 5), app.debugDescription)
+
+        // Gutter straddles the container midpoint (x = 410 pt on 820 pt wide Duo landscape).
+        let midX = box.midX
+        XCTAssertLessThanOrEqual(soundPane.frame.maxX, midX - 14,
+                                 "Sound pane crossed the fold gutter: maxX=\(soundPane.frame.maxX), midX=\(midX)")
+        XCTAssertGreaterThanOrEqual(djPane.frame.minX, midX + 14,
+                                    "DJ pane crossed the fold gutter: minX=\(djPane.frame.minX), midX=\(midX)")
+
+        // Touch target floor (>= 44 x 44 pt) on rail actions.
+        XCTAssertGreaterThanOrEqual(closeButton.frame.width, 43.5)
+        XCTAssertGreaterThanOrEqual(closeButton.frame.height, 43.5)
+        XCTAssertGreaterThanOrEqual(saveButton.frame.width, 43.5)
+        XCTAssertGreaterThanOrEqual(saveButton.frame.height, 43.5)
+
+        save(app, "duo-landscape-tuner")
     }
 
     /// Build 51 issue 2: with the Stations sidebar open the player fell back to the old centred

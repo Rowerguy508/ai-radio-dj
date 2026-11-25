@@ -352,6 +352,10 @@ final class TalkoverCoordinator {
         apply(action, afterTrack: index)
     }
 
+    /// #304 R1 (-Atlas): whether this coordinator holds song k's boundary. Read-only, unlike
+    /// `claimsBoundary`, which is the boundary itself.
+    func ownsBoundary(_ k: Int) -> Bool { book.owns(key(k)) }
+
     /// The natural end of song k, synchronously from the binder. True: this coordinator owns
     /// the boundary; the binder must not hand out or take a break, and awaits `boundary(k)`.
     func claimsBoundary(_ k: Int) -> Bool {
@@ -457,6 +461,8 @@ final class TalkoverCoordinator {
         let token = generation
         run = nil // a finished run for an earlier boundary
         book.claim(key(k))
+        // #304 R1 (-Atlas): this boundary now has work: a queued next song is trimmed at once.
+        music.boundaryWorkWasArmed(afterTrack: k)
         taking = Task { @MainActor [weak self] in
             await self?.take(k, token: token)
             self?.taking = nil
@@ -518,6 +524,9 @@ final class TalkoverCoordinator {
             if song?.index == k, !music.isPlaying { cancelRun(.userStop) }
             return
         }
+        // #304 R1 (-Atlas): the queued next song (if any) is gone before the duck starts, so the
+        // voice never talks over it. Usually already trimmed at the claim; this is the last gate.
+        music.boundaryWorkWasArmed(afterTrack: k)
         guard interlude.duckForTalkover(afterTrack: k) else {
             // The duck did not activate (or the system holds playback): the gap break takes it.
             if var r = run, r.cancelled == nil, r.phase != .done {

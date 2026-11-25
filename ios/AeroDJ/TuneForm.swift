@@ -10,61 +10,205 @@ import SwiftUI
 /// Originally written by Claudio (#60); taken over and revised by Fry.
 struct TuneForm: View {
     let studio: StudioPresentationModel
+    /// Optional close handler for the Open-Duo Landscape trailing rail (#461 PR 1).
+    var onClose: (() -> Void)? = nil
+    /// Horizontal outer padding already applied by the hosting sheet (e.g. 16 pt in PlayingScreen).
+    var outerHorizontalInset: Double = 0
     private var model: StationConfigurationModel { studio.station }
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.studioPanes) private var studioPanes
+    @State private var containerSize: CGSize = .zero
+
+    private var layoutDecision: StationTunerLayout.Decision {
+        StationTunerLayout.decide(.init(
+            containerWidth: containerSize.width,
+            containerHeight: containerSize.height,
+            accessibilityTextSize: typeSize.isAccessibilitySize,
+            isInSplitPane: studioPanes,
+            outerHorizontalInset: outerHorizontalInset
+        ))
+    }
+
     var body: some View {
+        Group {
+            if layoutDecision.mode == .twoPane {
+                twoPaneBody(layoutDecision)
+            } else {
+                singleColumnBody
+            }
+        }
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { newSize in
+            containerSize = newSize
+        }
+        // Tune can be restored at launch: this reads the Apple Music status (never prompts) and
+        // fetches genres only when it is already .authorized (Fry, #214). See TuneGenreSuggestions.
+        .task { await studio.tuneGenres.appear(isAuthorized: GenreAccess.isAuthorized) }
+    }
+
+    private var singleColumnBody: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 22) {
-                if let blocked = blockedMessage {
-                    Label(blocked, systemImage: "lock")
-                        .font(.subheadline)
-                        .foregroundStyle(AeroDJPalette.secondaryText)
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .workspaceCardBackground(Color(.tertiarySystemFill), compactRadius: 12)
-                }
-                if model.hasUnsavedChanges { UnsavedChangesCard(model: model) }
-                if model.hasPendingChanges { PendingChangesCard(model: model) }
-                Group {
-                    TuneSectionHeader(title: "Sound", detail: StationTunerCopy.musicSelectionNotice)
-                    // Suggestions are the storefront's Apple Music genres (`GenreProviding`), not a fixed list.
-                    TagControl(row: row(.genres), selected: model.displayed.genres,
-                               suggestions: studio.tuneGenres.suggestions,
-                               genreStatus: studio.tuneGenres) { tags in Task { await model.setGenres(tags) } }
-                    TagControl(row: row(.moods), selected: model.displayed.moods,
-                               suggestions: TuneVocabulary.moods) { tags in Task { await model.setMoods(tags) } }
-                    LevelControl(row: row(.energy), value: model.displayed.energy, low: "Calm", high: "High energy") { v in
-                        Task { await model.setEnergy(v) }
-                    }
-                    LevelControl(row: row(.discovery), value: model.displayed.discovery, low: "Favourites", high: "New music") { v in
-                        Task { await model.setDiscovery(v) }
-                    }
-                    TuneSectionHeader(title: "DJ", detail: "Applies to future DJ breaks, never the song that's playing.")
-                    commentaryControl
-                    personalityControl
-                    briefingControl
-                }
-                .disabled(blockedMessage != nil)
-                #if AERODJ_TESTER_VOICE || AERODJ_OWNER_AB
-                // Tester and owner A/B builds (Sentinel's N1 on #395; owner A/B since #433): turns
-                // the cloud voice off, or on through the v2 consent sheet.
-                // Outside the blocked group (Fry's nit 1 on #398): consent is not a station setting,
-                // so turning it off works while settings are loading or read-only. Same place on
-                // screen: a Group's children are laid out as the VStack's own. -Nova
-                TesterCloudVoiceToggleCard(settingsBlocked: blockedMessage != nil)
-                #endif
-                // #401 (-Fry): consent, not a station setting, so outside the blocked group too.
-                // Live only (`\.localFacts`); nothing in the test station or StudioCapture.
-                LocalFactsToggleCard(settingsBlocked: blockedMessage != nil)
-                RecipesSection(studio: studio, editable: blockedMessage == nil)
+                bannersSection
+                soundSection
+                djSection
             }
             .padding(.vertical, 4)
             .padding(.bottom, 16)
         }
         .accessibilityIdentifier("tune.form")
-        // Tune can be restored at launch: this reads the Apple Music status (never prompts) and
-        // fetches genres only when it is already .authorized (Fry, #214). See TuneGenreSuggestions.
-        .task { await studio.tuneGenres.appear(isAuthorized: GenreAccess.isAuthorized) }
+    }
+
+    /// Open-Duo Landscape horizontal-first workbench (#461 PR 1, mockup 03-tuner-duo.png):
+    /// Sound on the left, DJ + Briefings + Recipes on the right, 32 pt center gutter aligned
+    /// to the device midpoint (x = 410 pt), and a 56 pt trailing action rail for Close / Save.
+    /// -Nova
+    private func twoPaneBody(_ decision: StationTunerLayout.Decision) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            Color.clear.frame(width: CGFloat(decision.leadingPadding))
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 22) {
+                    bannersSection
+                    soundSection
+                }
+                .padding(.vertical, 8)
+                .padding(.bottom, 16)
+            }
+            .frame(width: CGFloat(decision.leftPaneWidth))
+            .accessibilityIdentifier("tune.form")
+
+            Color.clear
+                .frame(width: CGFloat(decision.gutterWidth))
+                .accessibilityHidden(true)
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 22) {
+                    djSection
+                }
+                .padding(.vertical, 8)
+                .padding(.bottom, 16)
+            }
+            .frame(width: CGFloat(decision.rightPaneWidth))
+            .accessibilityIdentifier("tune.pane.dj")
+
+            Color.clear.frame(width: CGFloat(decision.trailingPadding))
+
+            tunerTrailingRail(width: CGFloat(decision.railWidth))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("tune.twoPane")
+    }
+
+    private func tunerTrailingRail(width: CGFloat) -> some View {
+        VStack(spacing: 12) {
+            if let onClose {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                        .background(Circle().fill(Color(.tertiarySystemFill)))
+                        .foregroundStyle(Color.primary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("Close")
+                .accessibilityIdentifier("tune.rail.close")
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                Task { await model.saveChanges() }
+            } label: {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 16, weight: .bold))
+                    .frame(width: 44, height: 44)
+                    .background(Circle().fill(canSave ? Color.accentColor : Color(.tertiarySystemFill)))
+                    .foregroundStyle(canSave ? Color.white : AeroDJPalette.secondaryText)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSave)
+            .frame(minWidth: 44, minHeight: 44)
+            .accessibilityLabel("Save")
+            .accessibilityIdentifier("tune.rail.save")
+        }
+        .padding(.vertical, 12)
+        .frame(width: width)
+        .frame(maxHeight: .infinity)
+        .background(Color(.secondarySystemBackground).opacity(0.65))
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(width: 1)
+                .accessibilityHidden(true)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("tune.rail")
+    }
+
+    private var canSave: Bool {
+        model.hasUnsavedChanges && blockedMessage == nil
+    }
+
+    @ViewBuilder
+    private var bannersSection: some View {
+        if let blocked = blockedMessage {
+            Label(blocked, systemImage: "lock")
+                .font(.subheadline)
+                .foregroundStyle(AeroDJPalette.secondaryText)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .workspaceCardBackground(Color(.tertiarySystemFill), compactRadius: 12)
+        }
+        if model.hasUnsavedChanges { UnsavedChangesCard(model: model) }
+        if model.hasPendingChanges { PendingChangesCard(model: model) }
+    }
+
+    private var soundSection: some View {
+        Group {
+            TuneSectionHeader(title: "Sound", detail: StationTunerCopy.musicSelectionNotice)
+            // Suggestions are the storefront's Apple Music genres (`GenreProviding`), not a fixed list.
+            TagControl(row: row(.genres), selected: model.displayed.genres,
+                       suggestions: studio.tuneGenres.suggestions,
+                       genreStatus: studio.tuneGenres) { tags in Task { await model.setGenres(tags) } }
+            TagControl(row: row(.moods), selected: model.displayed.moods,
+                       suggestions: TuneVocabulary.moods) { tags in Task { await model.setMoods(tags) } }
+            LevelControl(row: row(.energy), value: model.displayed.energy, low: "Calm", high: "High energy") { v in
+                Task { await model.setEnergy(v) }
+            }
+            LevelControl(row: row(.discovery), value: model.displayed.discovery, low: "Favourites", high: "New music") { v in
+                Task { await model.setDiscovery(v) }
+            }
+        }
+        .disabled(blockedMessage != nil)
+    }
+
+    @ViewBuilder
+    private var djSection: some View {
+        Group {
+            TuneSectionHeader(title: "DJ", detail: "Applies to future DJ breaks, never the song that's playing.")
+            commentaryControl
+            personalityControl
+            briefingControl
+        }
+        .disabled(blockedMessage != nil)
+        #if AERODJ_TESTER_VOICE || AERODJ_OWNER_AB
+        // Tester and owner A/B builds (Sentinel's N1 on #395; owner A/B since #433): turns
+        // the cloud voice off, or on through the v2 consent sheet.
+        // Outside the blocked group (Fry's nit 1 on #398): consent is not a station setting,
+        // so turning it off works while settings are loading or read-only. Same place on
+        // screen: a Group's children are laid out as the VStack's own. -Nova
+        TesterCloudVoiceToggleCard(settingsBlocked: blockedMessage != nil)
+        #endif
+        // #401 (-Fry): consent, not a station setting, so outside the blocked group too.
+        // Live only (`\.localFacts`); nothing in the test station or StudioCapture.
+        LocalFactsToggleCard(settingsBlocked: blockedMessage != nil)
+        RecipesSection(studio: studio, editable: blockedMessage == nil)
     }
 
     private func row(_ setting: StationSetting) -> StationTunerRow { model.tunerRow(for: setting) }
