@@ -1,0 +1,169 @@
+@preconcurrency import ActivityKit
+import AeroDJCore
+import Combine
+import Foundation
+import OSLog
+import UIKit
+@preconcurrency import WidgetKit
+
+/// #465 item 7 (-Nova): feeds the Now Playing / StandBy widget and the on-air Live Activity.
+///
+/// Rules (Echo, Sentinel):
+/// - Everything that leaves the app is one `NowPlayingDisplay`: station, track, artist,
+///   generated art, playback state, `DJStudioState.onAirLabel` and the Ready line. No script
+///   or briefing text, tokens, user ID, consent state or tester_voice data; the type has no
+///   field for them. `widgetCopy` drops On Air and Ready before the App Group write.
+/// - Never on the playback path. The `$snapshot` and DJ observers only enqueue a value; one
+///   background task writes the App Group and talks to ActivityKit. Nothing awaits it, nothing
+///   in playback reads it, and every failure is swallowed and logged without identifiers.
+/// - Live only, and only when the widget extension is embedded in the app (PlugIns/AeroDJWidgets.appex,
+///   signed for TestFlight with PROFILE_WIDGETS). Without it this does nothing at all.
+@MainActor
+final class NowPlayingSurfaces {
+    static let shared = NowPlayingSurfaces()
+
+    private var started = false
+    private var watchers = Set<AnyCancellable>()
+    private var djTask: Task<Void, Never>?
+    private var snapshot = PlaybackSnapshot()
+    private var dj: DJStudioState = .idle
+    private var continuation: AsyncStream<SurfaceChange>.Continuation?
+
+    /// The extension ships inside the app as PlugIns/AeroDJWidgets.appex.
+    static var isWidgetExtensionEmbedded: Bool {
+        guard let plugins = Bundle.main.builtInPlugInsURL else { return false }
+        return FileManager.default.fileExists(atPath: plugins.appendingPathComponent("AeroDJWidgets.appex").path)
+    }
+
+    func start(_ dependencies: AppDependencies) {
+        guard !started, dependencies.mode == .live, Self.isWidgetExtensionEmbedded else { return }
+        started = true
+
+        // Latest value wins: a burst of changes collapses into the newest one.
+        let (stream, continuation) = AsyncStream<SurfaceChange>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        self.continuation = continuation
+        Task.detached(priority: .utility) {
+            await NowPlayingSurfaceWorker.run(stream)
+        }
+
+        snapshot = dependencies.playback.snapshot
+        dj = dependencies.dj.studioState
+        dependencies.playback.$snapshot
+            .sink { snapshot in
+                Task { @MainActor in NowPlayingSurfaces.shared.snapshotChanged(snapshot) }
+            }
+            .store(in: &watchers)
+        NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
+            .sink { _ in
+                Task { @MainActor in NowPlayingSurfaces.shared.publish() }
+            }
+            .store(in: &watchers)
+        let store = dependencies.dj
+        djTask = Task { @MainActor in
+            for await state in store.updates() {
+                NowPlayingSurfaces.shared.djChanged(DJStudioState(state))
+            }
+        }
+        publish()
+    }
+
+    private func snapshotChanged(_ snapshot: PlaybackSnapshot) {
+        guard snapshot != self.snapshot else { return }
+        self.snapshot = snapshot
+        publish()
+    }
+
+    private func djChanged(_ state: DJStudioState) {
+        guard state != dj else { return }
+        dj = state
+        publish()
+    }
+
+    private func publish() {
+        let display = NowPlayingDisplay.make(snapshot: snapshot, dj: dj)
+        continuation?.yield(SurfaceChange(display: display,
+                                          appInForeground: UIApplication.shared.applicationState == .active))
+    }
+}
+
+/// One published value and whether the app could start a Live Activity right now.
+struct SurfaceChange: Sendable {
+    let display: NowPlayingDisplay
+    let appInForeground: Bool
+}
+
+/// The background side. Runs in one detached task, so App Group writes happen in order and
+/// never on the playback path. ActivityKit is read and updated on the main actor, by id,
+/// for every running activity. Activity objects are not stored across that hop.
+enum NowPlayingSurfaceWorker {
+    /// Messages are fixed strings plus an error's type name: never an activity ID, push token,
+    /// station or song, and never a transaction ID, JWS or appAccountToken.
+    private static let log = Logger(subsystem: "com.aerodj.app", category: "surfaces")
+
+    static func run(_ changes: AsyncStream<SurfaceChange>) async {
+        // #539: a previous launch can leave an activity on the old song. End those before
+        // the first display is applied, then let the stream start or update one.
+        await perform(LiveActivityReconciler.startupCommands(running: await currentRecords()))
+        var widgetShown: NowPlayingDisplay?
+        for await change in changes {
+            if NowPlayingDisplayStore.needsWidgetReload(from: widgetShown, to: change.display) {
+                writeWidget(change.display)
+                widgetShown = change.display
+            }
+            let running = await currentRecords()
+            let commands = LiveActivityReconciler.commands(display: change.display, running: running,
+                                                           appInForeground: change.appInForeground,
+                                                           activitiesEnabled: await activitiesEnabled())
+            await perform(commands)
+        }
+    }
+
+    private static func writeWidget(_ display: NowPlayingDisplay) {
+        guard let data = NowPlayingDisplayStore.encode(display),
+              let defaults = UserDefaults(suiteName: NowPlayingDisplayStore.appGroupID) else {
+            log.notice("widget display not written")
+            return
+        }
+        defaults.set(data, forKey: NowPlayingDisplayStore.defaultsKey)
+        WidgetCenter.shared.reloadTimelines(ofKind: NowPlayingDisplayStore.widgetKind)
+    }
+
+    @MainActor
+    private static func currentRecords() -> [LiveActivityRecord] {
+        Activity<OnAirlyActivityAttributes>.activities.map { activity in
+            LiveActivityRecord(id: activity.id, content: activity.content.state)
+        }
+    }
+
+    @MainActor
+    private static func activitiesEnabled() -> Bool {
+        ActivityAuthorizationInfo().areActivitiesEnabled
+    }
+
+    /// Applies every command. Updates run before ends, matching `LiveActivityReconciler`,
+    /// so a duplicate still drops the old song if its end does not land.
+    @MainActor
+    private static func perform(_ commands: [LiveActivityCommand]) async {
+        for command in commands {
+            switch command {
+            case .start(let display):
+                do {
+                    _ = try Activity<OnAirlyActivityAttributes>.request(
+                        attributes: OnAirlyActivityAttributes(),
+                        content: ActivityContent(state: display, staleDate: nil),
+                        pushType: nil)
+                } catch {
+                    log.notice("live activity not started: \(String(describing: type(of: error)), privacy: .public)")
+                }
+            case .update(let id, let display):
+                for activity in Activity<OnAirlyActivityAttributes>.activities where activity.id == id {
+                    await activity.update(ActivityContent(state: display, staleDate: nil))
+                }
+            case .end(let id):
+                for activity in Activity<OnAirlyActivityAttributes>.activities where activity.id == id {
+                    await activity.end(nil, dismissalPolicy: .immediate)
+                }
+            }
+        }
+    }
+}

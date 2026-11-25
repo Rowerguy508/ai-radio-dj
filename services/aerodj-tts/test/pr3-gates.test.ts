@@ -54,7 +54,7 @@ function spyLimiter(inner: UsageLimiter) {
 function harness(o: { env?: Env; limiter?: UsageLimiter | null } = {}) {
   const logs: LogEntry[] = [];
   let upstream = 0;
-  const spy = spyLimiter(new InMemoryUsageLimiter({ dailyCharCap: 9_000, requestsPerMinute: 100 }));
+  const spy = spyLimiter(new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }));
   const deps: Deps = {
     env: o.env ?? env(),
     fetch: (async () => { upstream++; return pcm(); }) as typeof fetch,
@@ -63,6 +63,8 @@ function harness(o: { env?: Env; limiter?: UsageLimiter | null } = {}) {
     now: () => NOON,
     timeoutMs: 50,
     requestId: () => 'req-1',
+    // Test-only: these harnesses drive the handler with an in-memory/spy limiter (Fry on #287 gate).
+    testOnlyAllowNonDurableLimiter: true,
   };
   return { deps, logs, upstream: () => upstream, limiterCalls: spy.calls };
 }
@@ -119,7 +121,7 @@ describe('AERODJ_TTS_PAID_STOP master stop (note §4.7, Fry D1)', () => {
 
   test('durable Upstash limiter: zero store requests while stopped', async () => {
     const store = fakeUpstash();
-    const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
+    const limiter = new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
     const h = harness({ env: env({ AERODJ_TTS_PAID_STOP: 'true' }), limiter });
     assert.equal((await handleTts(req(), h.deps)).status, 503);
     assert.equal(store.calls.length, 0);
@@ -233,14 +235,14 @@ describe('install reservations require a durable store (note §4.3, Sentinel B3;
   });
 
   test('in-memory limiter → 503 store with zero limiter calls, in every environment', async () => {
-    const spy = spyLimiter(new InMemoryUsageLimiter({ dailyCharCap: 9_000, requestsPerMinute: 100 }));
+    const spy = spyLimiter(new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }));
     assert.deepEqual(await reserveForInstall(spy.limiter, KEY_ID, 100, NOON), STORE_REFUSAL);
     assert.equal(spy.calls(), 0);
   });
 
   test('a limiter whose durable flag is anything but boolean true → 503 store', async () => {
     for (const durable of [false, 'true', 1, undefined] as unknown[]) {
-      const spy = spyLimiter(new InMemoryUsageLimiter({ dailyCharCap: 9_000, requestsPerMinute: 100 }));
+      const spy = spyLimiter(new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }));
       const limiter = { ...spy.limiter, durable } as unknown as UsageLimiter;
       assert.equal(isDurable(limiter), false, String(durable));
       assert.deepEqual(await reserveForInstall(limiter, KEY_ID, 100, NOON), STORE_REFUSAL, String(durable));
@@ -250,7 +252,7 @@ describe('install reservations require a durable store (note §4.3, Sentinel B3;
 
   test('durable Upstash limiter → reserves on the install and global buckets', async () => {
     const store = fakeUpstash();
-    const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
+    const limiter = new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
     const r = await reserveForInstall(limiter, KEY_ID, 100, NOON);
     assert.equal(r.ok, true);
     assert.equal(store.calls.length, 1);
@@ -260,7 +262,7 @@ describe('install reservations require a durable store (note §4.3, Sentinel B3;
   });
 
   test('durable limiter whose store is down → 503 store; other errors are 500 misconfig (PR 4), not rethrown', async () => {
-    const down = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, fakeUpstash({ status: 500 }).fetchImpl);
+    const down = new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }, fakeUpstash({ status: 500 }).fetchImpl);
     assert.deepEqual(await reserveForInstall(down, KEY_ID, 100, NOON), STORE_REFUSAL);
     const broken: UsageLimiter = {
       durable: true,

@@ -50,7 +50,7 @@ function harness(opts: { env?: Env; now?: number; redis?: FakeRedis; fetchImpl?:
 function request(ip: string | null, now = NOW, header = 'x-vercel-forwarded-for') {
   const challenge = issueChallenge({ key: KEY, purpose: 'attest', keyId: null, now });
   const a = makeAttestation(CA, { clientDataHash: attestClientDataHash(challenge) });
-  const body = JSON.stringify({ keyId: a.keyId.toString('base64'), attestationObject: a.attestationObject.toString('base64'), challenge });
+  const body = JSON.stringify({ keyId: a.keyId.toString('base64'), attestationObject: a.attestationObject.toString('base64'), challenge, installId: crypto.randomUUID() });
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (ip !== null) headers[header] = ip;
   return { req: new Request(URL_, { method: 'POST', body, headers }), a, challenge, body };
@@ -146,7 +146,7 @@ describe('enroll caps: owner decision 20/day overall, 3/day per device', () => {
     for (let i = 0; i < 2; i++) {
       const challenge = issueChallenge({ key: KEY, purpose: 'attest', keyId: null, now: NOW });
       const a = makeAttestation(CA, { clientDataHash: attestClientDataHash(challenge), credKey });
-      const body = JSON.stringify({ keyId: a.keyId.toString('base64'), attestationObject: a.attestationObject.toString('base64'), challenge });
+      const body = JSON.stringify({ keyId: a.keyId.toString('base64'), attestationObject: a.attestationObject.toString('base64'), challenge, installId: crypto.randomUUID() });
       await handleRegister(new Request(URL_, { method: 'POST', body, headers: { 'x-vercel-forwarded-for': '203.0.113.10' } }), h.deps);
     }
     assert.equal(h.logs.at(-1)!.detail, 'duplicate');
@@ -180,7 +180,9 @@ describe('enroll caps: owner decision 20/day overall, 3/day per device', () => {
     assert.equal(STORE_RETRY_AFTER_SECONDS, 30);
     const keepAlive = setTimeout(() => {}, 10_000);
     try {
-      const replies = [{ result: -4.5 }, { result: '-4' }, { result: -5 }, { result: 2 ** 60 }, { error: 'ERR' }, {}];
+      // Changed expected value: -5 was an unknown reply at #256; it is now the per-install
+      // cap (enroll-install.test.ts), so the first unknown code is -6.
+      const replies = [{ result: -4.5 }, { result: '-4' }, { result: -6 }, { result: '-5' }, { result: 2 ** 60 }, { error: 'ERR' }, {}];
       const impls: [string, typeof fetch][] = replies.map((r) => [JSON.stringify(r), (async () => new Response(JSON.stringify(r))) as unknown as typeof fetch]);
       impls.push(['500', (async () => new Response('x', { status: 500 })) as unknown as typeof fetch]);
       impls.push(['throws', (async () => { throw new TypeError('net'); }) as unknown as typeof fetch]);

@@ -39,11 +39,14 @@ public struct NarrationCue: Identifiable, Codable, Equatable, Sendable {
     public var providerID: String?
     /// Cache key of the rendered clip (hash of text + voice + provider + format).
     public var audioCacheKey: String?
+    /// #200 (-Echo): when the provider fact behind this line stops being true (weather, news).
+    /// `DJBreakPreparer.takeBreak` drops a line at or past it, never airs it late. Nil: no expiry.
+    public var expiresAt: Date?
 
     public init(id: UUID, order: Int, group: Int, kind: BriefingScriptSegment.Kind, text: String,
                 estimatedSeconds: Int, maxSeconds: Int, sourceItemID: UUID?, source: ContextSourceKind?,
                 provenance: String?, renderedSeconds: Double? = nil, voiceID: String? = nil,
-                providerID: String? = nil, audioCacheKey: String? = nil) {
+                providerID: String? = nil, audioCacheKey: String? = nil, expiresAt: Date? = nil) {
         self.id = id
         self.order = order
         self.group = group
@@ -58,6 +61,7 @@ public struct NarrationCue: Identifiable, Codable, Equatable, Sendable {
         self.voiceID = voiceID
         self.providerID = providerID
         self.audioCacheKey = audioCacheKey
+        self.expiresAt = expiresAt
     }
 
     /// Seconds the scheduler should plan with: measured when rendered, else estimated.
@@ -123,6 +127,17 @@ public enum NarrationDropReason: String, Codable, Sendable {
     /// Time-sensitive item (calendar event or due task) that did not air in this
     /// show. Do not pass it into a later show.
     case notCarriedForward
+    /// Personal update that already aired today (`PersonalUpdateLedger`, #332), or a second
+    /// cue for the same source item in one handoff. Not carried into a later show.
+    case repeatLimit
+    /// Personal update held back because another one aired less than the ledger's minimum gap
+    /// ago (`PersonalUpdateLedger.isWithinMinimumGap`, #332). Not counted as aired, and not
+    /// carried into a later show; it may air in a new queue once the gap has passed. An update
+    /// that is also at its daily limit is `.repeatLimit` instead (Echo's #403 N1, -Nova).
+    case minimumGap
+    /// Personal update whose row expired (`expiresAt` passed) before it could air (#332).
+    /// Calendar events and due tasks are never carried into a later show.
+    case windowPassed
 }
 
 public enum NarrationOutcome: Codable, Equatable, Sendable {

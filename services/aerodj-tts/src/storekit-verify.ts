@@ -26,7 +26,6 @@ export interface StoreKitConfig {
   allowSandboxInProduction: boolean;
   /** Parsed and validated here but not read by this verifier: consumed by PR 6 (entitlement) and PR 7 (notifications). */
   honorGracePeriod: boolean;
-  allowFamilyShared: boolean;
 }
 
 /**
@@ -67,6 +66,11 @@ export interface StoreKitVerifierOptions {
   /** Opaque install identity (the attested keyId) the last-seen check is keyed on. */
   install: string;
   /**
+   * Family Sharing: `proAllowFamilyShared(env)` (src/pro-allowance.ts), the single setting
+   * `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED`. Anything but exactly `true` refuses FAMILY_SHARED.
+   */
+  allowFamilyShared: boolean;
+  /**
    * Test-only root override. Refused (`config`) when `deployment === 'production'`,
    * so a fake CA can never be wired into Production; defaults to Apple Root CA - G3.
    */
@@ -98,6 +102,19 @@ export interface VerifiedTransaction {
   expiresDate: number;
   signedDate: number;
   appAccountToken?: string;
+}
+
+/**
+ * Brand for transactions this module verified (Sentinel's B2 on #264). Module-private:
+ * only `verifySignedTransaction` adds to it, and the branded object is frozen, so a
+ * hand-built `{ originalTransactionId }` (or a branded one edited afterwards) never passes
+ * `isVerifiedTransaction`.
+ */
+const VERIFIED = new WeakSet<object>();
+
+/** True only for the frozen transaction object `verifySignedTransaction` returned. */
+export function isVerifiedTransaction(value: unknown): value is VerifiedTransaction {
+  return typeof value === 'object' && value !== null && VERIFIED.has(value);
 }
 
 /** `new`: newer than anything this install presented for this purchase; `repost`: equal `signedDate` (idempotent, no upsert). */
@@ -223,8 +240,9 @@ export async function verifySignedTransaction(jws: unknown, options: StoreKitVer
   if (payload.revocationDate !== undefined) return fail('revoked');
   if (!(expiresDate > options.now())) return fail('expired');
 
+  // Only PURCHASED, or FAMILY_SHARED when the setting is exactly true; missing/unknown never.
   const ownership = str('inAppOwnershipType');
-  if (!(ownership === 'PURCHASED' || (ownership === 'FAMILY_SHARED' && config.allowFamilyShared))) {
+  if (!(ownership === 'PURCHASED' || (ownership === 'FAMILY_SHARED' && options.allowFamilyShared === true))) {
     return fail('ownership');
   }
 
@@ -239,18 +257,16 @@ export async function verifySignedTransaction(jws: unknown, options: StoreKitVer
   if (last !== undefined && signedDate < last) return fail('stale');
   const freshness: Freshness = last !== undefined && signedDate === last ? 'repost' : 'new';
 
-  return {
-    ok: true,
-    freshness,
-    transaction: {
-      originalTransactionId,
-      transactionId,
-      productId,
-      environment: environment as 'Production' | 'Sandbox',
-      inAppOwnershipType: ownership as 'PURCHASED' | 'FAMILY_SHARED',
-      expiresDate,
-      signedDate,
-      ...(typeof appAccountToken === 'string' ? { appAccountToken } : {}),
-    },
-  };
+  const transaction: VerifiedTransaction = Object.freeze({
+    originalTransactionId,
+    transactionId,
+    productId,
+    environment: environment as 'Production' | 'Sandbox',
+    inAppOwnershipType: ownership as 'PURCHASED' | 'FAMILY_SHARED',
+    expiresDate,
+    signedDate,
+    ...(typeof appAccountToken === 'string' ? { appAccountToken } : {}),
+  });
+  VERIFIED.add(transaction);
+  return { ok: true, freshness, transaction };
 }

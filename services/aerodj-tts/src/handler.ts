@@ -1,10 +1,16 @@
 import crypto from 'node:crypto';
-import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, STORE_RETRY_AFTER_SECONDS, paidStopped } from './attest-flags.js';
+import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, STORE_RETRY_AFTER_SECONDS, paidStopped, testerVoiceOn } from './attest-flags.js';
+import { keyRecordKey, keyspaceFromEnv, revokedKey } from './attest-store.js';
+import { reserveForInstall } from './install-quota.js';
+import { installTokenKey, tokenKeyId, verifyInstallToken } from './install-token.js';
 import { bearerToken, parseTokenHash, tokenMatches } from './auth.js';
 import {
   DEFAULT_GLOBAL_DAILY_CHAR_CAP,
   DEFAULT_INSTALL_DAILY_CHAR_CAP,
+  DEFAULT_OWNER_SHARE_DAILY_CHAR_CAP,
   DEFAULT_REQUESTS_PER_MINUTE,
+  DEFAULT_TESTER_POOL_DAILY_CHAR_CAP,
+  effectiveNonprodCap,
   InMemoryUsageLimiter,
   LimiterStoreError,
   MAX_CONFIGURED_CHAR_CAP,
@@ -14,10 +20,12 @@ import {
   redisRestConfig,
   subjectBucket,
   type LimiterOptions,
+  type ProReservation,
   type QuotaReason,
   type Reservation,
   type UsageLimiter,
 } from './limiter.js';
+import { isVerifiedProSubject, PRO_DAILY_RENDER_ALLOWANCE, proAllowFamilyShared, proBucket, proDeployment, type ProSubject } from './pro-allowance.js';
 import { ssmlToPlainText } from './ssml.js';
 import { pcmToWav, sampleCount, SAMPLE_RATE } from './wav.js';
 
@@ -27,12 +35,124 @@ export const MAX_DURATION_SECONDS = 600; // matches ProxyVoiceProvider duration 
 const DEFAULT_MAX_TEXT_CHARS = 600;
 const DEFAULT_MODEL_ID = 'eleven_flash_v2_5';
 /**
- * ElevenLabs voice_settings sent on every render (owner-approved radio tuning).
- * Fixed server-side: the request contract carries no voice settings, so nothing a
- * client sends can change them. Deliberately no `style` (owner decision) and
- * no `use_speaker_boost`. `speed` stays inside the approved [1.0, 1.05] range.
+ * ElevenLabs voice_settings for the v2-family models (Flash v2.5, Turbo v2.5, Multilingual v2):
+ * the owner-approved radio tuning (intonation plan, 2026-11-02: stability 0.40 -> 0.32 for a
+ * livelier read, speed 1.0 -> 1.03, still inside the approved [1.0, 1.05]). Fixed server-side:
+ * the request contract carries no voice settings, so nothing a client sends can change them.
+ * Deliberately no `style` (style stays 0 = the API default; owner decision) and no
+ * `use_speaker_boost` (the API default applies).
  */
-export const VOICE_SETTINGS = Object.freeze({ stability: 0.4, similarity_boost: 0.75, speed: 1.0 });
+export const VOICE_SETTINGS = Object.freeze({ stability: 0.32, similarity_boost: 0.75, speed: 1.03 });
+/**
+ * Eleven v4 / v4 Turbo take only Stability and Similarity (no style, no speed), so they get
+ * just those two. Same values as the v2 family.
+ */
+export const V4_VOICE_SETTINGS = Object.freeze({ stability: 0.32, similarity_boost: 0.75 });
+/**
+ * Eleven v3's stability is a three-step control (0 Creative, 0.5 Natural, 1 Robust): Natural.
+ * No speed or style.
+ */
+export const V3_VOICE_SETTINGS = Object.freeze({ stability: 0.5, similarity_boost: 0.75 });
+
+export type ModelFamily = 'v2' | 'v3' | 'v4';
+
+/** Which settings family a model id belongs to. Anything unrecognised is treated as v2. */
+export function modelFamily(modelId: string): ModelFamily {
+  if (/^eleven_v4(?:_|$)/.test(modelId)) return 'v4';
+  if (/^eleven_v3(?:_|$)/.test(modelId)) return 'v3';
+  return 'v2';
+}
+
+/** The voice_settings sent for a model: only the fields that model supports. */
+export function voiceSettingsFor(modelId: string): Readonly<Record<string, number>> {
+  const family = modelFamily(modelId);
+  return family === 'v4' ? V4_VOICE_SETTINGS : family === 'v3' ? V3_VOICE_SETTINGS : VOICE_SETTINGS;
+}
+
+/**
+ * Whether this model family would read square-bracket audio tags (v3/v4) or speak the brackets
+ * aloud (v2). The request path does not consult this. Spoken text always uses `stripAllBrackets`,
+ * so audio tags stay off for every model. iOS `VoiceRoute.supportsAudioTags` defaults off to match.
+ */
+export function supportsAudioTags(modelId: string): boolean {
+  return modelFamily(modelId) !== 'v2';
+}
+
+/** Request stitching (previous_text / next_text / previous_request_ids) is not available on Eleven v3. */
+export function supportsStitching(modelId: string): boolean {
+  return modelFamily(modelId) !== 'v3';
+}
+
+/**
+ * Tags `sanitizeBrackets` recognises when `keepAllowedTags` is true. That flag is unused and
+ * off: no request path passes true, so these never leave the proxy as `[tag]`. Spoken text uses
+ * `stripAllBrackets` (words kept, every bracket removed). Context passes false, which drops an
+ * allowlisted tag entirely.
+ */
+export const ALLOWED_AUDIO_TAGS: readonly string[] = Object.freeze(['warmly', 'relaxed', 'chuckles', 'softly', 'excited']);
+const ALLOWED_TAG = new RegExp(`\\[\\s*(${ALLOWED_AUDIO_TAGS.join('|')})\\s*\\]`, 'gi');
+
+/**
+ * Spoken-text sanitiser for every model: removes every `[` and `]` (allowlisted tag words
+ * included) and keeps the words, so "Kiss Me [Softly] Tonight" is spoken as "Kiss Me Softly
+ * Tonight" and can never reach a tag-reading model (v3/v4) as a delivery tag. The app sends DJ
+ * copy on this route tag-free, and no request field opts into tags, so nothing legitimate is lost.
+ */
+export function stripAllBrackets(text: string): string {
+  return text.replace(/[[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Removes every `[` and `]`. `keepAllowedTags: true` would leave an exact allowlisted tag as
+ * `[tag]`. That path is unused and off: spoken text does not call this (it uses
+ * `stripAllBrackets` on every model, including v3/v4/v4_turbo), and no request field passes
+ * true. The true branch stays so the allowlist unit tests remain pinned; do not wire it into
+ * the request path. Audio tags stay off.
+ *
+ * The live caller is stitching context, always with `keepAllowedTags: false`, which drops an
+ * allowlisted tag entirely (a v2 model would read "warmly" aloud) and keeps the words inside
+ * every other bracket. The text between tags is cleaned piece by piece, so a stray bracket can
+ * never pair with a kept tag. Whitespace is collapsed.
+ */
+export function sanitizeBrackets(text: string, keepAllowedTags: boolean): string {
+  const out: string[] = [];
+  let last = 0;
+  for (const match of text.matchAll(ALLOWED_TAG)) {
+    out.push(text.slice(last, match.index).replace(/[[\]]/g, ' '));
+    out.push(keepAllowedTags ? ` [${match[1].toLowerCase()}] ` : ' ');
+    last = (match.index ?? 0) + match[0].length;
+  }
+  out.push(text.slice(last).replace(/[[\]]/g, ' '));
+  return out.join('').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Optional stitching context (`previousText` / `nextText`): the neighbouring lines of the same
+ * DJ break, so ElevenLabs intonates each line as part of one thought instead of a lone sentence.
+ * Not spoken and not charged to our caps (ElevenLabs bills the spoken text; X-Billed-Characters
+ * reports its character-cost header). Each side is trimmed to this many characters: previous
+ * keeps its end, next keeps its start, the parts nearest the spoken line.
+ */
+export const MAX_CONTEXT_CHARS = 300;
+/** ElevenLabs request ids we forward as `previous_request_ids` (at most 3, per its API). */
+export const MAX_PREVIOUS_REQUEST_IDS = 3;
+const REQUEST_ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Reads an optional context field: absent/null = none, a string = sanitised context (brackets
+ * removed, an allowlisted tag dropped entirely, whitespace collapsed, trimmed to
+ * MAX_CONTEXT_CHARS), anything else = invalid (400).
+ */
+function contextField(value: unknown, format: 'text' | 'ssml', keep: 'start' | 'end'): string | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  if (value.length > MAX_CONTEXT_CHARS * 8) return undefined;
+  // keepAllowedTags stays false: context never carries audio tags. The true branch is unused/off.
+  const plain = sanitizeBrackets(format === 'ssml' ? ssmlToPlainText(value) : value, false);
+  if (plain.length <= MAX_CONTEXT_CHARS) return plain;
+  return (keep === 'end' ? plain.slice(-MAX_CONTEXT_CHARS) : plain.slice(0, MAX_CONTEXT_CHARS)).trim();
+}
+
 const UPSTREAM_TIMEOUT_MS = 15_000;
 /**
  * Until per-install attestation lands, the owner bearer is the only authenticated caller,
@@ -47,9 +167,55 @@ const SUBJECT_BUCKET = subjectBucket(SUBJECT);
  * Enum only: never text, ids or keys. `rate` = per-minute rate, `install_daily` = this
  * install's daily cap, `owner_daily` = the owner bucket's daily cap, `global_daily` = the global daily ceiling, `store` = limiter
  * store unreachable (fails closed), `disabled` = master stop `AERODJ_TTS_PAID_STOP` (PR 3),
- * `misconfig` = server configuration missing or invalid (500, PR 3).
+ * `misconfig` = server configuration missing or invalid (500, PR 3), `daily_allowance` = this
+ * Pro purchase's daily render allowance is used up (429 until the next 00:00 UTC; the app
+ * switches to the on-device voice quietly, see src/pro-allowance.ts).
  */
-export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconfig';
+export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconfig' | 'daily_allowance';
+/** Server-log reasons: the wire reasons, plus `pro_chars` (a Pro char-cap 429 that answers `daily_allowance`). */
+/**
+ * Log-only refinements of a wire reason. `no_store` (Fry on #287): ElevenLabs key set but no
+ * shared store, so the 500 `misconfig` was the no-store gate.
+ */
+export type LogReason = ErrorReason | 'pro_chars' | 'no_store' | 'tester_pool' | 'reattest' | 'token_expired' | 'mixed_auth';
+
+/**
+ * A verified Pro request is charged to its OWN subject (Sentinel's B1 on #264), never the
+ * owner's or an install's: its own char bucket and its own per-minute rate bucket, plus
+ * the shared global ceiling, which still applies to everyone and is checked FIRST, in the
+ * same atomic step (Sentinel), so a full global ceiling refuses a Pro request with
+ * `global_daily` and moves no Pro counter. So the per-install char cap
+ * (1,500/day) does not apply to Pro (Orion and Nigel: it would contradict 40 breaks a day).
+ *
+ * Char cap: env `AERODJ_TTS_PRO_DAILY_CHARS`, default 12,000 (owner-confirmed default),
+ * effective value clamped to the global ceiling (`effectiveProCharCap`), so 9,000 today.
+ * Without it, 160 renders x 600 chars would be 96k chars for one subscriber.
+ * Rate: env `AERODJ_TTS_PRO_RATE_PER_MINUTE`, default 12/min (the same default as the
+ * owner): a break is at most 4 renders, so 12/min fits 3 breaks a minute, far above 160 a day.
+ * Both: unset = default; set, a plain decimal integer in range, else the Pro path answers
+ * 500 `misconfig` (a typo never widens or silently replaces the owner's number). The owner
+ * path reads neither.
+ */
+export const DEFAULT_PRO_DAILY_CHARS = 12_000;
+/** At least one full-length request (the 600-char default per-request cap) must fit. */
+export const MIN_PRO_DAILY_CHARS = 600;
+
+/** The Pro daily char cap, or null when the env value is set but invalid (500 misconfig). */
+export function proDailyChars(env: Env): number | null {
+  const raw = env.AERODJ_TTS_PRO_DAILY_CHARS;
+  if (raw === undefined) return DEFAULT_PRO_DAILY_CHARS;
+  const n = parseCharCap(raw);
+  return n !== null && n >= MIN_PRO_DAILY_CHARS ? n : null;
+}
+
+export const DEFAULT_PRO_REQUESTS_PER_MINUTE = DEFAULT_REQUESTS_PER_MINUTE;
+
+/** The Pro per-minute rate, or null when the env value is set but invalid (500 misconfig). */
+export function proRatePerMinute(env: Env): number | null {
+  const raw = env.AERODJ_TTS_PRO_RATE_PER_MINUTE;
+  if (raw === undefined) return DEFAULT_PRO_REQUESTS_PER_MINUTE;
+  return parseRatePerMinute(raw);
+}
 
 /** Retry-After (seconds) for a rate 429 and a store 503: an upper bound for both window types. */
 export const RATE_RETRY_AFTER_SECONDS = 60;
@@ -66,7 +232,7 @@ export interface LogEntry {
   /** Upstream non-2xx only: allowlisted `detail.status` code, else 'other'. */
   upstreamCode?: string;
   /** 429, 503 and 500 `misconfig` only: the enum refusal reason. */
-  reason?: ErrorReason;
+  reason?: LogReason;
 }
 
 /** Bytes of an upstream error body read for `detail.status`; the rest is discarded. */
@@ -127,6 +293,32 @@ export interface Deps {
   requestId: () => string;
   /** Lost-refund log (Fry's nit on #257); defaults to one console.log JSON line. */
   logRefundLost?: (entry: RefundLostLog) => void;
+  /**
+   * TEST-ONLY. Lets a test drive the handler with a non-durable (in-memory or spy) limiter
+   * while ELEVENLABS_API_KEY is set. Two independent locks keep it off a deployed function
+   * (Sentinel's nit on #294): `defaultDeps` returns `ProductionDeps`, which cannot carry it,
+   * and `nonDurableOverrideHonoured` ignores it whenever VERCEL_ENV is set to anything, in
+   * `deps.env` or in `process.env`. So on Vercel an upstream key without the shared store is
+   * always 500 `misconfig` / `no_store` (Fry on #287).
+   */
+  testOnlyAllowNonDurableLimiter?: true;
+}
+
+/** The Deps the deployed function gets: the test-only override cannot be set on it. */
+export type ProductionDeps = Readonly<Omit<Deps, 'testOnlyAllowNonDurableLimiter'> & { testOnlyAllowNonDurableLimiter?: never }>;
+
+/**
+ * True only for an explicit test override AND no VERCEL_ENV anywhere. Any VERCEL_ENV value
+ * (production, preview, development, empty or unknown) in `deps.env` or in the process
+ * environment means "running on Vercel", and the override is ignored.
+ */
+export function nonDurableOverrideHonoured(
+  deps: Pick<Deps, 'env' | 'testOnlyAllowNonDurableLimiter'>,
+  runtimeEnv: Env = process.env,
+): boolean {
+  if (deps.testOnlyAllowNonDurableLimiter !== true) return false;
+  if (deps.env.VERCEL_ENV !== undefined || runtimeEnv.VERCEL_ENV !== undefined) return false;
+  return true;
 }
 
 /**
@@ -137,10 +329,17 @@ export interface RefundLostLog {
   event: 'refund_lost';
   reason: 'store' | 'timeout';
   chars: number;
+  /**
+   * `pro_render`: the lost refund was a Pro reservation (its chars and its render; Fry's N1 on #264).
+   * Absent for a char refund, so that line keeps its #259 shape. Never a bucket or id.
+   */
+  kind?: 'pro_render';
 }
 
 export const logRefundLostToConsole = (entry: RefundLostLog): void => {
-  console.log(JSON.stringify({ event: entry.event, reason: entry.reason, chars: entry.chars }));
+  console.log(
+    JSON.stringify({ event: entry.event, reason: entry.reason, chars: entry.chars, ...(entry.kind === 'pro_render' ? { kind: entry.kind } : {}) }),
+  );
 };
 
 export interface TtsRequest {
@@ -148,6 +347,19 @@ export interface TtsRequest {
   authorization: string | undefined;
   /** Parsed JSON object, raw JSON string/Buffer, or undefined. */
   body: unknown;
+  /**
+   * The Pro purchase this request is charged to, set ONLY by server code from a JWS it
+   * verified (`proSubjectFromVerified`, PR 6 wires it). Never read from the body or a
+   * header: api/tts.ts does not set it, so today's owner path never touches the allowance.
+   */
+  verifiedPro?: ProSubject;
+  /**
+   * #378: the `X-OnAirly-Install-Token` header (TestFlight install token from
+   * /api/attest/token). Present = the install path; the owner path is the request WITHOUT it.
+   */
+  installToken?: string;
+  /** #378: `X-OnAirly-Assertion`. Belongs on /api/attest/token only; on /api/tts it is 400 `mixed_auth`. */
+  assertion?: string;
 }
 
 export interface TtsResponse {
@@ -197,15 +409,29 @@ export function parseBoundedInt(value: string | undefined, max: number): number 
  * `AERODJ_TTS_DAILY_CHAR_CAP` (so today's owner-set 9,000 keeps applying), else 9,000.
  * Owner bucket: `AERODJ_TTS_OWNER_DAILY_CHAR_CAP`, else the global ceiling.
  * Per install: `AERODJ_TTS_INSTALL_DAILY_CHAR_CAP`, else 1,500.
+ * Preview / Development sub-cap (#287 B1): `AERODJ_TTS_NONPROD_DAILY_CHAR_CAP`, else 1,000,
+ * and never above 1,000 (configurable only downward). Production ignores it.
  */
 export function limiterOptions(env: Env): LimiterOptions {
   const dailyCharCap =
     parseCharCap(env.AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP) ??
     parseCharCap(env.AERODJ_TTS_DAILY_CHAR_CAP) ??
     DEFAULT_GLOBAL_DAILY_CHAR_CAP;
+  const deployment = proDeployment(env);
+  // #378 (owner decision 2026-11-02): with tester voice on, the 9,000 ceiling splits into a
+  // 6,000 tester pool and a 3,000 owner share. With it off, the owner cap is exactly as before.
+  const testers = testerVoiceOn(env);
+  const ownerDefault = testers ? Math.min(DEFAULT_OWNER_SHARE_DAILY_CHAR_CAP, dailyCharCap) : dailyCharCap;
   return {
     dailyCharCap,
-    ownerDailyCharCap: parseCharCap(env.AERODJ_TTS_OWNER_DAILY_CHAR_CAP) ?? dailyCharCap,
+    ...(testers
+      ? { testerPoolDailyCharCap: parseCharCap(env.AERODJ_TTS_TESTER_POOL_DAILY_CHAR_CAP) ?? DEFAULT_TESTER_POOL_DAILY_CHAR_CAP }
+      : {}),
+    ...(deployment !== null ? { deployment } : {}),
+    ...(deployment !== null && deployment !== 'production'
+      ? { nonprodDailyCharCap: effectiveNonprodCap(parseCharCap(env.AERODJ_TTS_NONPROD_DAILY_CHAR_CAP) ?? undefined) }
+      : {}),
+    ownerDailyCharCap: parseCharCap(env.AERODJ_TTS_OWNER_DAILY_CHAR_CAP) ?? ownerDefault,
     installDailyCharCap: parseCharCap(env.AERODJ_TTS_INSTALL_DAILY_CHAR_CAP) ?? DEFAULT_INSTALL_DAILY_CHAR_CAP,
     requestsPerMinute: parseRatePerMinute(env.AERODJ_TTS_RATE_PER_MINUTE) ?? DEFAULT_REQUESTS_PER_MINUTE,
   };
@@ -213,18 +439,33 @@ export function limiterOptions(env: Env): LimiterOptions {
 
 /**
  * Picks the limiter for this environment:
- * - Upstash Redis REST credentials present: durable `RedisUsageLimiter` (hard cap).
- * - Otherwise, outside Vercel Production: per-instance `InMemoryUsageLimiter`.
- * - Otherwise (Vercel Production, no store): null, so every request fails closed with
- *   500, unless the owner explicitly accepts best-effort limits with
- *   `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS=true`.
+ * - Upstash Redis REST credentials present: durable `RedisUsageLimiter` (hard cap), its
+ *   owner/install/Pro day keys scoped by `VERCEL_ENV` (#264 N5), the global key shared by
+ *   every deployment and a 1,000-char sub-cap on Preview/Development (#287 B1). An unset or unknown `VERCEL_ENV` (the same strict
+ *   allow-list as the Pro keys, B3) returns null: every request is 500 `misconfig`.
+ * - No store but `ELEVENLABS_API_KEY` set, in ANY `VERCEL_ENV` (production included, and
+ *   regardless of `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS`): null, so every request is 500
+ *   `misconfig` (Fry on #287: a per-instance limiter would spend outside the shared 9,000).
+ * - Otherwise (no store, no upstream key, so nothing can be spent), outside Vercel
+ *   Production: per-instance `InMemoryUsageLimiter`.
+ * - Otherwise (Vercel Production, no store, no key): null, unless the owner explicitly
+ *   accepts best-effort limits with `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS=true`.
  */
 export function selectLimiter(env: Env, fetchImpl: typeof fetch = globalThis.fetch): UsageLimiter | null {
   const redis = redisRestConfig(env);
-  if (redis) return new RedisUsageLimiter(redis, limiterOptions(env), fetchImpl);
+  if (redis) {
+    const options = limiterOptions(env);
+    return options.deployment === undefined ? null : new RedisUsageLimiter(redis, options, fetchImpl);
+  }
+  if (upstreamKeyConfigured(env)) return null;
   const production = env.VERCEL_ENV === 'production';
   if (production && env.AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS?.trim() !== 'true') return null;
   return new InMemoryUsageLimiter(limiterOptions(env));
+}
+
+/** ELEVENLABS_API_KEY is set (non-blank): something could be spent. */
+export function upstreamKeyConfigured(env: Env): boolean {
+  return (env.ELEVENLABS_API_KEY ?? '').trim() !== '';
 }
 
 function defaultLimiter(env: Env): UsageLimiter | null {
@@ -234,8 +475,9 @@ function defaultLimiter(env: Env): UsageLimiter | null {
   return limiter;
 }
 
-export function defaultDeps(env: Env = process.env): Deps {
-  return {
+export function defaultDeps(env: Env = process.env): ProductionDeps {
+  // Frozen and typed without the test-only override: nothing downstream can switch it on.
+  return Object.freeze({
     env,
     fetch: globalThis.fetch,
     limiter: defaultLimiter(env),
@@ -256,7 +498,7 @@ export function defaultDeps(env: Env = process.env): Deps {
     now: Date.now,
     timeoutMs: UPSTREAM_TIMEOUT_MS,
     requestId: () => crypto.randomUUID(),
-  };
+  });
 }
 
 function parseBody(body: unknown): Record<string, unknown> | null {
@@ -290,6 +532,23 @@ export function secondsUntilNextUtcDay(now: number): number {
   return Math.max(1, Math.ceil((next.getTime() - now) / 1000));
 }
 
+/**
+ * The ElevenLabs request body. Context fields are added only when present and only for a model
+ * that supports request stitching (not v3); voice_settings carry only the fields the model takes.
+ */
+export function upstreamBody(
+  text: string,
+  modelId: string,
+  context: { previousText?: string | null; nextText?: string | null; previousRequestIds?: string[] } = {},
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { text, model_id: modelId, voice_settings: voiceSettingsFor(modelId) };
+  if (!supportsStitching(modelId)) return body;
+  if (context.previousText) body.previous_text = context.previousText;
+  if (context.nextText) body.next_text = context.nextText;
+  if (context.previousRequestIds && context.previousRequestIds.length > 0) body.previous_request_ids = context.previousRequestIds;
+  return body;
+}
+
 export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsResponse> {
   const requestId = deps.requestId();
   let chars = 0;
@@ -310,9 +569,9 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
    * 429 / 503 / 500-misconfig contract: `Retry-After` (integer seconds >= 1) and a body
    * of `{ error, requestId, reason, retryAfterSeconds }`: enum and numbers only.
    */
-  const refuse = (status: 429 | 500 | 503, reason: ErrorReason, retryAfterSeconds: number): TtsResponse => {
+  const refuse = (status: 429 | 500 | 503, reason: ErrorReason, retryAfterSeconds: number, logReason: LogReason = reason): TtsResponse => {
     const seconds = Math.max(1, Math.ceil(retryAfterSeconds));
-    deps.log({ requestId, status, chars, reason });
+    deps.log({ requestId, status, chars, reason: logReason });
     return {
       status,
       headers: {
@@ -332,21 +591,81 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
 
   // Server misconfiguration: 500 `misconfig` with Retry-After 3600 (note §4.4).
   const misconfigured = (): TtsResponse => refuse(500, 'misconfig', MISCONFIG_RETRY_AFTER_SECONDS);
+  // 400 / 401 with an enum reason and no Retry-After (#378 §1.3): `mixed_auth`, `token_expired`,
+  // `reattest` (key record gone or key on the revocation list: register again).
+  const reject = (status: 400 | 401, reason: 'mixed_auth' | 'token_expired' | 'reattest'): TtsResponse => {
+    deps.log({ requestId, status, chars, reason });
+    return {
+      status,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Request-Id': requestId },
+      body: Buffer.from(JSON.stringify({ error: MESSAGES[status] ?? 'Error', requestId, reason })),
+    };
+  };
 
-  // --- Auth: owner-only bearer token, stored server-side as a SHA-256 hash. ---
-  const expectedHash = parseTokenHash(deps.env.AERODJ_TTS_TOKEN_SHA256);
-  if (!expectedHash) return misconfigured();
-  const token = bearerToken(req.authorization);
-  if (!token || !tokenMatches(token, expectedHash)) return fail(401);
+  // --- #378: one credential per request. An owner bearer plus an install token (or any
+  // assertion on this route) is never resolved by preference: 400 `mixed_auth`. ---
+  if (req.assertion !== undefined || (req.installToken !== undefined && req.authorization !== undefined)) {
+    return reject(400, 'mixed_auth');
+  }
+
+  // --- Auth ---
+  let install: { keyId: string; recordKey: string; revokedKey: string } | undefined;
+  if (req.installToken !== undefined) {
+    // TestFlight install token (#378). Both flags exact `true`, else 503 `disabled` before
+    // any store call. The owner hash is not needed on this path.
+    if (!testerVoiceOn(deps.env)) return refuse(503, 'disabled', DISABLED_RETRY_AFTER_SECONDS);
+    if (req.verifiedPro !== undefined) return misconfigured();
+    const tokenKey = installTokenKey(deps.env);
+    if (!tokenKey) return misconfigured();
+    const keyspace = keyspaceFromEnv(deps.env);
+    const verified = verifyInstallToken(req.installToken, { key: tokenKey, env: keyspace, now: deps.now() });
+    if (!verified.ok) return reject(401, 'token_expired');
+    const keyId = tokenKeyId(verified.claims);
+    install = { keyId: keyId.toString('base64url'), recordKey: keyRecordKey(keyspace, keyId), revokedKey: revokedKey(keyspace, keyId) };
+  } else {
+    // --- Owner-only bearer token, stored server-side as a SHA-256 hash (unchanged). ---
+    const expectedHash = parseTokenHash(deps.env.AERODJ_TTS_TOKEN_SHA256);
+    if (!expectedHash) return misconfigured();
+    const token = bearerToken(req.authorization);
+    if (!token || !tokenMatches(token, expectedHash)) return fail(401);
+  }
 
   const limiter = deps.limiter;
-  if (!limiter) return misconfigured();
   const apiKey = deps.env.ELEVENLABS_API_KEY?.trim();
+  // No shared store while the ElevenLabs key is set (Fry on #287): 500 before any counter
+  // write or upstream call, on every path (owner, Pro) and in every VERCEL_ENV. A per-instance
+  // limiter would spend outside the shared daily ceiling. Log reason is the enum `no_store`.
+  const noSharedStore = limiter === null ? redisRestConfig(deps.env) === null : limiter.durable !== true;
+  if (apiKey && noSharedStore && !nonDurableOverrideHonoured(deps)) {
+    return refuse(500, 'misconfig', MISCONFIG_RETRY_AFTER_SECONDS, 'no_store');
+  }
+  if (!limiter) return misconfigured();
   if (!apiKey) return misconfigured();
 
   const now = deps.now();
+
+  // --- Pro identity (src/pro-allowance.ts): only a server-minted ProSubject, never a body
+  // field or header. Its deployment, char cap and rate come from env, strictly. ---
+  let pro: { bucket: string; charCap: number; rate: number } | undefined;
+  if (req.verifiedPro !== undefined) {
+    if (!isVerifiedProSubject(req.verifiedPro)) return misconfigured();
+    const deployment = proDeployment(deps.env);
+    const charCap = proDailyChars(deps.env);
+    const rate = proRatePerMinute(deps.env);
+    // Family Sharing flag: validated here too, so a typo is 500 misconfig on the Pro path
+    // even before PR 6 reads it for verification (the owner path never reads it).
+    const familyShared = proAllowFamilyShared(deps.env);
+    if (deployment === null || charCap === null || rate === null || familyShared === null) return misconfigured();
+    pro = { bucket: proBucket(req.verifiedPro, deployment), charCap, rate };
+  }
+
   try {
-    if (!(await limiter.allowRequest(SUBJECT_BUCKET, now))) return refuse(429, 'rate', RATE_RETRY_AFTER_SECONDS);
+    const allowed = pro
+      ? await limiter.allowRequest(pro.bucket, now, pro.rate)
+      : install
+        ? await limiter.allowRequest(subjectBucket({ kind: 'install', id: install.keyId }), now)
+        : await limiter.allowRequest(SUBJECT_BUCKET, now);
+    if (!allowed) return refuse(429, 'rate', RATE_RETRY_AFTER_SECONDS);
   } catch (error) {
     if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
     throw error;
@@ -364,31 +683,102 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   const maxChars = positiveInt(deps.env.AERODJ_TTS_MAX_TEXT_CHARS, DEFAULT_MAX_TEXT_CHARS);
   // SSML markup is allowed some headroom before stripping; the spoken text is capped below.
   if (body.text.length > (format === 'ssml' ? maxChars * 4 : maxChars)) return fail(400);
-  const text = format === 'ssml' ? ssmlToPlainText(body.text) : body.text.trim();
+  const modelId = deps.env.ELEVENLABS_MODEL_ID?.trim() || DEFAULT_MODEL_ID;
+  // Square brackets never reach any model, allowlisted tags included. Spoken text uses
+  // stripAllBrackets, not sanitizeBrackets / keepAllowedTags (that flag stays off): a title like
+  // "Song [Live]" is spoken as "Song Live", and "Kiss Me [Softly] Tonight" can't become a v4 tag.
+  const text = stripAllBrackets(format === 'ssml' ? ssmlToPlainText(body.text) : body.text.trim());
   if (text.length === 0 || text.length > maxChars) return fail(400);
+  // Optional stitching context (older app builds send none; the request is then unchanged).
+  const previousText = contextField(body.previousText, format, 'end');
+  const nextText = contextField(body.nextText, format, 'start');
+  if (previousText === undefined || nextText === undefined) return fail(400);
+  let previousRequestIds: string[] = [];
+  if (body.previousRequestIds !== undefined && body.previousRequestIds !== null) {
+    const ids = body.previousRequestIds;
+    if (!Array.isArray(ids) || ids.length > MAX_PREVIOUS_REQUEST_IDS) return fail(400);
+    if (!ids.every((id): id is string => typeof id === 'string' && REQUEST_ID_SHAPE.test(id))) return fail(400);
+    previousRequestIds = ids;
+  }
   chars = text.length;
 
-  // Atomic reserve-before-render: the characters count against today's cap before the
-  // upstream call, so concurrent requests cannot jointly exceed it.
-  let reservation: Reservation;
-  try {
-    const result = await limiter.reserve(SUBJECT, chars, now);
-    if (!result.ok) return refuse(429, result.reason, secondsUntilNextUtcDay(now));
-    reservation = result.reservation;
-  } catch (error) {
-    if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
-    // Any other reserve failure is a server fault, not a store outage: 500 `misconfig`
-    // with Retry-After 3600 (note §4.4; Sentinel's #250 nit), before any upstream call.
-    return misconfigured();
+  // --- Daily budgets: atomic reserve-before-render, so concurrent requests cannot jointly
+  // exceed a cap. After the 600-char cap, before any upstream call. ---
+  let release: () => Promise<boolean>;
+  let held: { chars: number; kind?: 'pro_render' };
+  if (pro) {
+    // Verified Pro (#264): ONE atomic step on the Pro purchase's own buckets plus the global
+    // ceiling, never the owner's or an install's (so no per-install 1,500 cap). Order inside
+    // it: global ceiling, then the 160-render allowance, then the subscriber's char cap
+    // (clamped to global). Any refusal changes no counter. Durable store only.
+    if (limiter.durable !== true || !limiter.reservePro || !limiter.releasePro) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+    const releasePro = limiter.releasePro.bind(limiter);
+    let reservation: ProReservation;
+    try {
+      const result = await limiter.reservePro(
+        { bucket: pro.bucket, chars, charCap: pro.charCap, renderAllowance: PRO_DAILY_RENDER_ALLOWANCE },
+        now,
+      );
+      if (!result.ok) {
+        // Render allowance or own char cap: one wire contract, `daily_allowance` until 00:00
+        // UTC (the app switches to on-device quietly); only the log tells them apart.
+        if (result.reason === 'pro_renders') return refuse(429, 'daily_allowance', secondsUntilNextUtcDay(now));
+        if (result.reason === 'pro_chars') return refuse(429, 'daily_allowance', secondsUntilNextUtcDay(now), 'pro_chars');
+        return refuse(429, 'global_daily', secondsUntilNextUtcDay(now));
+      }
+      reservation = result.reservation;
+    } catch (error) {
+      if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+      return misconfigured();
+    }
+    release = () => releasePro(reservation);
+    held = { chars: reservation.chars, kind: 'pro_render' };
+  } else if (install) {
+    // TestFlight install (#378): ONE atomic script over key record + revocation list, the
+    // global ceiling, the tester pool (6,000, clamped to global − owner share) and the
+    // install's own 1,500/day. Spoken chars only. Durable store only (503 `store`).
+    if (limiter.durable !== true || !limiter.releaseInstall) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+    const releaseInstall = limiter.releaseInstall.bind(limiter);
+    const result = await reserveForInstall(limiter, install.keyId, chars, now, { recordKey: install.recordKey, revokedKey: install.revokedKey });
+    if (!result.ok) {
+      if (result.reason === 'store') return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+      if (result.reason === 'misconfig') return misconfigured();
+      if (result.reason === 'reattest') return reject(401, 'reattest');
+      if (result.reason === 'install_daily') return refuse(429, 'install_daily', secondsUntilNextUtcDay(now));
+      const detail = 'detail' in result && result.detail === 'tester_pool' ? 'tester_pool' : undefined;
+      return refuse(429, 'global_daily', secondsUntilNextUtcDay(now), detail);
+    }
+    const reservation = result.reservation;
+    release = () => releaseInstall(reservation);
+    held = { chars: reservation.chars };
+  } else {
+    let reservation: Reservation;
+    try {
+      const result = await limiter.reserve(SUBJECT, chars, now);
+      if (!result.ok) return refuse(429, result.reason, secondsUntilNextUtcDay(now));
+      reservation = result.reservation;
+    } catch (error) {
+      if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+      // Any other reserve failure is a server fault, not a store outage: 500 `misconfig`
+      // with Retry-After 3600 (note §4.4; Sentinel's #250 nit), before any upstream call.
+      return misconfigured();
+    }
+    release = () => limiter.release(reservation);
+    held = { chars: reservation.chars };
   }
-  const held = reservation;
   // Refund only when the upstream definitely did not bill (it answered non-2xx).
-  // Network errors, timeouts and bad audio after a 2xx keep the reservation: the
-  // render may have been billed, so the cap errs on the side of spending less.
+  // Network errors, timeouts and bad audio after a 2xx keep the reservation (chars and,
+  // for Pro, the render): it may have been billed, so the caps err on spending less.
+  // A failed refund logs one enum-only `refund_lost` line (`kind: 'pro_render'` for Pro, Fry's N1).
   const refund = async (): Promise<void> => {
-    await limiter.release(held).catch((error: unknown) => {
+    await release().catch((error: unknown) => {
       const timedOut = error instanceof LimiterStoreError && error.timedOut;
-      (deps.logRefundLost ?? logRefundLostToConsole)({ event: 'refund_lost', reason: timedOut ? 'timeout' : 'store', chars: held.chars });
+      (deps.logRefundLost ?? logRefundLostToConsole)({
+        event: 'refund_lost',
+        reason: timedOut ? 'timeout' : 'store',
+        chars: held.chars,
+        ...(held.kind ? { kind: held.kind } : {}),
+      });
     });
   };
 
@@ -397,26 +787,26 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs);
   let pcm: Buffer;
   let upstreamCost: string | null;
+  let upstreamRequestId: string | null = null;
   try {
     const url = `${ELEVENLABS_BASE}/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=pcm_22050`;
     const upstream = await deps.fetch(url, {
       method: 'POST',
       headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json', Accept: 'audio/pcm' },
-      body: JSON.stringify({
-        text,
-        model_id: deps.env.ELEVENLABS_MODEL_ID?.trim() || DEFAULT_MODEL_ID,
-        voice_settings: VOICE_SETTINGS,
-      }),
+      body: JSON.stringify(upstreamBody(text, modelId, { previousText, nextText, previousRequestIds })),
       signal: controller.signal,
     });
     if (!upstream.ok) {
       // Read at most 4 KB for the allowlisted detail.status code, then drop the body.
       // Neither the body nor detail.message reaches the logs or the response.
       const upstreamCode = await upstreamErrorCode(upstream);
+      // One refund (one Upstash bound) covers chars and, for Pro, the render (Fry's N4).
       await refund();
       return fail(502, {}, { upstreamStatus: upstream.status, upstreamCode });
     }
     upstreamCost = upstream.headers.get('character-cost');
+    const rawUpstreamId = upstream.headers.get('request-id')?.trim();
+    upstreamRequestId = rawUpstreamId && REQUEST_ID_SHAPE.test(rawUpstreamId) ? rawUpstreamId : null;
     pcm = Buffer.from(await upstream.arrayBuffer());
   } catch {
     return fail(controller.signal.aborted ? 504 : 502);
@@ -442,6 +832,8 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
       'X-Audio-Duration': String(duration),
       'X-Billed-Characters': String(cost),
       'X-Request-Id': requestId,
+      // ElevenLabs' own request id (shape-checked), for a later `previousRequestIds`.
+      ...(upstreamRequestId !== null ? { 'X-Upstream-Request-Id': upstreamRequestId } : {}),
     },
     body: wav,
   };

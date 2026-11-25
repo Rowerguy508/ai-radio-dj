@@ -23,11 +23,22 @@ extension VoiceRenderer {
         let composition = PremiumVoiceRoutes.compose(
             onDevice: base.routes,
             paidProvidersEnabled: OwnerVoiceTrial.paidProvidersEnabled,
-            selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
-            credentials: OwnerProxyKeychain.load())
+            access: .ownerTrial, selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
+            credentials: OwnerProxyKeychain.load(),
+            backoff: OwnerVoiceTrial.proxyBackoff)
         OwnerProxyKeychain.logDecision(composition.decision, routeCount: composition.routes.count)
+        // Owner, Nov 9 2026 (#433): the same consent as testers. `.noLines` until "Use cloud
+        // voice" on copy v3 (#432) (the owner route hears nothing), `.allLines` after it. -Fry
         return VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
-                             revocations: base.revocations)
+                             revocations: base.revocations).gated(by: OwnerCloudVoice.consentStore)
+        #elseif AERODJ_TESTER_VOICE
+        // Internal TestFlight tester build (#378): ElevenLabs through an App Attest install token,
+        // only after the consent sheet; on-device on any attest failure. AppAttestService+App.swift.
+        // Owner, Nov 9 2026 ("I want it all elevenlabs."): every attributed DJ line once copy v3
+        // is accepted (#432), nothing before (`CloudVoiceConsentStore.scope`), read per cue. -Fry
+        return VoiceRenderer(routes: TesterCloudVoice.compose(onDevice: base.routes), budget: base.budget,
+                             cache: base.cache, revocations: base.revocations)
+            .gated(by: TesterCloudVoice.consentStore)
         #else
         return base
         #endif
@@ -46,6 +57,35 @@ extension View {
 }
 
 #if AERODJ_OWNER_AB
+/// The owner A/B build's cloud-voice consent (owner, Nov 9 2026, #433): the same store type, copy
+/// and sheet as the tester build (`CloudVoiceConsentApp`). A decline drops prepared cloud breaks
+/// and deletes cached cloud clips, as in the tester build. -Fry
+enum OwnerCloudVoice {
+    static let consentStore = CloudVoiceConsentStore()
+    /// Set once at launch (`TesterCloudVoiceConsentHooks.attach`).
+    @MainActor static var preparer: DJBreakPreparer?
+    @MainActor static var renderer: VoiceRenderer?
+
+    @MainActor static func record(accepted: Bool) {
+        if accepted {
+            consentStore.accept()
+        } else {
+            consentStore.decline()
+            let preparer = preparer, renderer = renderer
+            Task {
+                await preparer?.dropCloudVoiceBreaks()
+                await renderer?.purgeCloudClips()
+            }
+        }
+    }
+}
+
+extension OwnerVoiceTrial {
+    /// One backoff for the proxy route, persisted in UserDefaults so a relaunch during a 429
+    /// suspension goes straight to the on-device voice (see `PaidVoiceBackoff`).
+    static let proxyBackoff = PaidVoiceBackoff(store: UserDefaultsPaidVoiceBackoffStore())
+}
+
 /// Keychain entry (this device only, when unlocked) for the proxy endpoint and owner token.
 enum OwnerProxyKeychain {
     private static let service = "com.aerodj.owner-ab.tts-proxy"
@@ -169,6 +209,10 @@ private struct OwnerVoicePickerSheet: View {
                         enteredToken: token, hasSavedToken: OwnerProxyKeychain.hasToken)))
                         .font(.footnote.monospaced())
                         .accessibilityIdentifier("ownerVoiceTrial.status")
+                    // Read-only: reason and resume time of any 429 / 5xx backoff.
+                    Text(OwnerVoiceTrial.proxyBackoff.statusLine())
+                        .font(.footnote.monospaced())
+                        .accessibilityIdentifier("ownerVoiceTrial.backoff")
                 }
             }
             .navigationTitle("Owner voice test")

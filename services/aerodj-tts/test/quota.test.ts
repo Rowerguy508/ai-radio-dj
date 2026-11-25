@@ -59,6 +59,8 @@ function deps(limiter: UsageLimiter, o: { fetch?: () => Promise<Response>; now?:
     now: () => o.now ?? NOON,
     timeoutMs: 50,
     requestId: () => 'req-1',
+    // Test-only: these harnesses drive the handler with an in-memory/spy limiter (Fry on #287 gate).
+    testOnlyAllowNonDurableLimiter: true,
   };
   return { d, logs, upstream: () => upstreamCalls };
 }
@@ -80,9 +82,9 @@ function limiters(options: LimiterOptions): [string, UsageLimiter, FakeRedis | n
   ];
 }
 
-const ownerKey = `aerodj-tts:chars:owner:${DAY}`;
+const ownerKey = `aerodj-tts:chars:owner:production:${DAY}`;
 const globalKey = `aerodj-tts:chars:global:${DAY}`;
-const installKey = (s: Subject) => `aerodj-tts:chars:${subjectBucket(s)}:${DAY}`;
+const installKey = (s: Subject) => `aerodj-tts:chars:${subjectBucket(s).replace(/^install:/, 'install:production:')}:${DAY}`;
 const isRefundMarker = (key: string | undefined) => typeof key === 'string' && key.startsWith('refund:{aerodj-tts}:');
 const counterSets = (redis: FakeRedis) => redis.commands.filter((c) => c[0] === 'SET' && !isRefundMarker(c[1]));
 const markerSets = (redis: FakeRedis) => redis.commands.filter((c) => c[0] === 'SET' && isRefundMarker(c[1]));
@@ -90,7 +92,7 @@ const markerSets = (redis: FakeRedis) => redis.commands.filter((c) => c[0] === '
 // --- Per-install and global buckets ---
 
 test('one install exhausting its cap does not block another install', async () => {
-  for (const [name, limiter] of limiters({ dailyCharCap: 9_000, installDailyCharCap: 1_500, requestsPerMinute: 100 })) {
+  for (const [name, limiter] of limiters({ deployment: 'production' as const, dailyCharCap: 9_000, installDailyCharCap: 1_500, requestsPerMinute: 100 })) {
     assert.equal((await limiter.reserve(A, 1_500, NOON)).ok, true, name);
     assert.deepEqual(await limiter.reserve(A, 1, NOON), { ok: false, reason: 'install_daily' }, name);
     assert.equal((await limiter.reserve(B, 1_500, NOON)).ok, true, `${name}: B unaffected`);
@@ -98,7 +100,7 @@ test('one install exhausting its cap does not block another install', async () =
 });
 
 test('the global ceiling blocks every caller, owner included, with reason global_daily', async () => {
-  for (const [name, limiter] of limiters({ dailyCharCap: 3_000, installDailyCharCap: 1_500, requestsPerMinute: 100 })) {
+  for (const [name, limiter] of limiters({ deployment: 'production' as const, dailyCharCap: 3_000, installDailyCharCap: 1_500, requestsPerMinute: 100 })) {
     assert.equal((await limiter.reserve(A, 1_500, NOON)).ok, true);
     assert.equal((await limiter.reserve(B, 1_000, NOON)).ok, true);
     assert.equal((await limiter.reserve(OWNER_SUBJECT, 500, NOON)).ok, true, `${name}: owner counts in global`);
@@ -110,7 +112,7 @@ test('the global ceiling blocks every caller, owner included, with reason global
 });
 
 test('owner has its own cap bucket, still counted in the global ceiling', async () => {
-  for (const [name, limiter, redis] of limiters({ dailyCharCap: 9_000, ownerDailyCharCap: 1_000, requestsPerMinute: 100 })) {
+  for (const [name, limiter, redis] of limiters({ deployment: 'production' as const, dailyCharCap: 9_000, ownerDailyCharCap: 1_000, requestsPerMinute: 100 })) {
     assert.equal((await limiter.reserve(OWNER_SUBJECT, 1_000, NOON)).ok, true);
     assert.deepEqual(await limiter.reserve(OWNER_SUBJECT, 1, NOON), { ok: false, reason: 'owner_daily' }, name);
     assert.equal((await limiter.reserve(A, 1_500, NOON)).ok, true, `${name}: installs unaffected by the owner cap`);
@@ -126,7 +128,7 @@ test('owner has its own cap bucket, still counted in the global ceiling', async 
 });
 
 test('owner default stays today\'s behaviour: one 9,000/day budget, and installs share the same ceiling', async () => {
-  for (const [name, limiter] of limiters(limiterOptions({ AERODJ_TTS_DAILY_CHAR_CAP: '9000' }))) {
+  for (const [name, limiter] of limiters(limiterOptions({ AERODJ_TTS_DAILY_CHAR_CAP: '9000', VERCEL_ENV: 'production' }))) {
     for (let i = 0; i < 15; i++) assert.equal((await limiter.reserve(OWNER_SUBJECT, 600, NOON)).ok, true, `${name} #${i}`);
     assert.deepEqual(await limiter.reserve(OWNER_SUBJECT, 1, NOON), { ok: false, reason: 'owner_daily' }, name);
     assert.deepEqual(await limiter.reserve(A, 1, NOON), { ok: false, reason: 'global_daily' }, name);
@@ -137,7 +139,7 @@ test('owner default stays today\'s behaviour: one 9,000/day budget, and installs
 
 test('all-or-nothing: a refusal on either bucket changes neither counter (real Lua)', async () => {
   const store = fakeUpstash();
-  const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 2_000, installDailyCharCap: 1_500, requestsPerMinute: 100 }, store.fetchImpl);
+  const limiter = new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 2_000, installDailyCharCap: 1_500, requestsPerMinute: 100 }, store.fetchImpl);
   assert.equal((await limiter.reserve(A, 1_400, NOON)).ok, true);
   // Install cap refuses: global must not move.
   assert.deepEqual(await limiter.reserve(A, 200, NOON), { ok: false, reason: 'install_daily' });
@@ -153,7 +155,7 @@ test('all-or-nothing: a refusal on either bucket changes neither counter (real L
 });
 
 test('all-or-nothing: the in-memory limiter matches', async () => {
-  const limiter = new InMemoryUsageLimiter({ dailyCharCap: 2_000, installDailyCharCap: 1_500, requestsPerMinute: 100 });
+  const limiter = new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 2_000, installDailyCharCap: 1_500, requestsPerMinute: 100 });
   assert.equal((await limiter.reserve(A, 1_400, NOON)).ok, true);
   assert.equal((await limiter.reserve(A, 200, NOON)).ok, false);
   assert.equal(limiter.used('global', NOON), 1_400);
@@ -163,7 +165,7 @@ test('all-or-nothing: the in-memory limiter matches', async () => {
 
 test('concurrent reservations from two instances on the shared store never exceed the global ceiling', async () => {
   const store = fakeUpstash();
-  const options = { dailyCharCap: 1_000, installDailyCharCap: 1_000, requestsPerMinute: 100 };
+  const options = { deployment: 'production' as const, dailyCharCap: 1_000, installDailyCharCap: 1_000, requestsPerMinute: 100 };
   const one = new RedisUsageLimiter(STORE, options, store.fetchImpl);
   const two = new RedisUsageLimiter(STORE, options, store.fetchImpl);
   const subjects: Subject[] = Array.from({ length: 8 }, (_, i) => ({ kind: 'install', id: `install-key-id-${i}` }));
@@ -176,7 +178,7 @@ test('concurrent reservations from two instances on the shared store never excee
 });
 
 test('Lua and in-memory limiters agree on a random reserve/release sequence', async () => {
-  const options = { dailyCharCap: 5_000, installDailyCharCap: 1_500, ownerDailyCharCap: 2_500, requestsPerMinute: 100 };
+  const options = { deployment: 'production' as const, dailyCharCap: 5_000, installDailyCharCap: 1_500, ownerDailyCharCap: 2_500, requestsPerMinute: 100 };
   const [[, mem], [, redis]] = limiters(options);
   const subjects: Subject[] = [OWNER_SUBJECT, A, B, { kind: 'install', id: 'install-key-id-C' }];
   let seed = 7;
@@ -206,7 +208,7 @@ test('Lua and in-memory limiters agree on a random reserve/release sequence', as
 
 test('upstream non-2xx refunds both the owner bucket and the global ceiling (real Lua)', async () => {
   const store = fakeUpstash();
-  const limiter = new RedisUsageLimiter(STORE, limiterOptions({}), store.fetchImpl);
+  const limiter = new RedisUsageLimiter(STORE, limiterOptions({ VERCEL_ENV: 'production' }), store.fetchImpl);
   const h = deps(limiter, { fetch: async () => new Response('nope', { status: 500 }) });
   assert.equal((await handleTts(req('x'.repeat(600)), h.d)).status, 502);
   assert.equal(store.redis.get(ownerKey), 0);
@@ -218,7 +220,7 @@ test('upstream non-2xx refunds both the owner bucket and the global ceiling (rea
 });
 
 test('refund on an install reservation releases both buckets, floored at zero, keeping TTLs', async () => {
-  for (const [name, limiter, redis] of limiters({ dailyCharCap: 9_000, requestsPerMinute: 100 })) {
+  for (const [name, limiter, redis] of limiters({ deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 })) {
     const r = await limiter.reserve(A, 500, NOON);
     assert.ok(r.ok);
     await limiter.release(r.reservation);
@@ -237,7 +239,7 @@ test('refund on an install reservation releases both buckets, floored at zero, k
 
 test('refund floor: a counter above 0 but below the refund amount clamps to 0, never negative (real Lua)', async () => {
   const store = fakeUpstash();
-  const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
+  const limiter = new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
   const r = await limiter.reserve(A, 500, NOON);
   assert.ok(r.ok);
   // The counters dropped below this reservation after it was taken (e.g. the store was
@@ -252,7 +254,7 @@ test('refund floor: a counter above 0 but below the refund amount clamps to 0, n
 
 test('refund that would go below zero: an absent or zero counter is left untouched (real Lua)', async () => {
   const store = fakeUpstash();
-  const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
+  const limiter = new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
   // A reservation for a day whose counters no longer exist (expired, or never written).
   await limiter.release({ rid: crypto.randomUUID(), bucket: subjectBucket(A), day: DAY, chars: 500 });
   assert.equal(store.redis.data.has(installKey(A)), false, 'no counter is created');
@@ -271,7 +273,7 @@ test('refund that would go below zero: an absent or zero counter is left untouch
 });
 
 test('double refund: a non-2xx request releases its charge exactly once, so other callers stay counted', async () => {
-  for (const [name, limiter, redis] of limiters({ dailyCharCap: 9_000, requestsPerMinute: 100 })) {
+  for (const [name, limiter, redis] of limiters({ deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 })) {
     // Another caller already holds 300 of the global ceiling.
     assert.ok((await limiter.reserve(B, 300, NOON)).ok);
     const releases: unknown[] = [];
@@ -304,7 +306,7 @@ test('double refund: a non-2xx request releases its charge exactly once, so othe
 // one test per limiter so a failure in one cannot hide the other (the old loop stopped at the
 // in-memory limiter and never reached the Redis script).
 test('double refund of the same reservation applies once: in-memory limiter (per-charge marker, PR 3 gate)', async () => {
-  const limiter = new InMemoryUsageLimiter({ dailyCharCap: 9_000, requestsPerMinute: 100 });
+  const limiter = new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 });
   assert.ok((await limiter.reserve(B, 300, NOON)).ok);
   const r = await limiter.reserve(A, 500, NOON);
   assert.ok(r.ok);
@@ -318,7 +320,7 @@ test('double refund of the same reservation applies once: in-memory limiter (per
 
 test('double refund of the same reservation applies once: Upstash limiter, real RELEASE2 Lua (per-charge marker, PR 3 gate)', async () => {
   const store = fakeUpstash();
-  const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
+  const limiter = new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
   assert.ok((await limiter.reserve(B, 300, NOON)).ok);
   const r = await limiter.reserve(A, 500, NOON);
   assert.ok(r.ok);
@@ -335,10 +337,10 @@ test('double refund of the same reservation applies once: Upstash limiter, real 
 
 test('refund marker is per charge: two reservations of the same size each refund once', async () => {
   for (const make of [
-    () => ({ limiter: new InMemoryUsageLimiter({ dailyCharCap: 9_000, requestsPerMinute: 100 }) as UsageLimiter, read: (l: UsageLimiter) => (l as InMemoryUsageLimiter).used('global', NOON) }),
+    () => ({ limiter: new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }) as UsageLimiter, read: (l: UsageLimiter) => (l as InMemoryUsageLimiter).used('global', NOON) }),
     () => {
       const store = fakeUpstash();
-      return { limiter: new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl) as UsageLimiter, read: () => store.redis.get(globalKey) };
+      return { limiter: new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl) as UsageLimiter, read: () => store.redis.get(globalKey) };
     },
   ]) {
     const { limiter, read } = make();
@@ -360,7 +362,7 @@ test('refund marker key: only a server-generated UUID rid is accepted, so no cli
     assert.throws(() => refundMarkerKey(bad), TypeError, bad);
   }
   const store = fakeUpstash();
-  const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
+  const limiter = new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
   await assert.rejects(limiter.release({ rid: '*', bucket: subjectBucket(A), day: DAY, chars: 1 }), TypeError);
   assert.equal(store.calls.length, 0, 'nothing reaches the store');
 });
@@ -373,7 +375,7 @@ test('RELEASE2 script runs the SET NX marker before touching any counter', () =>
 test('both buckets reset at 00:00 UTC; day keys carry a 2-day TTL', async () => {
   const late = Date.UTC(2026, 9, 28, 23, 59, 30);
   const next = Date.UTC(2026, 9, 29, 0, 0, 1);
-  for (const [name, limiter, redis] of limiters({ dailyCharCap: 1_000, installDailyCharCap: 600, requestsPerMinute: 100 })) {
+  for (const [name, limiter, redis] of limiters({ deployment: 'production' as const, dailyCharCap: 1_000, installDailyCharCap: 600, requestsPerMinute: 100 })) {
     assert.equal((await limiter.reserve(A, 600, late)).ok, true);
     assert.equal((await limiter.reserve(B, 400, late)).ok, true);
     assert.equal((await limiter.reserve(A, 1, late)).ok, false);
@@ -392,7 +394,7 @@ const CONTRACT_KEYS = ['error', 'reason', 'requestId', 'retryAfterSeconds'];
 
 test('daily 429: Retry-After = seconds to next UTC midnight, enum reason, numbers only', async () => {
   const at = Date.UTC(2026, 9, 28, 23, 59, 30, 250);
-  const limiter = new InMemoryUsageLimiter({ dailyCharCap: 10, requestsPerMinute: 100 });
+  const limiter = new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 10, requestsPerMinute: 100 });
   const h = deps(limiter, { now: at });
   const res = await handleTts(req('x'.repeat(11)), h.d);
   assert.equal(res.status, 429);
@@ -407,7 +409,7 @@ test('daily 429: Retry-After = seconds to next UTC midnight, enum reason, number
 });
 
 test('global 429 through the handler: reason global_daily when installs already filled the ceiling', async () => {
-  const limiter = new InMemoryUsageLimiter({ dailyCharCap: 1_000, ownerDailyCharCap: 1_000, requestsPerMinute: 100 });
+  const limiter = new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 1_000, ownerDailyCharCap: 1_000, requestsPerMinute: 100 });
   assert.equal((await limiter.reserve(A, 900, NOON)).ok, true);
   const h = deps(limiter);
   const res = await handleTts(req('x'.repeat(200)), h.d);
@@ -418,7 +420,7 @@ test('global 429 through the handler: reason global_daily when installs already 
 });
 
 test('rate 429 and store 503 carry reason and Retry-After 60 (rate) and 30 (store, note §4.4)', async () => {
-  const rate = deps(new InMemoryUsageLimiter({ dailyCharCap: 9_000, requestsPerMinute: 1 }));
+  const rate = deps(new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 1 }));
   assert.equal((await handleTts(req('hi'), rate.d)).status, 200);
   const limited = await handleTts(req('hi'), rate.d);
   assert.equal(limited.status, 429);
@@ -426,7 +428,7 @@ test('rate 429 and store 503 carry reason and Retry-After 60 (rate) and 30 (stor
   assert.deepEqual(body(limited), { error: 'Too many requests', requestId: 'req-1', reason: 'rate', retryAfterSeconds: 60 });
 
   const down = fakeUpstash({ status: 500 });
-  const store = deps(new RedisUsageLimiter(STORE, limiterOptions({}), down.fetchImpl));
+  const store = deps(new RedisUsageLimiter(STORE, limiterOptions({ VERCEL_ENV: 'production' }), down.fetchImpl));
   const res = await handleTts(req('hi'), store.d);
   assert.equal(res.status, 503);
   assert.equal(res.headers['Retry-After'], '30');
@@ -454,7 +456,7 @@ test('a store error at reserve (after the rate check passed) fails closed: 503 s
       assert.equal(command[1], RATE_SCRIPT, `${name}: only the rate check reaches the store`);
       return store.fetchImpl(url, init);
     }) as typeof fetch;
-    const h = deps(new RedisUsageLimiter(STORE, limiterOptions({}), fetchImpl));
+    const h = deps(new RedisUsageLimiter(STORE, limiterOptions({ VERCEL_ENV: 'production' }), fetchImpl));
     const res = await handleTts(req('hi'), h.d);
     assert.equal(reserveCalls, 1, `${name}: the rate check passed and reserve was attempted`);
     assert.equal(res.status, 503, name);
@@ -465,7 +467,7 @@ test('a store error at reserve (after the rate check passed) fails closed: 503 s
 });
 
 test('other errors keep the old body shape (no reason, no Retry-After)', async () => {
-  const h = deps(new InMemoryUsageLimiter({ dailyCharCap: 9_000, requestsPerMinute: 100 }));
+  const h = deps(new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 }));
   const unauth = await handleTts({ ...req('hi'), authorization: 'Bearer wrong' }, h.d);
   assert.equal(unauth.status, 401);
   assert.deepEqual(Object.keys(body(unauth)).sort(), ['error', 'requestId']);
@@ -478,8 +480,8 @@ test('429/503 log lines carry only requestId, status, chars and the enum reason'
   try {
     const { defaultDeps } = await import('../src/handler.js');
     const base = defaultDeps(env());
-    const limiter = new InMemoryUsageLimiter({ dailyCharCap: 5, requestsPerMinute: 100 });
-    await handleTts(req('secret listening note'), { ...base, limiter, fetch: (async () => pcm()) as typeof fetch });
+    const limiter = new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 5, requestsPerMinute: 100 });
+    await handleTts(req('secret listening note'), { ...base, limiter, testOnlyAllowNonDurableLimiter: true, fetch: (async () => pcm()) as typeof fetch });
   } finally {
     spy.mock.restore();
   }
@@ -494,7 +496,7 @@ test('429/503 log lines carry only requestId, status, chars and the enum reason'
 
 test('the handler always charges the owner bucket; body fields cannot select an install bucket', async () => {
   const store = fakeUpstash();
-  const h = deps(new RedisUsageLimiter(STORE, limiterOptions({}), store.fetchImpl));
+  const h = deps(new RedisUsageLimiter(STORE, limiterOptions({ VERCEL_ENV: 'production' }), store.fetchImpl));
   const res = await handleTts(req('hello', { installId: 'install-key-id-A', keyId: 'install-key-id-A', stationId: 'install-key-id-A' }), h.d);
   assert.equal(res.status, 200);
   const keys = store.calls.flatMap((c) => c.command.slice(3, 3 + Number(c.command[2])) as string[]);

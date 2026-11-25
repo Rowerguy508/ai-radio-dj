@@ -20,7 +20,9 @@ export function parseStoreKitConfig(value: unknown): StoreKitConfig {
     (v.installsPerPurchase as number) <= 10 &&
     typeof v.allowSandboxInProduction === 'boolean' &&
     typeof v.honorGracePeriod === 'boolean' &&
-    typeof v.allowFamilyShared === 'boolean';
+    // Family Sharing moved to the single env setting AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED
+    // (src/pro-allowance.ts); a leftover key here would be a second, ignored knob, so refuse it.
+    !Object.prototype.hasOwnProperty.call(v, 'allowFamilyShared');
   if (!ok) throw new Error('invalid StoreKit config');
   return Object.freeze({
     bundleId: v.bundleId as string,
@@ -28,7 +30,6 @@ export function parseStoreKitConfig(value: unknown): StoreKitConfig {
     installsPerPurchase: v.installsPerPurchase as number,
     allowSandboxInProduction: v.allowSandboxInProduction as boolean,
     honorGracePeriod: v.honorGracePeriod as boolean,
-    allowFamilyShared: v.allowFamilyShared as boolean,
   });
 }
 
