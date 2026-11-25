@@ -1236,11 +1236,39 @@ jobs:
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO
       - name: Boot the iPhone Duo simulator
-        timeout-minutes: 10
+        # Run 45352651807 (job 138303787630): the Duo was "already booted" when this step ran,
+        # yet the first 14 minutes of the suite could not reach the app's accessibility server.
+        # Seven AppWideLayoutTests launches failed with kAXErrorServerNotFound after "Unable to
+        # monitor event loop", and two terminations hit "Failed to terminate com.aerodj.app".
+        # Tests after that passed on the same simulator. So start from a clean, freshly booted
+        # Duo and wait for the boot to finish before anything else touches it. -Atlas
+        timeout-minutes: 15
         run: |
           set -euo pipefail
-          xcrun simctl boot "$DUO_UDID" 2>/dev/null || true
+          xcrun simctl shutdown "$DUO_UDID" 2>/dev/null || true
+          xcrun simctl erase "$DUO_UDID"
+          xcrun simctl boot "$DUO_UDID"
           xcrun simctl bootstatus "$DUO_UDID" -b
+      - name: Warm up the Duo's UI automation (result not counted)
+        # One passing UI test on the freshly booted Duo, so XCTest's automation session and the
+        # accessibility server are up before the counted run. Its result bundle is discarded and
+        # a failure here only warns: every test, this one included, runs again in the next step,
+        # which is the one that decides the job. -Atlas
+        timeout-minutes: 15
+        run: |
+          set -uo pipefail
+          if ! xcodebuild test-without-building \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 600 \
+            -destination "id=$DUO_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -resultBundlePath "$RUNNER_TEMP/duo-ui-warmup.xcresult" \
+            -only-testing:AeroDJUITests/LiquidGlassTransportTests/testStandardGlassTransport \
+            CODE_SIGNING_ALLOWED=NO; then
+            echo "::warning::Duo UI warm-up test failed; the counted run below still runs every test."
+          fi
+          rm -rf "$RUNNER_TEMP/duo-ui-warmup.xcresult"
       - name: Run AeroDJStudioUI on iPhone Duo
         # One pass of the existing UI suite. Per-test allowance matches the Studio UI job
         # (10 min). testRecordedWalkthrough skips unless STUDIO_WALKTHROUGH=1, which this
