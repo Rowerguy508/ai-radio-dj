@@ -1932,7 +1932,8 @@ private struct FoldedArtCard: View {
         // (iOS 43658288607: no folded.artCard.* in the tree), so only the Debug on-air
         // capture exposes it, as a label-less element. The id follows the visible layers
         // so the capture can assert orb-only (`folded.artCard.orb`) versus art
-        // (`folded.artCard.artwork`). Accessibility only; no pixel changes.
+        // (`folded.artCard.artwork`). Accessibility only; no pixel changes. #626 (-Nova): the
+        // closed-Duo status-column capture exposes it too, so its test can read the art's frame.
         .modifier(ArtCardTestExposure(identifier: Self.testIdentifier(layers: layers)))
     }
 
@@ -2901,7 +2902,7 @@ private struct ArtCardTestExposure: ViewModifier {
 
     func body(content: Content) -> some View {
         #if DEBUG
-        if StudioCaptureOnAir.frozenElapsed != nil {
+        if StudioCaptureOnAir.frozenElapsed != nil || RailDCaptureContainer.exposesArtCard {
             content
                 .accessibilityElement(children: .ignore)
                 .accessibilityIdentifier(identifier)

@@ -38,6 +38,12 @@ struct RailDCaptureContainer: View {
     static let closedStatusColumnKey = "AeroDJCaptureClosedStatusColumn"
     static let closedStatusColumnWidth: Double = 73
 
+    /// #626 (-Nova): the status-column launch exposes the art card to XCUITest (as the on-air
+    /// captures do), so `testClosedDuoRailTucksUnderTheStatusColumn` can check the rail sits right
+    /// of the art. Everywhere else the card stays hidden from accessibility (run 45546301685: no
+    /// `folded.artCard.*` in the tree). Accessibility only; no pixel changes.
+    static var exposesArtCard: Bool { UserDefaults.standard.bool(forKey: closedStatusColumnKey) }
+
     /// The injected column width for this scenario: 0 unless the launch asks for it on the closed Duo.
     static func closedStatusColumn(for scenario: StudioCaptureScenario) -> Double {
         guard scenario.railDFrame == .railDDuoClosed,
