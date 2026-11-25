@@ -44,6 +44,11 @@ public enum SharedReviewError: Error, Equatable, Sendable {
     /// verified as excluded from backup. The file was removed instead and every item is back to
     /// not included, in memory and on the next load.
     case reviewChoicesResetUnverified
+    /// #592 (-Atlas): the backup opt-in could not be saved and read back, so it stays off.
+    case backupOptInUnverified
+    /// #651 (Sentinel's nit b, -Atlas): the opt-out holds for this process, but the opt-in file
+    /// could be neither removed nor overwritten, so a relaunch may read it as on again.
+    case backupOptOutNotPersisted
 }
 
 /// Review, redact and delete user-shared items, and expose them as
@@ -203,6 +208,27 @@ public actor SharedInboxReview: ContextSource {
     }
 
     private func persist() throws { try persist(entries) }
+
+    /// #592 (-Atlas): the user's explicit opt-in to back up review choices (off by default).
+    /// On: the opt-in must verify; nothing is saved by turning it on, so a #593 revocation still
+    /// ends only with the next save that completes. Off: if the folder can't be re-marked
+    /// excluded, the saved choices are removed and every entry drops to pending, not reconfirmed,
+    /// as in `persistReducingExposure`.
+    public func setBackupOptIn(_ on: Bool) throws {
+        guard let store else { return }
+        if on { return try store.setBackupOptIn(true) }
+        do {
+            try store.setBackupOptIn(false)
+        } catch SharedReviewError.reviewChoicesResetUnverified {
+            for i in entries.indices {
+                entries[i].decision = .pending
+                entries[i].isReconfirmed = false
+            }
+            throw SharedReviewError.reviewChoicesResetUnverified
+        }
+    }
+
+    public var isBackupOptedIn: Bool { store?.isBackupOptedIn ?? false }
 
     /// #426 Echo's blocker (-Sentinel): saves after a change that has already been applied and only
     /// reduces exposure (exclude, delete, edit). If the backup exclusion can't be verified, nothing

@@ -132,7 +132,7 @@ extension SharedInboxReviewView {
         case .backupExclusionUnverified: return "Couldn't save that change privately, so nothing changed. Please try again."
         case .reviewChoicesResetUnverified:
             return "Done, but your choices couldn't be saved privately, so every item is set back to not included. Include the ones you want again."
-        case nil: return "Something went wrong. Please try again."
+        case .backupOptInUnverified, .backupOptOutNotPersisted, nil: return "Something went wrong. Please try again."
         }
     }
 }
