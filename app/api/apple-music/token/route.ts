@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mintDeveloperToken } from '@/lib/apple-music/developer-token';
-import { originAllowed, parseOriginAllowlist } from '@/lib/apple-music/token-access';
+import {
+  clientAddress,
+  originAllowed,
+  parseOriginAllowlist,
+  permitTokenRequest,
+} from '@/lib/apple-music/token-access';
 
 // #36: the browser asks here for a short-lived developer token instead of reading a
 // long-lived one from a NEXT_PUBLIC_ variable baked into the bundle.
@@ -35,6 +40,12 @@ export function POST(request: NextRequest) {
   const allowlist = parseOriginAllowlist(process.env.APPLE_MUSIC_ALLOWED_ORIGINS);
   if (!originAllowed(request.headers.get('origin'), allowlist)) {
     return reply({ error: 'Forbidden' }, 403);
+  }
+
+  // #78: only an allowed origin spends rate budget, so refused origins cannot drain
+  // a bucket. Best-effort, per instance; see lib/apple-music/token-access.ts.
+  if (!permitTokenRequest(clientAddress(request.headers))) {
+    return reply({ error: 'Too many requests' }, 429);
   }
 
   try {
