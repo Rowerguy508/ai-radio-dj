@@ -46,6 +46,9 @@ public enum SharedReviewError: Error, Equatable, Sendable {
     case reviewChoicesResetUnverified
     /// #592 (-Atlas): the backup opt-in could not be saved and read back, so it stays off.
     case backupOptInUnverified
+    /// #651 (Sentinel's nit b, -Atlas): the opt-out holds for this process, but the opt-in file
+    /// could be neither removed nor overwritten, so a relaunch may read it as on again.
+    case backupOptOutNotPersisted
 }
 
 /// Review, redact and delete user-shared items, and expose them as

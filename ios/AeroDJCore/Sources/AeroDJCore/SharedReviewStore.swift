@@ -50,6 +50,9 @@ public struct SharedReviewStore: Sendable {
     var fileOps: SharedReviewFileOps = .live
     /// #592 (-Atlas): file operations behind the backup opt-in (`SharedReviewBackupOptIn.swift`).
     var optInOps: SharedReviewBackupOptInOps = .live
+    /// #651 (Sentinel's nit c, -Atlas): the `state.json` write in `save`, injectable so a test can
+    /// fail it and check that a revocation outlives a save whose write failed.
+    var writeState: @Sendable (Data, URL) throws -> Void = { try ProtectedFile.write($0, to: $1) }
 
     public init(file: URL, backupExclusion: any BackupExclusionMarking = FoundationBackupExclusion(),
                 backupExclusionLog: @escaping @Sendable (String) -> Void = SharedReviewStore.emitBackupExclusionFailure) {
@@ -100,11 +103,13 @@ public struct SharedReviewStore: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         let keyed = Dictionary(uniqueKeysWithValues: records.map { ($0.key.uuidString, $0.value) })
-        try ProtectedFile.write(encoder.encode(keyed), to: file)
+        try writeState(encoder.encode(keyed), file)
         // #593 (-Echo): the verified write replaced whatever was revoked, so the file is the truth
         // again. If the marker can't be cleared the save throws and the file stays ignored (pending).
         try fileOps.clearMarker(revokedMarker)
         SharedReviewRevocations.shared.clear(file)
+        // #651 (Sentinel's N2): a folder kept excluded while revoked becomes backup-eligible only now.
+        includeFolderAfterVerifiedSave()
     }
 
     /// #426 (-Sentinel): removes the saved choices so every item loads as pending. Used when a

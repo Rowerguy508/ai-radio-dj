@@ -6,15 +6,19 @@ import Foundation
 /// Off by default, and every doubt reads as off, so #426's fail-closed save stays the default:
 /// - The choice is one small file next to the store, `<file>.backup-opt-in`, holding exactly `on`.
 ///   Missing, unreadable or any other content is off. It holds no content and no ids.
-/// - Turning it on counts only once the file reads back as `on`. Otherwise the opt-in is removed
-///   again and `SharedReviewError.backupOptInUnverified` is thrown.
+/// - Turning it on counts only once the file reads back as `on`. Otherwise it is off for this
+///   process, the file is removed (or overwritten with `off`), and
+///   `SharedReviewError.backupOptInUnverified` is thrown.
 /// - While it is on, `save` skips the backup-exclusion requirement, and turning it on clears the
 ///   folder's excluded flag (best effort: if that fails the folder stays excluded, which is the
-///   private direction, and one content-free line is logged).
-/// - Turning it off ends it for this process at once, removes the file (or overwrites it with
-///   `off`), then re-marks the folder excluded with the read-back. If the mark fails, the saved
-///   choices are removed through `removeSavedChoices()` (#593's fail-closed path, unchanged) and
-///   `SharedReviewError.reviewChoicesResetUnverified` is thrown.
+///   private direction, and one content-free line is logged). If the choices are revoked (#593),
+///   the removal is retried first, and if revoked files remain the folder stays excluded until
+///   the first save that completes.
+/// - Turning it off (a no-op when already off) ends it for this process at once, removes the file
+///   (or overwrites it with `off`), then re-marks the folder excluded with the read-back. If the
+///   mark fails, the saved choices are removed through `removeSavedChoices()` (#593's fail-closed
+///   path, unchanged) and `SharedReviewError.reviewChoicesResetUnverified` is thrown. If the file
+///   could be neither removed nor overwritten, `SharedReviewError.backupOptOutNotPersisted` is thrown.
 /// - Opting in never ends a #593 revocation by itself. Only a save that completes does
 ///   (`save` clears the revocation after its write), and with the opt-in unverified a save still
 ///   needs the verified exclusion mark.
@@ -86,28 +90,59 @@ extension SharedReviewStore {
             verified = (try? optInOps.read(backupOptInFile)) == Self.backupOptInOn
         } catch { verified = false }
         guard verified else {
-            // Leave nothing that a later read could take as on.
-            try? optInOps.remove(backupOptInFile)
+            // Off for this process, and leave nothing that a later read could take as on: remove
+            // the file, or overwrite it with `off` (Echo's #651 review: read-back and remove both fail).
+            SharedReviewBackupOptOuts.shared.optOut(file)
+            if (try? optInOps.remove(backupOptInFile)) == nil,
+               (try? optInOps.write(Self.backupOptInOff, backupOptInFile)) == nil {
+                backupExclusionLog(Self.backupOptOutNotPersistedMessage)
+            }
             throw SharedReviewError.backupOptInUnverified
         }
         SharedReviewBackupOptOuts.shared.clear(file)
+        // Sentinel's N2 on #651: revoked choices (a `state.json` #593 could not remove, or a set-aside
+        // `.unreadable` copy) must never become backup-eligible. Retry #593's removal first; if
+        // anything is still there, the folder stays excluded until the first save that completes
+        // (`includeFolderAfterVerifiedSave`).
+        if isRevoked {
+            removeSavedChoices()
+            guard !FileManager.default.fileExists(atPath: file.path), unreadableCopies().isEmpty else { return }
+        }
+        includeFolder()
+    }
+
+    /// Clears the folder's excluded flag. Best effort: on failure it stays excluded (private).
+    private func includeFolder() {
         do { try optInOps.markIncluded(file.deletingLastPathComponent()) } catch {
             backupExclusionLog(Self.backupInclusionFailureMessage)
         }
     }
 
+    /// Called by `save` after its write has completed and ended any revocation: with the opt-in
+    /// on, the folder may now be backed up.
+    func includeFolderAfterVerifiedSave() {
+        guard isBackupOptedIn, !isRevoked else { return }
+        includeFolder()
+    }
+
     private func optOut() throws {
+        // Sentinel's nit (a) on #651: already off is a no-op.
+        guard isBackupOptedIn else { return }
         // Off for this process first, whatever the disk does next.
         SharedReviewBackupOptOuts.shared.optOut(file)
+        var persisted = true
         if (try? optInOps.remove(backupOptInFile)) == nil,
            (try? optInOps.write(Self.backupOptInOff, backupOptInFile)) == nil {
             backupExclusionLog(Self.backupOptOutNotPersistedMessage)
+            persisted = false
         }
-        guard FileManager.default.fileExists(atPath: file.deletingLastPathComponent().path) else { return }
-        guard markFolderExcludedFromBackup() else {
+        if FileManager.default.fileExists(atPath: file.deletingLastPathComponent().path), !markFolderExcludedFromBackup() {
             // #592: the folder may still be backed up, so the saved choices go (#593's path).
             removeSavedChoices()
             throw SharedReviewError.reviewChoicesResetUnverified
         }
+        // Sentinel's nit (b) on #651: the opt-out holds for this process, but a relaunch may read the
+        // old `on`, so the caller is told.
+        if !persisted { throw SharedReviewError.backupOptOutNotPersisted }
     }
 }

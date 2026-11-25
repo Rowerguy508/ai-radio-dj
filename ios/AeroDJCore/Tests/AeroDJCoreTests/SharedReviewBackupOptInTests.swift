@@ -125,6 +125,29 @@ final class SharedReviewBackupOptInTests: XCTestCase {
         XCTAssertFalse(exists(s0.file))
     }
 
+    /// Echo's #651 review and Sentinel's B2: the write lands, but the read-back and the remove both
+    /// fail. It must end opted out and throw, in this process and after a relaunch (a fresh
+    /// instance with working reads): the `on` file is overwritten with `off`.
+    func testAnOptInWhoseReadBackAndRemoveBothFailEndsOptedOut() throws {
+        let marker = Marker(); marker.readBack = false
+        let lines = Lines()
+        let s0 = store(marker, lines: lines)
+        var s = s0
+        s.optInOps.read = { _ in throw Boom() }
+        s.optInOps.remove = { _ in throw Boom() }
+        XCTAssertThrowsError(try s.setBackupOptIn(true)) {
+            XCTAssertEqual($0 as? SharedReviewError, .backupOptInUnverified)
+        }
+        XCTAssertFalse(s0.isBackupOptedIn, "off in this process, with reads working again")
+        XCTAssertNotEqual(try Data(contentsOf: s0.backupOptInFile), Data("on".utf8), "nothing left that reads as on")
+        XCTAssertFalse(relaunched(s0, marker).isBackupOptedIn, "off after a relaunch")
+        XCTAssertThrowsError(try s0.save(approvals(1))) {
+            XCTAssertEqual($0 as? SharedReviewError, .backupExclusionUnverified, "the mark is still required")
+        }
+        XCTAssertFalse(exists(s0.file))
+        XCTAssertTrue(lines.all.allSatisfy { !$0.contains(s0.file.path) }, "content-free")
+    }
+
     func testAFolderFlagThatCanNotBeClearedLogsOneContentFreeLine() throws {
         let marker = Marker(), lines = Lines()
         var s = store(marker, lines: lines)
@@ -173,7 +196,11 @@ final class SharedReviewBackupOptInTests: XCTestCase {
         try s.setBackupOptIn(true)
         s.optInOps.remove = { _ in throw Boom() }
         s.optInOps.write = { _, _ in throw Boom() }
-        try s.setBackupOptIn(false)
+        // Sentinel's nit (b) on #651: the double failure is reported, not swallowed.
+        XCTAssertThrowsError(try s.setBackupOptIn(false)) {
+            XCTAssertEqual($0 as? SharedReviewError, .backupOptOutNotPersisted)
+        }
+        XCTAssertEqual(marker.marks, 1, "the folder is still re-marked excluded")
         XCTAssertTrue(exists(s.backupOptInFile), "the disk refused")
         XCTAssertFalse(s.isBackupOptedIn, "but it is off in this process")
         XCTAssertEqual(lines.all, [SharedReviewStore.backupOptOutNotPersistedMessage])
@@ -197,8 +224,8 @@ final class SharedReviewBackupOptInTests: XCTestCase {
 
     /// Saved approvals, then a revoke whose remove and overwrite both fail, so the old file stays
     /// on disk behind the `.revoked` marker.
-    private func revokedStore(_ marker: Marker) throws -> SharedReviewStore {
-        var s = store(marker)
+    private func revokedStore(_ marker: Marker, included: Included = Included()) throws -> SharedReviewStore {
+        var s = store(marker, included: included)
         try s.save(approvals(2))
         s.fileOps.remove = { _ in throw Boom() }
         s.fileOps.overwriteEmpty = { _ in throw Boom() }
@@ -259,6 +286,81 @@ final class SharedReviewBackupOptInTests: XCTestCase {
         XCTAssertFalse(exists(s.revokedMarker))
         XCTAssertEqual(s.load(), fresh, "the old approvals are replaced, never brought back")
         XCTAssertEqual(relaunched(s, marker).load(), fresh)
+    }
+
+    // MARK: #651 review follow-ups
+
+    /// Sentinel's nit (a): turning it off when it is already off touches nothing.
+    func testTurningItOffWhenAlreadyOffIsANoOp() throws {
+        let marker = Marker()
+        let s = store(marker)
+        let records = approvals(2)
+        try s.save(records)
+        XCTAssertEqual(marker.marks, 1)
+        marker.readBack = false                        // a re-mark now would fail and remove the choices
+        try s.setBackupOptIn(false)
+        XCTAssertEqual(marker.marks, 1, "not re-marked")
+        XCTAssertFalse(exists(s.backupOptInFile), "no file written")
+        XCTAssertEqual(s.load(), records, "choices untouched")
+    }
+
+    /// Sentinel's N2: opting in while revoked retries #593's removal first; once nothing revoked is
+    /// left, the folder may be included.
+    func testOptInWhileRevokedRetriesTheRemovalThenIncludesTheFolder() throws {
+        let marker = Marker(), included = Included()
+        let s = try revokedStore(marker, included: included)     // file ops are live again
+        XCTAssertTrue(exists(s.file), "the revoked state.json is still on disk")
+        try s.setBackupOptIn(true)
+        XCTAssertFalse(exists(s.file), "the retry removed it")
+        XCTAssertEqual(included.dirs.count, 1)
+        XCTAssertTrue(s.load().isEmpty, "still revoked until a save")
+    }
+
+    /// Sentinel's N2: if the retry can't remove the revoked state.json, the folder stays excluded
+    /// until the first save that completes.
+    func testOptInWhileRevokedKeepsTheFolderExcludedUntilTheFirstVerifiedSave() throws {
+        let marker = Marker(), included = Included()
+        var s = try revokedStore(marker, included: included)
+        s.fileOps.remove = { _ in throw Boom() }
+        s.fileOps.overwriteEmpty = { _ in throw Boom() }
+        try s.setBackupOptIn(true)
+        XCTAssertTrue(s.isBackupOptedIn)
+        XCTAssertTrue(exists(s.file))
+        XCTAssertEqual(included.dirs.count, 0, "revoked choices on disk: the folder stays excluded")
+
+        var failing = s
+        failing.writeState = { _, _ in throw Boom() }
+        XCTAssertThrowsError(try failing.save(approvals(1)))
+        XCTAssertEqual(included.dirs.count, 0, "a failed save includes nothing")
+
+        s.fileOps = .live
+        let fresh = [UUID(): SharedReviewRecord(decision: .excluded)]
+        try s.save(fresh)
+        XCTAssertEqual(included.dirs.count, 1, "included after the first verified save")
+        XCTAssertEqual(s.load(), fresh)
+    }
+
+    /// Sentinel's N2: a set-aside `.unreadable` copy left while revoked also keeps the folder excluded.
+    func testOptInWhileRevokedWithAnUnreadableCopyKeepsTheFolderExcluded() throws {
+        let marker = Marker(), included = Included()
+        let s = try revokedStore(marker, included: included)
+        try Data("old approvals".utf8).write(to: s.unreadableBackupPrefix)
+        try s.setBackupOptIn(true)
+        XCTAssertFalse(exists(s.file))
+        XCTAssertTrue(exists(s.unreadableBackupPrefix), "#593 leaves set-aside copies alone")
+        XCTAssertEqual(included.dirs.count, 0)
+    }
+
+    /// Sentinel's nit (c): a save whose state.json write fails must not end a revocation, so the
+    /// marker has to be cleared only after the write.
+    func testAFailedStateWriteAfterARevokeKeepsTheRevocation() throws {
+        let marker = Marker()
+        var s = try revokedStore(marker)
+        s.writeState = { _, _ in throw Boom() }
+        XCTAssertThrowsError(try s.save(approvals(1)))
+        XCTAssertTrue(exists(s.revokedMarker), "the marker outlives a failed write")
+        XCTAssertTrue(s.load().isEmpty)
+        XCTAssertTrue(relaunched(s, marker).load().isEmpty, "the old approvals never load")
     }
 
     // MARK: Review level
