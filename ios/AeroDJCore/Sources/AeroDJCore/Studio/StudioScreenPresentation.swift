@@ -148,20 +148,59 @@ public enum NowPlayingContent: Equatable, Sendable {
     case nothingPlaying
     /// A track is loaded (playing or paused).
     case track(TrackInfo)
+    /// #454: a station row was tapped and its first song is on its way. "Starting <name>…".
+    case starting(stationName: String)
+    /// #454: the tapped station could not start. "Couldn't start <name>" with Try again.
+    case startFailed(stationName: String)
+    /// #454: the tapped station has no music yet (a row with nothing to apply). Honest, no retry.
+    case startUnavailable(stationName: String)
 
     public static func resolve(access: PlaybackAccess, snapshot: PlaybackSnapshot) -> NowPlayingContent {
+        resolve(access: access, snapshot: snapshot, start: nil)
+    }
+
+    /// `start` is `StationStartStatus.shown(...)` for the opened station: while it is set, a station
+    /// tap shows its own start state, never the "Nothing playing" search screen.
+    public static func resolve(access: PlaybackAccess, snapshot: PlaybackSnapshot,
+                               start: StationStartState?) -> NowPlayingContent {
         switch access {
         case .checking: return .connecting
         case .needsAuthorization: return .needsAuthorization
         case .denied: return .accessDenied
         case .subscriptionRequired: return .subscriptionRequired
         case .authorized:
+            if let start {
+                switch start.phase {
+                case .starting: return .starting(stationName: start.stationName)
+                case .failed: return .startFailed(stationName: start.stationName)
+                case .unavailable: return .startUnavailable(stationName: start.stationName)
+                }
+            }
             if let track = snapshot.nowPlaying { return .track(track) }
             return .nothingPlaying
         }
     }
 
     public var showsTransport: Bool { if case .track = self { true } else { false } }
+
+    /// #454: one of the station-start states (Starting, Couldn't start, can't start yet).
+    public var isStationStart: Bool {
+        switch self {
+        case .starting, .startFailed, .startUnavailable: true
+        default: false
+        }
+    }
+
+    /// #454: the start state with a progress indicator.
+    public var showsStartSpinner: Bool {
+        switch self {
+        case .connecting, .starting: true
+        default: false
+        }
+    }
+
+    /// #454: only a failed station start offers Try again.
+    public var offersStartRetry: Bool { if case .startFailed = self { true } else { false } }
 
     public var title: String {
         switch self {
@@ -171,17 +210,25 @@ public enum NowPlayingContent: Equatable, Sendable {
         case .subscriptionRequired: "An Apple Music subscription is required"
         case .nothingPlaying: "Nothing playing"
         case .track(let t): t.title
+        case .starting(let name): "Starting \(name)…"
+        case .startFailed(let name): "Couldn't start \(name)"
+        case .startUnavailable(let name): "\(name) can't start yet"
+
         }
     }
 
     public var detail: String? {
         switch self {
         case .connecting: nil
-        case .needsAuthorization: "AeroDJ needs permission before it can play from Apple Music."
-        case .accessDenied: "Allow Apple Music for AeroDJ in Settings to play your station."
-        case .subscriptionRequired: "AeroDJ plays music through your Apple Music subscription."
+        case .needsAuthorization: "\(AppName.display) needs permission before it can play from Apple Music."
+        case .accessDenied: "Allow Apple Music for \(AppName.display) in Settings to play your station."
+        case .subscriptionRequired: "\(AppName.display) plays music through your Apple Music subscription."
         case .nothingPlaying: "Search Apple Music to start your station."
         case .track: nil
+        case .starting: nil
+        case .startFailed: "Try again."
+        case .startUnavailable: "This station's music isn't ready yet."
+
         }
     }
 }

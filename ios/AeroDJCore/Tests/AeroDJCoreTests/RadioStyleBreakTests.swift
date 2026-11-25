@@ -113,7 +113,7 @@ final class RadioStyleBreakTests: XCTestCase {
     func testEveryTalkBreakEndsWithItsOwnClosingCueForTheNextTrack() {
         var sawStation = false, sawAtmosphere = false, sawContinuation = false
         for seed in UInt64(0)..<300 {
-            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "AeroDJ")
+            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "OnAirly")
             let plan = writer.plan(tracks: tracks, briefing: nil, hour: [7, 15, 21, 23][Int(seed % 4)])
             XCTAssertFalse(plan.breaks.isEmpty)
             for djBreak in plan.breaks {
@@ -132,7 +132,7 @@ final class RadioStyleBreakTests: XCTestCase {
                 XCTAssertFalse(main.contains { $0.text.contains(next.title) && $0.id != closing.id
                     && djBreak.attributions[$0.id] != .presenter && !$0.text.contains(tracks[djBreak.afterTrack].title) })
                 for cue in main {
-                    if EditorialTone.warm.stationID.contains(where: { $0.replacingOccurrences(of: "{station}", with: "AeroDJ") == cue.text }) { sawStation = true }
+                    if EditorialTone.warm.stationID.contains(where: { $0.replacingOccurrences(of: "{station}", with: "OnAirly") == cue.text }) { sawStation = true }
                     if EditorialTone.warm.atmosphere.values.joined().contains(cue.text) { sawAtmosphere = true }
                     if EditorialTone.warm.continuation.contains(cue.text) { sawContinuation = true }
                 }
@@ -148,7 +148,7 @@ final class RadioStyleBreakTests: XCTestCase {
         XCTAssertEqual(cadence.maxBriefingBreakSeconds, 45)
         XCTAssertEqual(cadence.talkFraction, 0.3)
         for seed in UInt64(0)..<200 {
-            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "AeroDJ")
+            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "OnAirly")
             for djBreak in writer.plan(tracks: djTracks(40), briefing: nil, hour: 15).breaks {
                 XCTAssertLessThanOrEqual(djBreak.mainSeconds, 15)
                 XCTAssertLessThanOrEqual(djBreak.closingSeconds, 4)
@@ -157,7 +157,7 @@ final class RadioStyleBreakTests: XCTestCase {
         }
         // A tight main cap drops the continuation and color first; the break still airs.
         var tight = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1, maxTransitionSeconds: 3),
-                                   seed: 5, stationName: "AeroDJ")
+                                   seed: 5, stationName: "OnAirly")
         for djBreak in tight.plan(tracks: tracks, briefing: nil, hour: 23).breaks {
             XCTAssertLessThanOrEqual(djBreak.mainSeconds, 3)
             XCTAssertNotNil(djBreak.talkOverCueID)
@@ -168,7 +168,7 @@ final class RadioStyleBreakTests: XCTestCase {
         var tone = EditorialTone.warm
         tone.closing = ["Coming up after this one, here is {nextTitle} by {nextArtist}, a song from the queue."]
         var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 3,
-                                    stationName: "AeroDJ", tone: tone)
+                                    stationName: "OnAirly", tone: tone)
         let plan = writer.plan(tracks: tracks, briefing: nil, hour: 15)
         XCTAssertFalse(plan.breaks.isEmpty)
         for djBreak in plan.breaks {
@@ -185,7 +185,7 @@ final class RadioStyleBreakTests: XCTestCase {
             stationID: ["{station}."], atmosphere: [:], continuation: ["Okay."], briefingLead: ["Quickly."],
             briefingOutro: ["Done."], greetings: [:])
         var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 4,
-                                    stationName: "AeroDJ", tone: tone)
+                                    stationName: "OnAirly", tone: tone)
         let plan = writer.plan(tracks: tracks, briefing: nil, hour: 15)
         XCTAssertFalse(plan.breaks.isEmpty)
         for djBreak in plan.breaks {
@@ -198,7 +198,7 @@ final class RadioStyleBreakTests: XCTestCase {
     func testPoolsDoNotRepeatUntilExhausted() {
         // Same title/artist everywhere, so the text identifies the template.
         let same = (0..<40).map { DJTrack(id: "s\($0)", title: "Tune", artist: "Band") }
-        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 8, stationName: "AeroDJ")
+        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 8, stationName: "OnAirly")
         let breaks = writer.plan(tracks: same, briefing: nil, hour: 15).breaks
         let closings = breaks.map { $0.cues.last!.text }
         let n = EditorialTone.warm.closing.count
@@ -220,7 +220,7 @@ final class RadioStyleBreakTests: XCTestCase {
                          estimatedSeconds: 8, maxSeconds: 16, sourceItemID: item, source: .obsidian, provenance: "n:\(i)")
         }
         let handoff = NarrationHandoff(cues: cues, maxSpokenSeconds: 120, experienceSeconds: 600)
-        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "AeroDJ")
+        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "OnAirly")
         let plan = writer.plan(tracks: djTracks(10), briefing: handoff, hour: 8)
         let briefing = plan.breaks.filter(\.hasBriefing)
         XCTAssertFalse(briefing.isEmpty)
@@ -295,7 +295,9 @@ final class RadioStyleBreakTests: XCTestCase {
         await station.setPlaybackActivity(.holdingSong)
         let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: voice, voice: djVoice)],
                                      budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
-        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence())
+        // These tests cover the talk-over hook, so talk-over is on (the default reads the flag: off).
+        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence(),
+                                       talkOverEnabled: { true })
         let dj = DJPresentationStore()
         let s = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 14 })
         await s.start()
@@ -356,19 +358,21 @@ final class RadioStyleBreakTests: XCTestCase {
         let (s, _, _, preparer) = await session(StationConfiguration(commentary: .frequent))
         let source = ConnectionItem(id: approved, integration: .obsidian, title: "[TEST] note", state: .approved, sensitivity: .medium)
         await s.queueStarted(djTracks(8), sources: [source])
-        XCTAssertFalse(s.plannedBoundaries.contains(1))
-        await s.songStarted(index: 1, remaining: .seconds(180))
+        // #445: ready audio is handed out only for a break the session gave the preparer (it
+        // carries that plan's time of day), so the recorded result below replaces a planned one.
+        let k = try XCTUnwrap(s.plannedBoundaries.first, "a break is planned")
+        await s.songStarted(index: k, remaining: .seconds(180))
         let opener = cue("That was Song 1."), kept = cue("From your notes: one.", item: approved)
         let lapsed = cue("From your notes: two.", item: unknown), closing = cue("Here's Song 2.")
         let all = [opener, kept, lapsed, closing]
         await preparer.testRecord(.ready(PreparedDJBreak(
-            afterTrack: 1, cues: all, clips: [clip(opener, 2), clip(kept, 3), clip(lapsed, 4), clip(closing, 1.5)],
+            afterTrack: k, cues: all, clips: [clip(opener, 2), clip(kept, 3), clip(lapsed, 4), clip(closing, 1.5)],
             attributions: [opener.id: .trackMetadata(trackIDs: ["t1"]),
                            kept.id: .personalContext(itemID: approved, source: .obsidian, provenance: "n:1"),
                            lapsed.id: .personalContext(itemID: unknown, source: .obsidian, provenance: "n:1"),
                            closing.id: .trackMetadata(trackIDs: ["t2"])],
-            talkOverCueID: closing.id)), afterTrack: 1)
-        let handedBreak = await s.naturalBoundary(afterTrack: 1)
+            talkOverCueID: closing.id)), afterTrack: k)
+        let handedBreak = await s.naturalBoundary(afterTrack: k)
         let handed = try XCTUnwrap(handedBreak)
         XCTAssertEqual(handed.cues.map(\.id), [opener.id, kept.id, closing.id], "the unapproved item is dropped")
         XCTAssertEqual(handed.talkOverCueID, closing.id)
@@ -389,7 +393,9 @@ final class RadioStyleBreakTests: XCTestCase {
         func outcome(_ b: DJBreak) async -> DJBreakOutcome {
             let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: WordVoice(secondsPerWord: 0.6), voice: djVoice)],
                                          budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
-            let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s")
+            // The split caps alone: the whole-break 12 s cap is lifted here (RenderedOrdinaryCapTests, #320).
+            let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: Self.splitCapsOnly,
+                                           talkOverEnabled: { true })
             let done = AsyncStream<Void>.makeStream()
             await preparer.observe { event in
                 switch event {
@@ -422,9 +428,14 @@ final class RadioStyleBreakTests: XCTestCase {
         }
     }
 
-    private func outcome(_ b: DJBreak, routes: [VoiceRoute]) async -> DJBreakOutcome {
+    /// 15 s main + 4 s closing, with the whole-break 12 s ordinary cap (#320) lifted, for tests of
+    /// the split caps themselves. The 12 s measured cap is covered in RenderedOrdinaryCapTests. -Echo
+    static let splitCapsOnly = DJCadence(maxOrdinaryBreakSeconds: 60)
+
+    private func outcome(_ b: DJBreak, routes: [VoiceRoute], talkOver: Bool = true, onDeviceOnly: Bool = false,
+                         cadence: DJCadence = DJCadence()) async -> DJBreakOutcome {
         let renderer = VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
-        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s")
+        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: cadence, talkOverEnabled: { talkOver })
         let done = AsyncStream<Void>.makeStream()
         await preparer.observe { event in
             switch event {
@@ -432,7 +443,7 @@ final class RadioStyleBreakTests: XCTestCase {
             case .preparing: break
             }
         }
-        await preparer.prepare(b, deadline: .seconds(5), onDeviceOnly: false)
+        await preparer.prepare(b, deadline: .seconds(5), onDeviceOnly: onDeviceOnly)
         for await _ in done.stream { break }
         return await preparer.takeBreak(afterTrack: b.afterTrack)
     }
@@ -453,13 +464,22 @@ final class RadioStyleBreakTests: XCTestCase {
         let over = ScriptedVoice(seconds: [main.text: 18, closing.text: 1])
         let mainOver = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(over)])
         XCTAssertEqual(mainOver, .skipped(.overBreakBudget), "18 + 1 must not pass as a pooled 19 s")
-        // 10 s main + 5 s closing: 15 s in all, but the closing line is over 4.
+        // 10 s main + 5 s closing: the closing line is over its 4 s talk-over cap. P0 build 26:
+        // that no longer skips the break; the line loses its talk-over marker and counts toward
+        // the 15 s main budget (10 + 5 = 15 fits).
         let long = ScriptedVoice(seconds: [main.text: 10, closing.text: 5])
-        let closingOver = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(long)])
-        XCTAssertEqual(closingOver, .skipped(.overBreakBudget), "the closing line keeps its own 4 s cap")
+        guard case .ready(let closingOver) = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(long)], cadence: Self.splitCapsOnly) else {
+            return XCTFail("a 5 s closing line is counted in the 15 s budget, not a skip")
+        }
+        XCTAssertNil(closingOver.talkOverCueID, "over 4 s: no talk-over marker")
+        XCTAssertNil(closingOver.talkOverStartSeconds)
+        // 11 s main + 5 s closing: 16 s counted together, over 15: still skipped.
+        let longOver = ScriptedVoice(seconds: [main.text: 11, closing.text: 5])
+        let pooledOver = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(longOver)], cadence: Self.splitCapsOnly)
+        XCTAssertEqual(pooledOver, .skipped(.overBreakBudget), "a long closing line counts in the 15 s budget")
         // 15 s + 4 s: both at their caps, accepted.
         let edge = ScriptedVoice(seconds: [main.text: 15, closing.text: 4])
-        guard case .ready(let atCaps) = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(edge)]) else {
+        guard case .ready(let atCaps) = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(edge)], cadence: Self.splitCapsOnly) else {
             return XCTFail("15 + 4 is within both caps")
         }
         XCTAssertEqual(atCaps.talkOverStartSeconds ?? 0, 15.3, accuracy: 1e-9)
@@ -476,6 +496,102 @@ final class RadioStyleBreakTests: XCTestCase {
         // Still over on the retry (18 + 1 in both voices): skipped, as before.
         let stillOver = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(over, id: "premium"), route(over)])
         XCTAssertEqual(stillOver, .skipped(.overBreakBudget))
+    }
+
+    // MARK: P0 build 26 (-Fry): a closing line over 4 s no longer skips the break
+
+    private func scripted(_ main: NarrationCue, _ closing: NarrationCue, _ m: Double, _ c: Double) -> [VoiceRoute] {
+        [VoiceRoute(providerID: "device", provider: ScriptedVoice(seconds: [main.text: m, closing.text: c]),
+                    voice: VoiceProfile(id: "standard", name: "Host"))]
+    }
+
+    func testFiveSecondClosingLineWithTalkOverOffGivesAReadyBreak() async throws {
+        let main = cue("A short main segment.", maxSeconds: 30), closing = cue("Here's Song one, from Artist one.")
+        // The planner marked the closing line for talk-over (its estimate fit 4 s); it measures 5 s.
+        let b = talkOverBreak(main: main, closing: closing)
+        let outcome = await outcome(b, routes: scripted(main, closing, 6, 5), talkOver: false)
+        guard case .ready(let ready) = outcome else { return XCTFail("talk-over off: a 5 s closing line must still play, got \(outcome)") }
+        XCTAssertEqual(ready.clips.map(\.cueID), [main.id, closing.id], "the closing line plays, after the main segment")
+        XCTAssertEqual(ready.measuredSeconds, 11, accuracy: 1e-9)
+        XCTAssertNil(ready.talkOverCueID, "talk-over off: never marked")
+        XCTAssertNil(ready.talkOverStartSeconds)
+        XCTAssertNil(ready.talkOverSeconds)
+        // Talk-over off, short closing line: still ready, still no marker.
+        guard case .ready(let short) = await self.outcome(b, routes: scripted(main, closing, 6, 3), talkOver: false) else {
+            return XCTFail("a 3 s closing line plays")
+        }
+        XCTAssertNil(short.talkOverCueID, "the 4 s talk-over slot applies only while talk-over is on")
+        // Talk-over off keeps the planned allowances: 15 s main + a 3 s closing line plays.
+        guard case .ready = await self.outcome(b, routes: scripted(main, closing, 15, 3), talkOver: false, cadence: Self.splitCapsOnly) else {
+            return XCTFail("talk-over off never skips a break talk-over on would play")
+        }
+    }
+
+    func testFiveSecondClosingLineWithTalkOverOnDropsTheMarkerAndCountsInTheFifteenSecondBudget() async throws {
+        let main = cue("A short main segment.", maxSeconds: 30), closing = cue("Here's Song one, from Artist one.")
+        let b = talkOverBreak(main: main, closing: closing)
+        let outcome = await outcome(b, routes: scripted(main, closing, 6, 5), talkOver: true)
+        guard case .ready(let ready) = outcome else { return XCTFail("talk-over on: a 5 s closing line must still play, got \(outcome)") }
+        XCTAssertEqual(ready.clips.map(\.cueID), [main.id, closing.id])
+        XCTAssertNil(ready.talkOverCueID, "over the 4 s talk-over cap: the marker is dropped")
+        XCTAssertNil(ready.talkOverStartSeconds, "no talk-over timing: the line plays in the gap")
+        // The same break with a 4 s closing line keeps the marker (the talk-over path is unchanged).
+        guard case .ready(let fits) = await self.outcome(b, routes: scripted(main, closing, 6, 4), talkOver: true) else {
+            return XCTFail("4 s fits the talk-over cap")
+        }
+        XCTAssertEqual(fits.talkOverCueID, closing.id)
+        XCTAssertEqual(fits.talkOverStartSeconds ?? 0, 6.3, accuracy: 1e-9)
+        // Counted in the 15 s budget: 10 + 5 = 15 plays, 10.5 + 5 = 15.5 is skipped.
+        guard case .ready = await self.outcome(b, routes: scripted(main, closing, 10, 5), talkOver: true, cadence: Self.splitCapsOnly) else {
+            return XCTFail("10 + 5 is exactly the 15 s budget")
+        }
+        let over = await self.outcome(b, routes: scripted(main, closing, 10.5, 5), talkOver: true, cadence: Self.splitCapsOnly)
+        XCTAssertEqual(over, .skipped(.overBreakBudget), "the 15 s total budget still skips a break over it")
+        // With the default 12 s ordinary cap (#320), 10 + 5 has no optional line to drop: skipped.
+        let overWhole = await self.outcome(b, routes: scripted(main, closing, 10, 5), talkOver: true)
+        XCTAssertEqual(overWhole, .skipped(.overBreakBudget), "15 s measured is over the 12 s ordinary cap")
+    }
+
+    func testBreakOverTheFifteenSecondBudgetIsStillSkippedWithTalkOverOff() async {
+        let main = cue("A long main segment.", maxSeconds: 30), closing = cue("Here's Song one.")
+        let b = talkOverBreak(main: main, closing: closing)
+        // Main alone over 15 s.
+        let mainOver = await outcome(b, routes: scripted(main, closing, 16, 2), talkOver: false)
+        XCTAssertEqual(mainOver, .skipped(.overBreakBudget))
+        // A 6 s closing line counted with a 10 s main segment: 16 s, over.
+        let pooledOver = await outcome(b, routes: scripted(main, closing, 10, 6), talkOver: false)
+        XCTAssertEqual(pooledOver, .skipped(.overBreakBudget))
+    }
+
+    /// Sentinel's gate: when the closing line is over 4 s the break still renders on the on-device
+    /// voice for a library-seeded station (`onDeviceOnly`), and the cloud route is never called.
+    func testLongClosingLineOnALibraryStationStaysOnDevice() async {
+        let main = cue("A short main segment.", maxSeconds: 30), closing = cue("Here's Song one, from Artist one.")
+        let b = talkOverBreak(main: main, closing: closing)
+        let device = VoiceRoute(providerID: "device", provider: ScriptedVoice(seconds: [main.text: 6, closing.text: 5]),
+                                voice: VoiceProfile(id: "standard", name: "Host"))
+        let cloudSpy = CloudCallSpy()
+        let cloud = VoiceRoute(providerID: "cloud", provider: cloudSpy, voice: VoiceProfile(id: "cloud", name: "Host"),
+                               leavesDevice: true)
+        for talkOver in [false, true] {
+            guard case .ready(let ready) = await outcome(b, routes: [cloud, device], talkOver: talkOver, onDeviceOnly: true) else {
+                return XCTFail("on-device voice renders the long closing line")
+            }
+            XCTAssertTrue(ready.clips.allSatisfy { $0.audio.providerID == "device" })
+            XCTAssertNil(ready.talkOverCueID)
+        }
+        XCTAssertEqual(cloudSpy.calls, 0, "no cloud fallback for a library station")
+    }
+
+    private final class CloudCallSpy: VoiceProvider, @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        var calls: Int { lock.withLock { count } }
+        private func bump() { lock.withLock { count += 1 } }
+        func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+            bump()
+            return VoiceArtifact(data: Data(text.utf8), durationSeconds: 1, billableUnits: 0, provider: "cloud", cacheKey: nil)
+        }
     }
 
     func testBriefingBreakKeepsTheFortyFiveSecondTotalRule() async {
@@ -499,21 +615,21 @@ final class RadioStyleBreakTests: XCTestCase {
 
     // MARK: Library gate (Sentinel #154/#176): the closing never reaches the off-device route
 
-    private let jade = "g7LVvkPWALzPxOQbF6OE"
+    private let juniper = "aMSt68OGf4xUZAnLpTU8"
     private func composed(_ transport: RecordingTransport) -> VoiceRenderer {
         let device = ["premium", "standard"].map {
             VoiceRoute(providerID: "avspeech", provider: DeviceVoice(), voice: VoiceProfile(id: $0, name: "Host"))
         }
         let c = PremiumVoiceRoutes.compose(
-            onDevice: device, paidProvidersEnabled: true, selectedVoiceID: jade,
+            onDevice: device, paidProvidersEnabled: true, access: .allowed, selectedVoiceID: juniper,
             credentials: PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts.vercel.app/api/tts")!, token: "owner-test-token"),
             pinnedHosts: ["aerodj-tts.vercel.app"], transport: transport)
         return VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(),
                              revocations: NarrationRevocations())
     }
 
-    private func prepare(_ djBreak: DJBreak, _ r: VoiceRenderer, onDeviceOnly: Bool) async -> DJBreakOutcome {
-        let preparer = DJBreakPreparer(renderer: r, userID: "u", stationID: "s")
+    private func prepare(_ djBreak: DJBreak, _ r: VoiceRenderer, onDeviceOnly: Bool, talkOver: Bool = true) async -> DJBreakOutcome {
+        let preparer = DJBreakPreparer(renderer: r, userID: "u", stationID: "s", talkOverEnabled: { talkOver })
         let done = AsyncStream<Void>.makeStream()
         await preparer.observe { event in
             switch event {
@@ -527,7 +643,7 @@ final class RadioStyleBreakTests: XCTestCase {
     }
 
     func testLibrarySeededClosingNeverReachesTheOffDeviceRouteWhileMainCuesAreCloudEligible() async throws {
-        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "AeroDJ")
+        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "OnAirly")
         // Catalog-origin copies of the fixture: only `.catalog` track lines are cloud-eligible
         // (Sentinel, library provenance gate); `tracks` keeps the fail-closed `.unknown` default.
         let catalogTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artist, origin: .catalog) }

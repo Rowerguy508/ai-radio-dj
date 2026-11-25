@@ -29,6 +29,8 @@ public final class StudioPresentationModel {
     /// after one fails. `CreatedStationStarter` reads it so a re-tap never trusts a stale id
     /// (Fry #218). -Atlas
     @ObservationIgnored public private(set) var lastAppliedRecipeID: UUID?
+    /// #454: the station row tap's Starting / Couldn't start state, shown on Now Playing.
+    public let stationStart = StationStartStatus()
 
     public init(station: StationConfigurationModel, recipes: StationRecipeLibrary,
                 connections: ConnectionsModel, dj: DJPresentationStore,
@@ -105,6 +107,13 @@ public final class StudioPresentationModel {
         let result = await recipes.apply(id, to: station)
         if case .success = result { lastAppliedRecipeID = id } else { lastAppliedRecipeID = nil }
         return result
+    }
+
+    /// #456 (Fry N3): a built-in station's recipe (`StationStartFacts.builtInRecipe`), applied like a
+    /// saved one and recorded the same way, so a re-tap on the active built-in keeps unsaved Tune edits.
+    public func applyBuiltInRecipe(_ recipe: StationRecipe) async {
+        await station.applyRecipe(recipe)
+        lastAppliedRecipeID = recipe.id
     }
 }
 

@@ -38,6 +38,14 @@ public enum PlaybackLog {
         }
     }
 
+    /// #304 R3: when a song starts with no usable catalog duration, no break is planned for its
+    /// boundary. Returns `.durationUnknown` so the caller logs the skip rather than going
+    /// silently quiet, or `nil` when a positive finite duration is present.
+    public static func songStartSkipReason(duration: TimeInterval?) -> DJBreakSkipReason? {
+        guard let duration, duration.isFinite, duration > 0 else { return .durationUnknown }
+        return nil
+    }
+
     public static func queueEnd(finished: Int, signal: QueueEndSignal) -> String {
         "boundary queueEnd finished=\(finished) signal=\(signal.rawValue)"
     }
@@ -88,6 +96,11 @@ public enum PlaybackLog {
 
     public static func songDeferred(index: Int) -> String {
         "song deferred index=\(index)"
+    }
+
+    /// #204: a station hand-off's start failed at a boundary; the old queue's next song loads.
+    public static func stationHandOffFallback(next: Int) -> String {
+        "boundary stationHandOffFailed fallbackNext=\(next)"
     }
 }
 
