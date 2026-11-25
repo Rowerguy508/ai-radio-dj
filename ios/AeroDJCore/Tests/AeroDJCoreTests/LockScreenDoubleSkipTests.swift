@@ -2096,3 +2096,46 @@ private extension Show {
         for _ in 0..<polls { feed(rewound()) }
     }
 }
+
+// MARK: - #586: a capped-cut target that never starts is reported once
+
+extension LockScreenDoubleSkipTests {
+    /// #586 (-Fry): every song stalls at 0:00 after its `play()`. B's stall is #585's one capped
+    /// rewind cut (to C). C then stalls too: the skip path arms no start-confirm watchdog, so the
+    /// detector reports C's start exactly once, at the start-confirm deadline, through the poll's
+    /// `takeSkipStartStalled()`. Still no walk down the queue, no reload, no failed start, no pause.
+    func testEverySongStallingAfterTheCappedCutReportsTheStartExactlyOnce() async {
+        let show = Show()
+        show.primePlaying()
+        show.feed(show.cleared())
+        await show.untilLoadSuspended()
+        show.finishLoad()
+        await show.untilIdle()
+        show.assertPlaying(index: 1)
+        var reports = 0
+        var reportIndexes: [Int] = []
+        var pollsOnCBeforeReport = 0
+        for _ in 0..<40 {
+            show.feed(show.rewound())
+            if show.boundaries.takeSkipStartStalled() {
+                reports += 1
+                reportIndexes.append(show.index)
+            } else if show.index == 2, reports == 0 {
+                pollsOnCBeforeReport += 1
+            }
+            await show.untilIdle()
+        }
+        await show.untilDropsSettle()
+        XCTAssertEqual(reports, 1, "C's start that never began is reported exactly once")
+        XCTAssertEqual(reportIndexes, [2], "the report is C's, the capped cut's target")
+        XCTAssertGreaterThanOrEqual(pollsOnCBeforeReport, Int(PlaybackConfirmPolicy.deadlineSeconds),
+                                    "not before the start-confirm deadline")
+        XCTAssertEqual(show.index, 2, "one rewind-derived advance, then it stays on C")
+        XCTAssertEqual(show.loadCuts, 1, "one capped cut; the report is not a second cut")
+        XCTAssertEqual(show.advances, 2)
+        XCTAssertEqual(show.reloads, 0)
+        XCTAssertEqual(show.surfaces, 0, "not the skip failure path: no pause")
+        XCTAssertEqual(show.noProgressEnds, 0)
+        XCTAssertFalse(show.pausedByNoProgress)
+    }
+}
