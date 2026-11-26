@@ -938,6 +938,10 @@ jobs:
           for shot in duo-wide-library duo-wide-stations duo-wide-settings duo-wide-localarea; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
+          # #615: the whole 820 x 640 two-pane onboarding and Consent v3 frames, upright, for the owner. -Nova
+          for shot in duo-landscape-localarea-full duo-landscape-cloud-consent; do
+            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
+          done
           for shot in closed-dark closed-state-empty closed-state-loading closed-state-error closed-state-denied \
                       closed-connections-revoked closed-tune-config-change closed-large-text \
                       open-rail-tune-dark open-large-text open-connections-revoked open-tune-config-change \

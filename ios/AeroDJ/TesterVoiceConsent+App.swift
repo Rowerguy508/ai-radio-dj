@@ -176,7 +176,12 @@ struct TesterCloudVoiceToggleCard: View {
         }
     }
 }
+#endif
 
+// #615 capture (-Nova): the sheet also compiles in Debug so the Studio capture can draw it
+// (`CloudVoiceConsentSheetCapture`). Release builds without the tester or owner flags still
+// leave it out, and no copy, layout or action changes.
+#if AERODJ_TESTER_VOICE || AERODJ_OWNER_AB || DEBUG
 /// #258's copy, minus `switchBack` ("…in Settings"): the tester build's Cloud voice toggle is in
 /// Tune → DJ (`TesterCloudVoiceToggleCard`), not Settings, so the line would point testers to the
 /// wrong screen. The copy itself is left to Atlas's consent-text fix on #395 (N2).
@@ -278,6 +283,17 @@ private struct CloudVoiceConsentSheet: View {
         (Text(heading).bold() + Text(" ") + Text(body)).accessibilityElement(children: .combine)
     }
 }
+
+#if DEBUG
+/// #615 capture (-Nova): Consent v3 as `AppWideCaptureScenario.duoLandscapeCloudConsent` draws
+/// it, in the 820 × 640 open-Duo landscape container. Debug only, behind `-AeroDJStudioCapture`.
+/// The answer is dropped: nothing is recorded, enrolled or sent.
+struct CloudVoiceConsentSheetCapture: View {
+    var body: some View {
+        CloudVoiceConsentSheet { _ in }
+    }
+}
+#endif
 #endif
 
 /// Launch wiring for the cloud-voice consent (Echo's N2 on #395) in the tester build and, since
