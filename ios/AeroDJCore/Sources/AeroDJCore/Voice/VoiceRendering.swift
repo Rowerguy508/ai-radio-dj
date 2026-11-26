@@ -272,6 +272,14 @@ public struct AudioCacheSweeper: Sendable {
                       onLaunchSweep: @escaping @Sendable (String?) -> Void = { _ in }) -> Task<Void, Never> {
         let cache = cache
         let ticks = Self.ticks(every: interval)
+        // #82 F3: gate reads before the purge task exists, so no read can beat it to a personal
+        // clip from an earlier launch. The cache reopens when `purgePersonalItems` completes.
+        if purgingPersonalFirst {
+            // #637 follow-up: a production cache that is not gated would serve earlier-launch
+            // personal clips until its purge completes. Debug builds stop here.
+            assert(cache is any LaunchPurgeGated, "start(purgingPersonalFirst: true) needs a LaunchPurgeGated cache")
+            (cache as? any LaunchPurgeGated)?.beginLaunchPurge()
+        }
         return Task.detached(priority: .utility) {
             let line = await AudioCacheSweeper(cache: cache).prepareForLaunch(purgingPersonalFirst: purgingPersonalFirst)
             onLaunchSweep(line)
@@ -377,6 +385,14 @@ extension FileAudioCache: AudioCacheCounting {
     }
 }
 
+/// #637 P1: the file operations whose failures `FileAudioCache` must handle (fail closed).
+struct CacheFileOps: Sendable {
+    var write: @Sendable (Data, URL) throws -> Void
+    var remove: @Sendable (URL) throws -> Void
+    static let live = CacheFileOps(write: { try ProtectedFile.write($0, to: $1) },
+                                   remove: { try FileManager.default.removeItem(at: $0) })
+}
+
 /// On-device cache, one protected file per key. Personal narration stays on
 /// this device; nothing is shared across users. Entries older than
 /// `maxAge` are ignored and removed.
@@ -393,6 +409,10 @@ public struct FileAudioCache: AudioCache {
     let diskGate = CacheDiskGate()
     /// Serves clips stored while the disk is closed, so playback is unaffected (session only).
     let memoryFallback: InMemoryAudioCache
+    /// #82 F3: withholds earlier-launch personal clips until the launch purge completes.
+    let launchGate = CacheLaunchPurgeGate()
+    /// #637 P1: the launch purge's deletions and `store`'s write, injectable so tests can fail them.
+    let fileOps: CacheFileOps
 
     /// `maxAge` is clamped to `AudioCacheRetention.maximum` (7 days).
     /// Opening a cache whose folder already exists re-applies the excluded-from-backup flag,
@@ -405,6 +425,16 @@ public struct FileAudioCache: AudioCache {
                 now: @escaping @Sendable () -> Date = { Date() },
                 backupExclusion: any BackupExclusionMarking = FoundationBackupExclusion(),
                 backupExclusionLog: @escaping @Sendable (String) -> Void = CacheBackupExclusionLog.emit) {
+        self.init(directory: directory, maxAge: maxAge, now: now, backupExclusion: backupExclusion,
+                  backupExclusionLog: backupExclusionLog, fileOps: .live)
+    }
+
+    init(directory: URL, maxAge: TimeInterval = AudioCacheRetention.maximum,
+         now: @escaping @Sendable () -> Date = { Date() },
+         backupExclusion: any BackupExclusionMarking = FoundationBackupExclusion(),
+         backupExclusionLog: @escaping @Sendable (String) -> Void = CacheBackupExclusionLog.emit,
+         fileOps: CacheFileOps) {
+        self.fileOps = fileOps
         self.directory = directory
         self.maxAge = AudioCacheRetention.clamp(maxAge)
         self.now = now
@@ -425,7 +455,11 @@ public struct FileAudioCache: AudioCache {
 
     public func audio(for key: String) async -> CachedAudio? {
         if let held = await memoryFallback.audio(for: key) { return held }
-        guard let clip = read(url(key)) else { return nil }
+        // #82 F3: decided before the read, so a clip from an earlier launch is never served
+        // while the launch purge may still delete it. Not deleted here; the purge does that.
+        let withholdPersonal = launchGate.withholdsPersonal(key)
+        guard let clip = read(url(key)), !(withholdPersonal && clip.hasPersonalItem) else { return nil }
+        // #82 F2 (#649): served only while 0 <= age <= maxAge; a future stamp is deleted, never re-stamped.
         guard AudioCacheRetention.isWithin(clip, maxAge: maxAge, now: now()) else {
             remove(group: key)
             return nil
@@ -467,6 +501,9 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func purgeExpired() async {
+        // #637 P1: a launch purge that left a file behind is retried on every sweep until it
+        // removes everything; the gate keeps withholding until then.
+        if launchGate.needsRetry { await purgePersonalItems() }
         await memoryFallback.purgeExpired()
         let t = now()
         for group in groups() {
@@ -482,9 +519,28 @@ public struct FileAudioCache: AudioCache {
     }
 
     /// The launch purge: personal-item and unattributable files go; `allLinesClipTag`-only clips stay.
+    /// #82 F3: during a gated launch, clips stored in this launch (on disk or held in memory) are
+    /// kept, since they are not from an earlier launch. Each deletion is checked under the disk
+    /// lock that orders it against a store, and the read gate opens when this completes.
+    /// #637 P1 (fail closed): the gate opens only if every deletion succeeded. Otherwise it stays
+    /// pending (or starts withholding), so the surviving clip is never served, and the next
+    /// `purgeExpired` sweep runs this again.
     public func purgePersonalItems() async {
-        await memoryFallback.purgePersonalItems()
-        removeGroups { clip in clip.map(\.hasPersonalItem) ?? true }
+        // Memory holds only this session's clips; during a gated launch they are all this launch's.
+        if !launchGate.isPending { await memoryFallback.purgePersonalItems() }
+        var allRemoved = true
+        for group in groups() where group.clip.map(\.hasPersonalItem) ?? true {
+            diskGate.serialized { _ in
+                guard !launchGate.storedThisLaunch(group.key) else { return }
+                for file in group.files {
+                    // Already gone (a concurrent purge) counts as removed.
+                    do { try fileOps.remove(file) } catch {
+                        if FileManager.default.fileExists(atPath: file.path) { allRemoved = false }
+                    }
+                }
+            }
+        }
+        if allRemoved { launchGate.finish() } else { launchGate.purgeFailed() }
     }
 
     /// Personal and unattributable files (the same rule as `purgeAllPersonal`), synchronously.
@@ -519,7 +575,17 @@ public struct FileAudioCache: AudioCache {
                     return false
                 }
             }
-            try? ProtectedFile.write(data, to: url(key))
+            // #637 P1 (fail closed): only a write that succeeded marks the key fresh. On failure
+            // nothing is recorded or held in memory, and whatever is at the key (a partial file,
+            // or older bytes) is removed; if that fails too it stays withheld while gated.
+            do {
+                try fileOps.write(data, url(key))
+            } catch {
+                launchGate.unmarkStored(key)
+                try? fileOps.remove(url(key))
+                return true                               // handled: a miss, never old bytes
+            }
+            launchGate.markStored(key)                    // #82 F3: under the same lock as the purge
             return true
         }
         if !written { await memoryFallback.store(audio, for: key) }
