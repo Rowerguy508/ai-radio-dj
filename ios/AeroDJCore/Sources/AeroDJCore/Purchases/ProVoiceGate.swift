@@ -30,6 +30,8 @@ public struct NoPaidVoiceConsent: PaidVoiceConsentProviding {
 public enum ProVoiceGate {
     public enum Denial: String, Equatable, Sendable {
         case noConsent, notPro, unverified, expired, revoked
+        /// No "yes, 18 or older" answer (no or unanswered); see `PaidVoiceAgeStore`.
+        case ageNotConfirmed
     }
 
     public enum Decision: Equatable, Sendable {
@@ -101,6 +103,9 @@ public struct ProVoiceAccess: Sendable {
     }
 
     private init(fixed: ProVoiceGate.Decision) { decide = { fixed } }
+
+    /// For `requiringAdult(_:)` (PaidVoiceAgeGate.swift).
+    init(deciding: @escaping @Sendable () async -> ProVoiceGate.Decision) { decide = deciding }
 
     /// Fail closed: free and no consent. What every build gets until the paywall and the
     /// consent sheet are wired.
