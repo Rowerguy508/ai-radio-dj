@@ -286,14 +286,34 @@ public enum LatinHostScriptRules {
         s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
     }
 
+    /// Folded text split into words (letters and digits only), so "bombardeo" is not "bomba".
+    static func words(_ folded: String) -> [Substring] {
+        folded.split(whereSeparator: { !($0.isLetter || $0.isNumber) })
+    }
+
+    /// True when the folded phrase appears as whole words in `words`.
+    static func containsWords(_ words: [Substring], _ phrase: String) -> Bool {
+        let p = Self.words(folded(phrase))
+        guard !p.isEmpty, words.count >= p.count else { return false }
+        return (0...(words.count - p.count)).contains { i in words[i..<(i + p.count)].elementsEqual(p) }
+    }
+
     /// Text-only checks, shared with AI output that has no segments.
-    public static func textProblems(_ text: String, genre: LatinGenre?) -> [Problem] {
+    /// `names` are the song titles and artists in the line ("La Bomba", "Bomba Estéreo",
+    /// "El Mejor Día"). They are removed before the Spanish hype check, so a real name is
+    /// never mistaken for hype. Spanish hype is matched on whole words.
+    public static func textProblems(_ text: String, genre: LatinGenre?, names: [String] = []) -> [Problem] {
         var out: [Problem] = []
         let f = folded(text)
+        var hostWords = f
+        for name in names.map(folded).filter({ !$0.isEmpty }).sorted(by: { $0.count > $1.count }) {
+            hostWords = hostWords.replacingOccurrences(of: name, with: " ")
+        }
+        let w = words(hostWords)
         for p in forbiddenPhrases where f.contains(folded(p)) { out.append(.forbiddenPhrase(p)) }
         for p in forbiddenIdentityClaims where f.contains(folded(p)) { out.append(.identityClaim(p)) }
         for p in EditorialPhrasing.forbiddenHype where f.contains(p) { out.append(.hype(p)) }
-        for p in forbiddenSpanishHype where f.contains(folded(p)) { out.append(.hype(p)) }
+        for p in forbiddenSpanishHype where containsWords(w, p) { out.append(.hype(p)) }
         if text.contains("¡") || text.contains("!") {
             if !(genre?.allowsExclamation ?? false) { out.append(.exclamationOffGenre) }
         }
@@ -409,8 +429,9 @@ public enum LatinHostPromptRules {
     }
 
     /// AI output check: the same text rules as the templates. A line with any problem is
-    /// dropped and the template pool is used instead.
-    public static func acceptsOutput(_ text: String, genre: LatinGenre?) -> Bool {
-        LatinHostScriptRules.textProblems(text, genre: genre).isEmpty
+    /// dropped and the template pool is used instead. Pass the line's song titles and
+    /// artists as `names` so a name like "La Bomba" is not read as hype.
+    public static func acceptsOutput(_ text: String, genre: LatinGenre?, names: [String] = []) -> Bool {
+        LatinHostScriptRules.textProblems(text, genre: genre, names: names).isEmpty
     }
 }

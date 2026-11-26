@@ -201,6 +201,23 @@ final class LatinHostTests: XCTestCase {
         XCTAssertFalse(LatinHostPromptRules.acceptsOutput("Una bomba de {nextArtist}.", genre: .dembow))
     }
 
+    /// Echo's #670 follow-up: real titles and artists are not hype, and a hype word inside a
+    /// longer word does not count. Host-added hype next to a name is still refused.
+    func testSpanishHypeSparesRealNamesAndPartWords() {
+        XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Up next, La Bomba.", genre: .salsa, names: ["La Bomba"]))
+        XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Ahora, Bomba Estéreo.", genre: .cumbia, names: ["Bomba Estéreo"]))
+        XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Seguimos con El Mejor Día.", genre: .latinPop,
+                                                         names: ["el mejor dia"]))
+        XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Seguimos con Joyas Prestadas.", genre: .latinPop))
+        XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Seguimos con Bombardeo.", genre: .latinPop))
+        XCTAssertEqual(LatinHostScriptRules.textProblems("La Bomba, un temazo.", genre: nil, names: ["La Bomba"]),
+                       [.hype("temazo")])
+        XCTAssertEqual(LatinHostScriptRules.textProblems("Bomba Estéreo, una bomba.", genre: nil,
+                                                         names: ["Bomba Estéreo"]), [.hype("bomba")])
+        XCTAssertEqual(LatinHostScriptRules.textProblems("Up next, La Bomba.", genre: nil), [.hype("bomba")],
+                       "without names the check stays strict")
+    }
+
     /// Echo's #670 review: the copy and the AI genre notes have no song data, so neither may name
     /// instruments, tempo, a genre for the song, or a verdict on it.
     private let inventedFacts = ["metales", "horn", "piano", "percus", "guitar", "guitarra", "bajar el ritmo",
