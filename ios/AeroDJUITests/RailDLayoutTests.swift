@@ -6,7 +6,8 @@ import UIKit
 /// iPhone, the closed Duo and the open Duo; no horizontal progress bar. Each frame of the mock
 /// is a capture (`RailDCaptureContainer`, or the plain capture path on the iPhone), checked and
 /// saved here. Required in ios.yml: rail-d-iphone, rail-d-duo-closed,
-/// rail-d-duo-closed-status-column (build 58 follow-up), rail-d-duo-open-portrait,
+/// rail-d-duo-closed-status-column (build 58 follow-up),
+/// rail-d-duo-closed-status-column-ax5 (AX5 overflow follow-up), rail-d-duo-open-portrait,
 /// rail-d-duo-open-portrait-sidebar, rail-d-duo-open-landscape-spread,
 /// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar. Not required:
 /// rail-d-duo-open-landscape-book-collapsed (#548, the spread's frame with the rail collapsed).
@@ -93,6 +94,37 @@ final class RailDLayoutTests: XCTestCase {
         assertNoHorizontalBar(app)
         try assertClosedChip(app, rail: rail)
         save(app, "rail-d-duo-closed-status-column", container: any["capture.railDContainer"])
+    }
+
+    /// AX5 overflow follow-up (Orion to the owner, from closed-ax5_iPhone-Duo on iOS
+    /// 45629736914): at accessibilityExtraExtraExtraLarge, Skip, Queue and the sleep timer
+    /// overflow the 56 pt rail. Same status-column capture as above, at AX5; those three
+    /// icons must stay inside the rail, and the shot is rail-d-duo-closed-status-column-ax5.
+    /// Art may drop in ViewThatFits at AX5, so this does not require the art card. -Nova
+    @MainActor
+    func testClosedDuoRailTucksUnderTheStatusColumnAtAX5() throws {
+        let app = try launch("railDDuoClosed", container: Self.closed, orientation: .portrait,
+                             extra: ["-AeroDJCaptureClosedStatusColumn", "YES",
+                                     "-UIPreferredContentSizeCategoryName",
+                                     "UICTContentSizeCategoryAccessibilityXXXL"])
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["folded.outer"].waitForExistence(timeout: 15), "the closed reskin\n\(app.debugDescription)")
+        let box = try settledContainer(app, size: Self.closed)
+        let rail = try assertRail(app, id: "folded.closedRail", hasCollapse: false)
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail), "rail \(rail) left the container \(box)")
+        let columnMinX = box.maxX - Self.statusColumn
+        XCTAssertGreaterThanOrEqual(rail.minX, columnMinX - 3,
+                                    "rail \(rail) is not under the \(Self.statusColumn) pt status column of \(box)")
+        XCTAssertLessThan(rail.maxX, box.maxX, "rail \(rail) runs off the container \(box)")
+        for id in ["transport.skip", "queue.affordance", "folded.sleepTimer"] {
+            let frame = try XCTUnwrap(settledFrame(of: any[id], id))
+            XCTAssertTrue(rail.insetBy(dx: -1, dy: -1).contains(frame),
+                          "\(id) \(frame) overflows the rail \(rail)")
+            XCTAssertLessThanOrEqual(frame.width, Self.railGlassWidth + 1,
+                                     "\(id) \(frame) is wider than the 56 pt glass")
+        }
+        assertNoHorizontalBar(app)
+        save(app, "rail-d-duo-closed-status-column-ax5", container: any["capture.railDContainer"])
     }
 
     @MainActor

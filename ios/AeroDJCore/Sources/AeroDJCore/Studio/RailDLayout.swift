@@ -27,6 +27,23 @@ public enum RailDLayout {
     public static var controlSize: Double { DuoRailLayout.controlSize }
     public static var spacing: Double { DuoRailLayout.spacing }
     public static var capPadding: Double { DuoRailLayout.verticalPadding }
+    /// Default (Large) title2 point size, the rail symbols' font at default Dynamic Type.
+    public static let symbolPointSize: Double = 22
+
+    /// The rail's SF Symbol point size when `.title2` would overflow the 56 pt glass.
+    ///
+    /// At accessibility sizes, `.title2` grows past the 44 pt plates, so Skip, Queue and
+    /// the sleep timer overflow the rail (closed-ax5_iPhone-Duo, iOS run 45629736914).
+    /// When a trailing system inset is present (the closed-Duo status column) and the type
+    /// size is an accessibility size, keep the default title2 size so the glyphs stay
+    /// inside the plates. Every other case returns nil: the view keeps `.title2`, so
+    /// iPhone snapshots stay byte-identical.
+    public static func cappedSymbolPointSize(accessibilityText: Bool,
+                                             trailingSystemInset: Double) -> Double? {
+        guard accessibilityText,
+              trailingSystemInset.isFinite, trailingSystemInset > 0.5 else { return nil }
+        return symbolPointSize
+    }
 
     /// What the rail draws, top to bottom.
     public enum Slot: String, Equatable, Sendable {
