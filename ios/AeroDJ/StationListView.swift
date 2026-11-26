@@ -33,6 +33,9 @@ struct StationListView: View {
             } else if let layouts = StationsLayoutCaptureScenario.requested() {
                 // Open-Duo Stations designs and the Settings picker (-Nova).
                 StationsLayoutCaptureView(scenario: layouts)
+            } else if let mock = ListenerControlsMockScenario.requested() {
+                // #198 mock, owner review only (Mockups/ListenerControlsMock.swift). -Nova
+                ListenerControlsMockCapture(scenario: mock)
             } else {
                 StudioCaptureView(dependencies: dependencies)
             }
