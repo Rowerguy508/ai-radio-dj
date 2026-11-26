@@ -248,7 +248,10 @@ final class CloudVoiceAllLinesTests: XCTestCase {
         let tester = try XCTUnwrap(trial.range(of: "#elseif AERODJ_TESTER_VOICE", range: owner.upperBound..<trial.endIndex))
         let end = try XCTUnwrap(trial.range(of: "#else\n        return base", range: tester.upperBound..<trial.endIndex))
         XCTAssertTrue(trial[owner.upperBound..<tester.lowerBound].contains(".gated(by: OwnerCloudVoice.consentStore)"))
-        XCTAssertTrue(trial[tester.upperBound..<end.lowerBound].contains(".gated(by: TesterCloudVoice.consentStore)"))
+        XCTAssertFalse(trial[owner.upperBound..<tester.lowerBound].contains("age:"),
+                       "the owner A/B trial is not age-gated")
+        XCTAssertTrue(trial[tester.upperBound..<end.lowerBound].contains(
+            ".gated(by: TesterCloudVoice.consentStore, age: PaidVoiceAgeStore.live)"))
         XCTAssertFalse(trial.contains("cloudScope:"), "no hand-rolled scope in the app")
 
         let consent = try appSource("TesterVoiceConsent+App.swift")

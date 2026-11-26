@@ -175,6 +175,10 @@ public actor DJBreakPreparer {
     /// N2 on #398). Kept so tests can wait for it; never awaited by the take. -Nova
     private var cloudClipPurge: Task<Void, Never>?
     private var cloudVoiceDropObservers: [@Sendable (Int, ExcludedCueCounts) -> Void] = []
+    /// Boundaries prepared on-device because the cloud-voice check (consent, or the 18+ answer)
+    /// was denied at the start of the render. After a grant, `releaseBreakPreparedWhileDenied`
+    /// may let the session prepare such a break again (#267).
+    private var preparedWhileDenied: Set<Int> = []
     /// Whether DJ talk-over is on, read when a render starts (`prepare`, `rearm`). P0 build 26
     /// (-Fry): the 4 s closing cap is a talk-over cap, so it only applies while this is true.
     private let talkOverEnabled: @Sendable () -> Bool
@@ -351,7 +355,18 @@ public actor DJBreakPreparer {
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
         // Owner, Nov 9 2026: with consent to copy v2 (`.allLines`) a library station's lines may use
         // the cloud voice too; each cue is still checked by `mayLeaveDevice` as it renders. -Fry
-        let renderer = onDeviceOnly && self.renderer.cloudScope() != .allLines ? self.renderer.onDeviceOnly : self.renderer
+        // #267: if the cloud scope is `.noLines` at the start of this render (18+ unanswered
+        // or no), the whole break stays on-device, so a later yes cannot switch voices mid-break.
+        // Consent withdrawal is a different check (`cloudVoiceWithdrawn`): a decline must not
+        // rewrite a new render onto the on-device route, so a cloud clip that still lands is
+        // dropped at the take, as TesterVoiceOffTests require.
+        let deniedAtStart = self.renderer.cloudScope() == .noLines
+        let renderer: VoiceRenderer?
+        if deniedAtStart {
+            renderer = self.renderer.onDeviceOnly
+        } else {
+            renderer = onDeviceOnly && self.renderer.cloudScope() != .allLines ? self.renderer.onDeviceOnly : self.renderer
+        }
         let userID = userID, stationID = stationID, cap = breakCap(djBreak).talkOver(talkOverEnabled())
         // The time check is held back from the first step (its plan-time words never render).
         // Looked up here, outside the async task: no non-escaping closure is formed inside it
@@ -375,7 +390,7 @@ public actor DJBreakPreparer {
         tasks[k] = Task { [weak self] in
             let outcome = await Self.renderRest(rest, renderer: renderer, userID: userID, stationID: stationID,
                                                 cap: cap, deadline: deadline, bundled: bundled)
-            await self?.finish(k, outcome)
+            await self?.finish(k, outcome, preparedWhileDenied: deniedAtStart)
             guard let timeCheck, let plannedLine, let renderer, case .ready(let main) = outcome else { return }
             // Same task, same deadline: wait for the time-check window (cancelled by takeBreak,
             // cancelAll, purge or deinit like any render), then read the clock and render the line.
@@ -762,6 +777,7 @@ public actor DJBreakPreparer {
         rearmed.removeAll()
         taken.removeAll()
         breakOwner.removeAll()
+        preparedWhileDenied.removeAll()
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
@@ -840,6 +856,7 @@ public actor DJBreakPreparer {
         taken.formIntersection(kept)
         openForRearm.formIntersection(kept)   // a dropped boundary can't be re-armed by a seek
         rearmed.formIntersection(kept)
+        preparedWhileDenied.formIntersection(kept)
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
@@ -884,7 +901,27 @@ public actor DJBreakPreparer {
         return dropped
     }
 
+    /// Access was granted after boundary `k` was prepared on-device because the cloud-voice
+    /// check was denied (Nova, #267: an 18+ "yes" mid-session). If `k` is still untaken, its
+    /// result is a ready on-device break, and the check now allows the cloud voice, the result
+    /// is cleared (no skip is reported) and `true` is returned so the session can prepare it
+    /// again. Anything else: `false`, and the on-device break stays.
+    public func releaseBreakPreparedWhileDenied(afterTrack k: Int) -> Bool {
+        guard eligibleForUpgrade(k), !cloudVoiceWithdrawn, eligibleForUpgrade(k) else { return false }
+        preparedWhileDenied.remove(k)
+        tasks[k] = nil      // finished (its result is set); `prepare` needs the slot free
+        results[k] = nil
+        return true
+    }
+
+    private func eligibleForUpgrade(_ k: Int) -> Bool {
+        guard preparedWhileDenied.contains(k), !taken.contains(k),
+              case .ready(let ready)? = results[k] else { return false }
+        return !usesCloudVoice(ready)
+    }
+
     /// True when there is a consent check and it reads "not granted" now.
+    /// The closure may also include the 18+ answer (#267): unanswered or no is a withdrawal.
     private var cloudVoiceWithdrawn: Bool { cloudVoiceConsent.map { !$0() } ?? false }
 
     /// Whether any clip of `prepared` came from a route of this renderer that is not local and
@@ -920,9 +957,14 @@ public actor DJBreakPreparer {
         timeChecks[k] != nil || timeCheckDrops[k] != nil || timeCheckDeadlines[k] != nil
     }
 
-    private func finish(_ k: Int, _ outcome: DJBreakOutcome) {
+    private func finish(_ k: Int, _ outcome: DJBreakOutcome, preparedWhileDenied denied: Bool = false) {
         guard results[k] == nil, tasks[k] != nil else { return }  // already taken, cancelled or purged
         results[k] = outcome
+        if denied, case .ready(let ready) = outcome, !usesCloudVoice(ready) {
+            preparedWhileDenied.insert(k)
+        } else {
+            preparedWhileDenied.remove(k)
+        }
         switch outcome {
         case .ready(let b): emit(.prepared(afterTrack: k, includesBriefing: b.includesBriefing, seconds: b.measuredSeconds))
         case .skipped(let reason): emit(.skipped(afterTrack: k, reason))

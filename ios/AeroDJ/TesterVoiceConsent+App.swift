@@ -227,9 +227,13 @@ private struct CloudVoiceConsentSheet: View {
 enum TesterCloudVoiceConsentHooks {
     /// The preparer's per-take consent check: tester and owner A/B builds only.
     static var preparerConsent: (@Sendable () -> Bool)? {
-        #if AERODJ_TESTER_VOICE || AERODJ_OWNER_AB
+        #if AERODJ_OWNER_AB
         let store = CloudVoiceConsentApp.store
         return { store.isGranted }
+        #elseif AERODJ_TESTER_VOICE
+        let store = CloudVoiceConsentApp.store
+        let age = PaidVoiceAgeStore.live
+        return { store.isGranted && age.isAdultConfirmed }
         #else
         return nil
         #endif

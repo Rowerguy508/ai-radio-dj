@@ -161,8 +161,19 @@ extension VoiceRenderer {
     /// `.allLines` after copy v2 is accepted, `.noLines` for v1 only, undecided, declined or off.
     /// The tester and owner A/B builds both build their live renderer this way (#433). -Fry
     public func gated(by store: CloudVoiceConsentStore) -> VoiceRenderer {
+        gated(by: store, age: nil)
+    }
+
+    /// Same as `gated(by:)`, with the 18+ answer in front of the consent scope: until `age`
+    /// confirms adult, the scope is `.noLines`, so no cue leaves the device (#267). Pass `nil`
+    /// (or an age that `PaidVoiceAgeGate.allowsCloudVoice` accepts) to keep today's consent-only
+    /// rule. Owner A/B builds should pass `nil` (the owner trial is not age-gated).
+    public func gated(by store: CloudVoiceConsentStore, age: (any PaidVoiceAgeProviding)?) -> VoiceRenderer {
         VoiceRenderer(routes: routes, budget: budget, cache: cache, revocations: revocations,
-                      cloudScope: { store.scope })
+                      cloudScope: {
+                          if let age, !PaidVoiceAgeGate.allowsCloudVoice(age) { return .noLines }
+                          return store.scope
+                      })
     }
 }
 
