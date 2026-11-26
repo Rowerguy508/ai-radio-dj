@@ -302,17 +302,28 @@ public enum LatinHostScriptRules {
     /// first (Echo's #670 review). A removed name leaves an empty gap, so the words on either
     /// side never join into a phrase. A name that covers the whole line is never removed, so
     /// `names: [line]` cannot hide the line's own hype, and a repeat ("Bomba, una bomba.")
-    /// still counts.
+    /// still counts. A name inside a longer name that was already removed is skipped, so
+    /// names ["La Bomba", "Bomba"] on "La Bomba, una bomba." remove "La Bomba" only and the
+    /// repeat still counts (Echo's overlapping-names follow-up).
     static func hostWords(_ lineWords: [Substring], names: [String]) -> [Substring] {
         var w = lineWords
+        var stripped: [[Substring]] = []
         let nameWords = names.map { Self.words(folded($0)) }.filter { !$0.isEmpty }
             .sorted { $0.count > $1.count }
         for n in nameWords where n.count < lineWords.count && w.count >= n.count {
+            if stripped.contains(where: { containsWords($0, n) }) { continue }
             if let i = (0...(w.count - n.count)).first(where: { w[$0..<($0 + n.count)].elementsEqual(n) }) {
                 w.replaceSubrange(i..<(i + n.count), with: [""])
+                stripped.append(n)
             }
         }
         return w
+    }
+
+    /// True when `inner` appears as whole words in `outer`.
+    static func containsWords(_ outer: [Substring], _ inner: [Substring]) -> Bool {
+        guard !inner.isEmpty, outer.count >= inner.count else { return false }
+        return (0...(outer.count - inner.count)).contains { outer[$0..<($0 + inner.count)].elementsEqual(inner) }
     }
 
     /// Text-only checks, shared with AI output that has no segments.

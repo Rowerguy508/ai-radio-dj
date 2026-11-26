@@ -240,6 +240,21 @@ final class LatinHostTests: XCTestCase {
         XCTAssertTrue(LatinHostPromptRules.acceptsOutput("La Joya mejor.", genre: nil, names: ["Joya"]))
     }
 
+    /// Echo's #670 follow-up: a name inside a longer name already removed is skipped, so it
+    /// cannot also hide the line's own repeat. Names that only share a word are both removed.
+    func testANameInsideALongerRemovedNameIsSkipped() {
+        for names in [["La Bomba", "Bomba"], ["Bomba", "La Bomba"]] {
+            XCTAssertEqual(LatinHostScriptRules.textProblems("La Bomba, una bomba.", genre: nil, names: names),
+                           [.hype("bomba")], "\(names)")
+            XCTAssertFalse(LatinHostPromptRules.acceptsOutput("La Bomba, una bomba.", genre: nil, names: names))
+        }
+        XCTAssertEqual(LatinHostScriptRules.textProblems("El Mejor Día, el mejor.", genre: nil,
+                                                         names: ["El Mejor Día", "El Mejor"]), [.hype("el mejor")])
+        let both = "La Bomba de Bomba Estéreo."
+        XCTAssertEqual(LatinHostScriptRules.textProblems(both, genre: nil, names: ["La Bomba", "Bomba Estéreo"]), [])
+        XCTAssertTrue(LatinHostPromptRules.acceptsOutput(both, genre: nil, names: ["La Bomba", "Bomba Estéreo"]))
+    }
+
     /// Echo's #670 review: the copy and the AI genre notes have no song data, so neither may name
     /// instruments, tempo, a genre for the song, or a verdict on it.
     private let inventedFacts = ["metales", "horn", "piano", "percus", "guitar", "guitarra", "bajar el ritmo",
