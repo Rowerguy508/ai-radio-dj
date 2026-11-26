@@ -231,13 +231,21 @@ public actor SharedInboxReview: ContextSource {
     public var isBackupOptedIn: Bool { store?.isBackupOptedIn ?? false }
 
     /// #426 Echo's blocker (-Sentinel): saves after a change that has already been applied and only
-    /// reduces exposure (exclude, delete, edit). If the backup exclusion can't be verified, nothing
-    /// is written: the review file is removed and every entry drops to pending, not reconfirmed,
-    /// so a relaunch can't bring back an approval or a "Read it anyway" the change revoked.
+    /// reduces exposure (exclude, delete, edit). If the save fails, nothing may keep an approval:
+    /// the saved choices are removed (`removeSavedChoices`, which fails closed and never throws)
+    /// and every entry drops to pending, not reconfirmed, so a relaunch can't bring back an
+    /// approval or a "Read it anyway" the change revoked.
+    ///
+    /// #671 (-Atlas): for ANY failure, not only `backupExclusionUnverified`. A save can also fail on
+    /// the exclusion mark throwing, a full or unwritable disk, a failed replace, or a revocation
+    /// marker that can't be cleared. Before, those propagated with the stale approval still in
+    /// `state.json`, and a relaunch loaded it as approved. Now every one of them takes the same
+    /// reset and throws `reviewChoicesResetUnverified`. The underlying error is dropped, so no path
+    /// or error text reaches the alert or a log.
     private func persistReducingExposure() throws {
         do {
             try persist()
-        } catch SharedReviewError.backupExclusionUnverified {
+        } catch {
             for i in entries.indices {
                 entries[i].decision = .pending
                 entries[i].isReconfirmed = false
