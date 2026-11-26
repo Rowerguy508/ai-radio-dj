@@ -351,6 +351,36 @@ final class SessionOrdinaryCapReportTests: XCTestCase {
         XCTAssertFalse(session.ordinaryCapReport.skippedOverCap.contains(k))
     }
 
+    #if DEBUG || AERODJ_P0_DIAG
+    /// #329 (2) (-Fry): the boundary's log line from a real trimmed break carries no line text
+    /// (aired or trimmed), no cue ID and no song ID: counts and reason codes only.
+    func testCapReportLogLineCarriesNoBreakText() async throws {
+        let (session, preparer, tracks) = await makeSession(seconds: ["Rain later": 3.0], defaultSeconds: 5.5)
+        let (k, planned) = try firstTrimmableBreak(in: session)
+
+        let waitTask = Task { await waitForPrepared(preparer: preparer, afterTrack: k) }
+        await Task.yield()
+        await session.songStarted(index: k, remaining: .seconds(10))
+        await waitTask.value
+        let rawAired = await session.naturalBoundary(afterTrack: k)
+        let aired = try XCTUnwrap(rawAired)
+        XCTAssertFalse(aired.trimmedCueIDs.isEmpty, "precondition: the break was trimmed")
+
+        let line = try XCTUnwrap(OrdinaryCapReportLog.record(session.ordinaryCapReport, afterTrack: k))
+        XCTAssertEqual(line, "AeroDJ.dj capReport after=\(k) trimmed=\(aired.trimmedCueIDs.count) overCap=0"
+                           + " timeCheckDrop=none openerTime=none")
+        OrdinaryCapReportLogTests.assertShape(line)
+        for cue in planned.cues {
+            XCTAssertFalse(line.contains(cue.text), "log line carries cue text")
+            XCTAssertFalse(line.contains(cue.id.uuidString), "log line carries a cue ID")
+        }
+        for track in tracks {
+            XCTAssertFalse(line.contains(track.id), "log line carries a song ID")
+            XCTAssertFalse(line.contains(track.title), "log line carries a song title")
+        }
+    }
+    #endif
+
     func testTrimmedCueIDsSurviveNaturalBoundaryCueFilterRebuild() async throws {
         let (session, preparer, tracks) = await makeSession(seconds: ["Rain later": 3.0], defaultSeconds: 5.5)
         let (k, planned) = try firstTrimmableBreak(in: session)
