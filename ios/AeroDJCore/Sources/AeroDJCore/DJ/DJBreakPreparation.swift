@@ -127,6 +127,32 @@ public enum DJBreakOutcome: Equatable, Sendable {
     case skipped(DJBreakSkipReason)
 }
 
+/// What `DJSessionPlan.capReport(afterBreaks:)` reads from one boundary's outcome, and nothing
+/// else (Sentinel's B1 on #603): the render-time dropped time check (cue id and reason only), how
+/// many optional lines the measured cap trimmed, and whether the break was skipped over the
+/// ordinary budget. No cue text, no clip audio, no `PreparedDJBreak`, so a session can keep one
+/// per aired break without holding personal content past a purge.
+public struct DJBreakCapOutcome: Equatable, Sendable {
+    public var droppedTimeCheck: DJTimeCheckDrop?
+    public var trimmedCount: Int
+    public var overBreakBudget: Bool
+
+    public init(droppedTimeCheck: DJTimeCheckDrop? = nil, trimmedCount: Int = 0, overBreakBudget: Bool = false) {
+        self.droppedTimeCheck = droppedTimeCheck
+        self.trimmedCount = trimmedCount
+        self.overBreakBudget = overBreakBudget
+    }
+
+    public init(_ outcome: DJBreakOutcome) {
+        switch outcome {
+        case .ready(let prepared):
+            self.init(droppedTimeCheck: prepared.droppedTimeCheck, trimmedCount: prepared.trimmedCueIDs.count)
+        case .skipped(let reason):
+            self.init(overBreakBudget: reason == .overBreakBudget)
+        }
+    }
+}
+
 /// Renders planned breaks ahead of time and hands them out at boundaries without blocking.
 public actor DJBreakPreparer {
     private let renderer: VoiceRenderer
@@ -1088,19 +1114,23 @@ extension DJSessionPlan {
     /// `ordinaryCapReport` plus what the measured-audio cap left out: optional lines trimmed at
     /// render time, and ordinary breaks skipped as `.overBreakBudget` (music-only boundary).
     public func capReport(afterBreaks outcomes: [Int: DJBreakOutcome]) -> OrdinaryBreakCapReport {
+        capReport(afterBreaks: outcomes.mapValues(DJBreakCapOutcome.init))
+    }
+
+    /// The same report from the slim per-boundary values a session keeps (Sentinel's B1 on #603).
+    public func capReport(afterBreaks outcomes: [Int: DJBreakCapOutcome]) -> OrdinaryBreakCapReport {
         var report = ordinaryCapReport
         for djBreak in breaks where !djBreak.hasBriefing {
             let k = djBreak.afterTrack
-            if case .ready(let prepared)? = outcomes[k], let drop = prepared.droppedTimeCheck {
+            guard let outcome = outcomes[k] else { continue }
+            if let drop = outcome.droppedTimeCheck {
                 report.droppedTimeChecks[k] = drop
             }
-            switch outcomes[k] {
-            case .ready(let prepared)? where !prepared.trimmedCueIDs.isEmpty:
-                report.trimmedOptionalLines[k, default: 0] += prepared.trimmedCueIDs.count
-            case .skipped(.overBreakBudget)?:
+            if outcome.overBreakBudget {
                 report.trimmedOptionalLines[k] = nil
                 if !report.skippedOverCap.contains(k) { report.skippedOverCap.append(k) }
-            default: break
+            } else if outcome.trimmedCount > 0 {
+                report.trimmedOptionalLines[k, default: 0] += outcome.trimmedCount
             }
         }
         report.skippedOverCap.sort()
