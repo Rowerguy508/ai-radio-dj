@@ -234,24 +234,30 @@ class Overlap(NoNetwork):
 
 
 class DeviceLine(NoNetwork):
-    """#556 acceptance: the PR body has a line starting `Device: NOT TESTED` (#671 -Atlas)."""
+    """#556 acceptance and Echo's #678 non-blocker: NOT TESTED is unbound; TESTED names the head."""
+
+    HEAD = "6d5a15054d340a344e47810e928e6ce617dc8ea6"
+
+    def _ready(self, device_line, head_sha=None):
+        f = fixture()
+        f["pr"] = dict(f["pr"], device_line=device_line, head_sha=head_sha if head_sha is not None else self.HEAD)
+        return m.build_report(**f)
 
     def test_accepts_the_two_exact_forms_anywhere_in_the_body(self):
-        self.assertEqual(m.device_line("Summary\n\nDevice: NOT TESTED\n\n-Fry"), "NOT TESTED")
-        self.assertEqual(m.device_line("Device: NOT TESTED on a phone"), "NOT TESTED")
-        self.assertEqual(m.device_line("a\r\nDevice: TESTED on an iPhone 17\r\nb"), "TESTED")
+        self.assertEqual(m.parse_device_line("Summary\n\nDevice: NOT TESTED\n\n-Fry"), {"status": "NOT TESTED"})
+        self.assertEqual(m.parse_device_line("Device: NOT TESTED on a phone"), {"status": "NOT TESTED"})
+        self.assertEqual(m.parse_device_line("a\r\nDevice: TESTED " + self.HEAD + "\r\nb"),
+                         {"status": "TESTED", "named": self.HEAD})
 
     def test_everything_else_is_missing(self):
         for body in (None, "", "no such line", "Device check: NOT TESTED", "device: NOT TESTED",
                      "  Device: NOT TESTED", "- Device: NOT TESTED", "> Device: NOT TESTED",
                      "Device:NOT TESTED", "Device: NOT TESTEDX", "Device: TESTEDX", "Device: untested",
                      "Notes: Device: NOT TESTED", "Device: NOT"):
-            self.assertIsNone(m.device_line(body), repr(body))
+            self.assertIsNone(m.parse_device_line(body), repr(body))
 
     def test_a_missing_device_line_is_the_only_reason_when_all_else_is_ready(self):
-        f = fixture()
-        f["pr"] = dict(f["pr"], device_line=None)
-        r = m.build_report(**f)
+        r = self._ready(None)
         self.assertFalse(r["ready"])
         self.assertEqual(r["reasons"], ["PR body has no line starting `Device: NOT TESTED` (or `Device: TESTED`)"])
         self.assertIn("Device line: missing", m.render(r))
@@ -273,8 +279,110 @@ class DeviceLine(NoNetwork):
             return {"content": "bmFtZTogeAo="}  # base64 of "name: x\n"
         with mock.patch.object(m, "gh_api", side_effect=api), mock.patch.object(m, "gh_list", return_value=[]):
             got = m.fetch("o/r", 9)
-        self.assertEqual(got["pr"]["device_line"], "NOT TESTED")
+        self.assertEqual(got["pr"]["device_line"], {"status": "NOT TESTED"})
         self.assertNotIn("secret body text", json.dumps(got))
+
+    def test_tested_matching_full_sha(self):
+        parsed = m.parse_device_line("Notes\nDevice: TESTED " + self.HEAD + " on a Duo")
+        self.assertEqual(parsed, {"status": "TESTED", "named": self.HEAD})
+        r = self._ready(parsed)
+        self.assertTrue(r["ready"], r["reasons"])
+        self.assertIn("Device line: Device: TESTED " + self.HEAD, m.render(r))
+
+    def test_tested_matching_short_sha(self):
+        parsed = m.parse_device_line("Device: TESTED 6d5a150")
+        self.assertEqual(parsed, {"status": "TESTED", "named": "6d5a150"})
+        r = self._ready(parsed)
+        self.assertTrue(r["ready"], r["reasons"])
+        self.assertIn("Device line: Device: TESTED 6d5a150", m.render(r))
+
+    def test_tested_stale_sha(self):
+        parsed = m.parse_device_line("Device: TESTED e40db684")
+        r = self._ready(parsed)
+        self.assertFalse(r["ready"])
+        self.assertEqual(r["reasons"], ["Device line: stale (names e40db684, head 6d5a1505)"])
+        self.assertIn("Device line: stale (names e40db684, head 6d5a1505)", m.render(r))
+
+    def test_tested_missing_sha(self):
+        parsed = m.parse_device_line("Device: TESTED on an iPhone 17")
+        self.assertEqual(parsed, {"status": "TESTED", "named": None, "defect": "missing-sha"})
+        r = self._ready(parsed)
+        self.assertFalse(r["ready"])
+        self.assertEqual(r["reasons"], ["Device line: TESTED with no sha (head 6d5a1505)"])
+
+    def test_tested_too_short_prefix(self):
+        parsed = m.parse_device_line("Device: TESTED 6d5a15")
+        self.assertEqual(parsed, {"status": "TESTED", "named": "6d5a15", "defect": "too-short"})
+        r = self._ready(parsed)
+        self.assertFalse(r["ready"])
+        self.assertEqual(r["reasons"], ["Device line: TESTED sha too short (names 6d5a15, head 6d5a1505)"])
+
+    def test_tested_uppercase_sha_matches(self):
+        parsed = m.parse_device_line("Device: TESTED 6D5A15054D340A344E47810E928E6CE617DC8EA6")
+        self.assertEqual(parsed["named"], self.HEAD)
+        r = self._ready(parsed)
+        self.assertTrue(r["ready"], r["reasons"])
+        self.assertIn("Device line: Device: TESTED " + self.HEAD, m.render(r))
+
+    def test_indented_or_device_check_line_still_does_not_count(self):
+        for body in ("  Device: TESTED " + self.HEAD,
+                     "Device check: TESTED " + self.HEAD,
+                     "> Device: TESTED " + self.HEAD,
+                     "- Device: NOT TESTED"):
+            self.assertIsNone(m.parse_device_line(body), repr(body))
+        r = self._ready(m.parse_device_line("Device check: TESTED " + self.HEAD))
+        self.assertFalse(r["ready"])
+        self.assertIn("PR body has no line starting `Device: NOT TESTED`", r["reasons"][0])
+
+    def test_not_tested_is_ok_at_any_head_and_ignores_a_sha(self):
+        parsed = m.parse_device_line("Device: NOT TESTED " + self.HEAD)
+        self.assertEqual(parsed, {"status": "NOT TESTED"})
+        r = self._ready(parsed)  # sha on the line is ignored; fixture head still signs
+        self.assertTrue(r["ready"], r["reasons"])
+        self.assertIn("Device line: Device: NOT TESTED", m.render(r))
+        # A later push keeps a true NOT TESTED line ready; no body edit. Signs are sha-bound,
+        # so this checks the device line only.
+        other = "e40db68411f7f058da8cd3d435dee97d32d5ac4b"
+        display, reason = m.assess_device_line({"status": "NOT TESTED"}, other)
+        self.assertEqual(display, "Device: NOT TESTED")
+        self.assertIsNone(reason)
+        _, tested_reason = m.assess_device_line({"status": "TESTED", "named": self.HEAD[:8]}, other)
+        self.assertTrue(tested_reason.startswith("Device line: stale"), tested_reason)
+
+    def test_tested_without_a_head_sha_fails_closed(self):
+        parsed = m.parse_device_line("Device: TESTED " + self.HEAD)
+        r = self._ready(parsed, head_sha="")
+        self.assertFalse(r["ready"])
+        self.assertIn("Device line: head sha unavailable", r["reasons"])
+        for head in (None, "", "not-a-sha", "abc"):
+            _, reason = m.assess_device_line(parsed, head)
+            self.assertEqual(reason, "Device line: head sha unavailable", repr(head))
+
+    def test_tested_ambiguous_sha_tokens_fail_closed(self):
+        parsed = m.parse_device_line("Device: TESTED 6d5a150 e40db684")
+        self.assertEqual(parsed["defect"], "ambiguous")
+        r = self._ready(parsed)
+        self.assertFalse(r["ready"])
+        self.assertEqual(r["reasons"],
+                         ["Device line: TESTED sha ambiguous (names 6d5a150 and e40db684, head 6d5a1505)"])
+
+    def test_fetch_tested_keeps_only_the_named_sha(self):
+        def api(path):
+            if path.endswith("/pulls/9"):
+                return {"head": {"sha": self.HEAD}, "base": {"ref": "integration/device-duo"}, "state": "open",
+                        "merged_at": None, "changed_files": 0,
+                        "body": "secret body\nDevice: TESTED 6D5A150 on a Duo\nmore secret"}
+            if "/commits/integration" in path:
+                return {"sha": "b" * 40}
+            if "/compare/" in path:
+                return {"merge_base_commit": {"sha": "b" * 40}, "files": []}
+            return {"content": "bmFtZTogeAo="}
+        with mock.patch.object(m, "gh_api", side_effect=api), mock.patch.object(m, "gh_list", return_value=[]):
+            got = m.fetch("o/r", 9)
+        self.assertEqual(got["pr"]["device_line"], {"status": "TESTED", "named": "6d5a150"})
+        blob = json.dumps(got)
+        self.assertNotIn("secret", blob)
+        self.assertNotIn("on a Duo", blob)
 
 
 class Verdict(NoNetwork):
