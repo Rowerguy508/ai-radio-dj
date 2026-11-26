@@ -19,6 +19,11 @@ final class LatinHostWiringTests: XCTestCase {
 
     private func session(_ config: StationConfiguration, styles: Set<SpanishVoiceStyle>?,
                          seed: UInt64 = 11) async -> DJBreakSession {
+        await rig(config, styles: styles, seed: seed).0
+    }
+
+    private func rig(_ config: StationConfiguration, styles: Set<SpanishVoiceStyle>?,
+                     seed: UInt64 = 11) async -> (DJBreakSession, StationConfigurationModel) {
         let station = StationConfigurationModel(
             store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config))),
             consent: StaticIntegrationConsent([:]))
@@ -27,10 +32,11 @@ final class LatinHostWiringTests: XCTestCase {
                                      budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence())
         if let styles {
-            return DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: seed,
-                                  hour: { 14 }, spanishVoiceStyles: styles)
+            return (DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: seed,
+                                   hour: { 14 }, spanishVoiceStyles: styles), station)
         }
-        return DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: seed, hour: { 14 })
+        return (DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: seed,
+                               hour: { 14 }), station)
     }
 
     /// Every planned cue, in boundary order, as its boundary and text (cue ids are random UUIDs).
@@ -113,6 +119,50 @@ final class LatinHostWiringTests: XCTestCase {
         let openings = s.testWriterTone.closing.map { String($0.prefix { $0 != "{" }) }.filter { $0.count > 3 }
         XCTAssertTrue(plan(s).contains { cue in openings.contains { cue.contains("|" + $0) } },
                       "a planned break closes with a Latin host line")
+        await s.stop()
+    }
+
+    /// Orion's #680 ask: the session's default inventory is empty. A Spanish preference on a
+    /// session built without `spanishVoiceStyles` (every app caller today) stays English.
+    func testTheDefaultVoiceInventoryIsEmptySoEveryHostStaysEnglish() async {
+        var config = StationConfiguration(genres: ["salsa"], commentary: .frequent)
+        config.hostLanguage = .init(language: .spanish, spanglish: .conversational, voiceStyle: .caribbean)
+        let s = await session(config, styles: nil)
+        XCTAssertEqual(s.testWriterTone, .warm, "no styles passed: the resolver falls back to English")
+        await s.queueStarted(djTracks(40))
+        let reference = await session(StationConfiguration(genres: ["salsa"], commentary: .frequent), styles: nil)
+        await reference.queueStarted(djTracks(40))
+        XCTAssertEqual(plan(s), plan(reference))
+        await s.stop(); await reference.stop()
+    }
+
+    /// Atlas's and Echo's #680 review: a mid-session change that moves only the hosted tone (same
+    /// personality and cadence; here the Latin genre, which picks the genre-tagged closings)
+    /// re-plans the breaks to come in the new tone. Kills the `stationTone() != writer.tone`
+    /// replan-clause mutation.
+    func testAMidSessionHostChangeRePlansInTheNewTone() async {
+        var config = StationConfiguration(genres: ["salsa"], commentary: .frequent)
+        config.hostLanguage = .init(language: .spanish)
+        let styles: Set<SpanishVoiceStyle> = [.neutralLatinAmerican]
+        let host = DJHostLanguageResolver.resolve(config.hostLanguage, availableStyles: styles)
+        let salsa = EditorialTone.warm.hosted(by: host, genre: .salsa)
+        let bachata = EditorialTone.warm.hosted(by: host, genre: .bachata)
+        XCTAssertNotEqual(salsa, bachata, "precondition: the genre changes the Latin closing pool")
+        let (s, station) = await rig(config, styles: styles)
+        await s.queueStarted(djTracks(60))
+        await s.songStarted(index: 12, remaining: .seconds(180))
+        XCTAssertEqual(s.testWriterTone, salsa)
+        let changes = station.changes()
+        await station.setGenres(["bachata"])
+        await station.saveChanges()
+        var handled = false
+        for await change in changes where change.active.genres == ["bachata"] {
+            await s.stationChanged(change)
+            handled = true
+            break
+        }
+        XCTAssertTrue(handled, "the save published a change")
+        XCTAssertEqual(s.testWriterTone, bachata, "the writer follows the station's hosted tone")
         await s.stop()
     }
 }

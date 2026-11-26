@@ -2,8 +2,10 @@ import Foundation
 
 // #196 (-Fry): Latin host persona, host language and Spanglish controls. Core only: the model,
 // the copy rules and the AI-path style fields. No UI here (#198 owns the controls) and no voice
-// inventory (#197 supplies which Spanish voices the device really has). Nothing in this file is
-// wired into `DJBreakSession` yet, so today's English breaks are unchanged.
+// inventory (#197 supplies which Spanish voices the device really has). `DJBreakSession` reads
+// the hosted tone through `EditorialTone.forStation` (#680), dark by default: with no Spanish
+// voice passed (today's only value) every host resolves to English, so today's English breaks
+// are unchanged byte for byte.
 //
 // Spec rules this file encodes (#190 §2, Latin-station requirements):
 // - Latin host is an explicit choice. It may be *suggested* from the station's own genre tags,
