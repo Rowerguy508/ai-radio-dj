@@ -34,12 +34,15 @@ class JobNames(NoNetwork):
                          ["changes", "AeroDJCore tests", "Release archive (Xcode 27.2, unsigned)"])
         self.assertEqual(m.job_check_names(f["workflows"][1]["text"]), ["checks"])
 
-    def test_repo_workflows_give_8_ios_jobs_and_2_ci_jobs(self):
+    def test_repo_workflows_give_9_ios_jobs_and_2_ci_jobs(self):
         with open(os.path.join(ROOT, ".github/workflows/ios.yml")) as f:
             ios = m.job_check_names(f.read())
         with open(os.path.join(ROOT, ".github/workflows/ci.yml")) as f:
             ci = m.job_check_names(f.read())
-        self.assertEqual(len(ios), 8, ios)
+        # 9 since #596 added the hosted Duo UI job (it is continue-on-error in the workflow, but this
+        # report requires every job in ios.yml, the same 9/9 rule the sign watchers use).
+        self.assertEqual(len(ios), 9, ios)
+        self.assertIn("Duo UI tests (Xcode 27.2, iOS 27.2)", ios)
         self.assertIn("Release archive (Xcode 27.2, unsigned)", ios)
         self.assertIn("changes", ios)
         self.assertEqual(ci, ["checks", "tts-proxy"])
@@ -230,6 +233,50 @@ class Overlap(NoNetwork):
         self.assertEqual(m.overlap(["a"], []), [])
 
 
+class DeviceLine(NoNetwork):
+    """#556 acceptance: the PR body has a line starting `Device: NOT TESTED` (#671 -Atlas)."""
+
+    def test_accepts_the_two_exact_forms_anywhere_in_the_body(self):
+        self.assertEqual(m.device_line("Summary\n\nDevice: NOT TESTED\n\n-Fry"), "NOT TESTED")
+        self.assertEqual(m.device_line("Device: NOT TESTED on a phone"), "NOT TESTED")
+        self.assertEqual(m.device_line("a\r\nDevice: TESTED on an iPhone 17\r\nb"), "TESTED")
+
+    def test_everything_else_is_missing(self):
+        for body in (None, "", "no such line", "Device check: NOT TESTED", "device: NOT TESTED",
+                     "  Device: NOT TESTED", "- Device: NOT TESTED", "> Device: NOT TESTED",
+                     "Device:NOT TESTED", "Device: NOT TESTEDX", "Device: TESTEDX", "Device: untested",
+                     "Notes: Device: NOT TESTED", "Device: NOT"):
+            self.assertIsNone(m.device_line(body), repr(body))
+
+    def test_a_missing_device_line_is_the_only_reason_when_all_else_is_ready(self):
+        f = fixture()
+        f["pr"] = dict(f["pr"], device_line=None)
+        r = m.build_report(**f)
+        self.assertFalse(r["ready"])
+        self.assertEqual(r["reasons"], ["PR body has no line starting `Device: NOT TESTED` (or `Device: TESTED`)"])
+        self.assertIn("Device line: missing", m.render(r))
+
+    def test_a_pr_without_the_field_fails_closed(self):
+        f = fixture()
+        f["pr"].pop("device_line")
+        self.assertFalse(m.build_report(**f)["ready"])
+
+    def test_fetch_reads_the_line_from_the_body_and_never_keeps_the_body(self):
+        def api(path):
+            if path.endswith("/pulls/9"):
+                return {"head": {"sha": "a" * 40}, "base": {"ref": "integration/device-duo"}, "state": "open",
+                        "merged_at": None, "changed_files": 0, "body": "x\n\nDevice: NOT TESTED\nsecret body text"}
+            if "/commits/integration" in path:
+                return {"sha": "b" * 40}
+            if "/compare/" in path:
+                return {"merge_base_commit": {"sha": "b" * 40}, "files": []}
+            return {"content": "bmFtZTogeAo="}  # base64 of "name: x\n"
+        with mock.patch.object(m, "gh_api", side_effect=api), mock.patch.object(m, "gh_list", return_value=[]):
+            got = m.fetch("o/r", 9)
+        self.assertEqual(got["pr"]["device_line"], "NOT TESTED")
+        self.assertNotIn("secret body text", json.dumps(got))
+
+
 class Verdict(NoNetwork):
     def test_fixture_is_ready(self):
         r = m.build_report(**fixture())
@@ -237,6 +284,7 @@ class Verdict(NoNetwork):
         text = m.render(r)
         self.assertTrue(text.endswith("\nREADY"), text)
         self.assertIn("Signs (2/2 non-author at 6d5a1505)", text)
+        self.assertIn("Device line: Device: NOT TESTED", text)
         self.assertIn("Checks (4/4 green)", text)
         self.assertIn("  ok  CI / checks: success", text)
         self.assertNotIn("Vercel", text)  # only ios.yml and ci.yml jobs are required
@@ -246,13 +294,13 @@ class Verdict(NoNetwork):
         f["postings"] = f["postings"][:1]
         f["check_runs"] = [r for r in f["check_runs"] if r["name"] != "checks"]
         f["base_files"] = ["ios/AeroDJCore/Tests/AeroDJCoreTests/LatePollQueueEndTests.swift", "README.md"]
-        f["pr"] = dict(f["pr"], base="main")
+        f["pr"] = dict(f["pr"], base="main", device_line=None)
         r = m.build_report(**f)
         self.assertFalse(r["ready"])
         line = m.render(r).splitlines()[-1]
         self.assertTrue(line.startswith("NOT READY: "), line)
         for part in ("base is main", "1 required check(s) not green", "1/2 non-author signs",
-                     "1 file(s) also changed on the base"):
+                     "1 file(s) also changed on the base", "PR body has no line starting"):
             self.assertIn(part, line)
         self.assertIn("  ios/AeroDJCore/Tests/AeroDJCoreTests/LatePollQueueEndTests.swift", m.render(r))
 

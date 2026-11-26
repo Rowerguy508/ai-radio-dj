@@ -21,7 +21,10 @@ Prints, at the PR's exact head sha:
       changed since the merge-base (merge-base..base head). Any overlap makes the verdict NOT
       READY ("forward-merge or confirm the hunks are disjoint"), because the PR has not been
       tested against those base changes.
-  (d) READY or NOT READY, with every reason.
+  (d) device line: the PR body has a line that starts with `Device: NOT TESTED` (or the
+      device-tested form `Device: TESTED`). `Device check: ...` and an indented or quoted line do not
+      count. Missing is NOT READY (#556 acceptance; #671 -Atlas).
+  (e) READY or NOT READY, with every reason.
   Also warns (report-only, never a reason) when a commit author is outside ROSTER.
 
 Report-only: it is not a required check, writes no check run, and changes no branch protection.
@@ -50,6 +53,7 @@ MAX_PR_COMMITS = 250   # GitHub's pulls/N/commits limit: more than this and we c
 MAX_COMPARE_FILES = 300  # GitHub's compare file limit.
 
 SIGN_LINE = re.compile(r"^SIGN ([0-9a-fA-F]{8}|[0-9a-fA-F]{40}) -([A-Za-z][A-Za-z0-9]*)$")
+DEVICE_LINE = re.compile(r"^Device: (NOT TESTED|TESTED)(?![A-Za-z0-9])")
 CO_AUTHOR = re.compile(r"^Co-authored-by:\s*(.+?)\s*<[^>]*>\s*$", re.IGNORECASE | re.MULTILINE)
 
 
@@ -157,6 +161,16 @@ def commit_author_names(commits: list[dict]) -> set[str]:
     return names
 
 
+def device_line(body: str | None) -> str | None:
+    """`NOT TESTED` or `TESTED` when some body line starts exactly with `Device: NOT TESTED` or
+    `Device: TESTED`; None otherwise. `Device check: NOT TESTED` and indented lines never match."""
+    for line in (body or "").replace("\r\n", "\n").split("\n"):
+        found = DEVICE_LINE.match(line)
+        if found:
+            return found.group(1)
+    return None
+
+
 def parse_sign(body: str | None, head_sha: str) -> tuple[str | None, str | None]:
     """(Name, None) for a valid sign at `head_sha`, else (None, why-not) or (None, None) if not a sign."""
     if not body:
@@ -259,6 +273,8 @@ def verdict(*, pr: dict, checks: dict, signs: dict, overlap_files: list[str], wa
         reasons.append(f"base is {pr.get('base')}, not {TARGET_BASE}")
     if checks["bad"]:
         reasons.append(f"{len(checks['bad'])} required check(s) not green")
+    if not pr.get("device_line"):
+        reasons.append("PR body has no line starting `Device: NOT TESTED` (or `Device: TESTED`)")
     n = len(signs["valid"])
     if n < REQUIRED_SIGNS:
         reasons.append(f"{n}/{REQUIRED_SIGNS} non-author signs at this head")
@@ -277,6 +293,7 @@ def render(report: dict) -> str:
            f"Commit authors on the PR: {', '.join(report['author_display']) or '(none)'}",
            "", f"Checks ({len(checks['rows']) - len(checks['bad'])}/{len(checks['rows'])} green):"]
     out += [f"  {'ok ' if s in ('success', SKIP_GREEN) else 'NO '} {n}: {s}" for n, s in checks["rows"]]
+    out += ["", f"Device line: {('Device: ' + pr['device_line']) if pr.get('device_line') else 'missing'}"]
     out += ["", f"Signs ({len(signs['valid'])}/{REQUIRED_SIGNS} non-author at {pr['head_sha'][:8]}):"]
     out += [f"  ok  {n} {u}".rstrip() for n, u in signs["valid"].items()] or ["  (none)"]
     out += [f"  --  not counted: {r}" for r in signs["rejected"]]
@@ -342,7 +359,7 @@ def fetch(repo: str, number: int) -> dict:
     head = p["head"]["sha"]
     base_ref = p["base"]["ref"]
     pr = {"number": number, "head_sha": head, "base": base_ref, "state": p["state"],
-          "merged": bool(p.get("merged_at"))}
+          "merged": bool(p.get("merged_at")), "device_line": device_line(p.get("body"))}
     warnings: list[str] = []
     base_head = gh_api(f"repos/{repo}/commits/{base_ref}")["sha"]
     cmp_pr = gh_api(f"repos/{repo}/compare/{base_head}...{head}?per_page=1")
