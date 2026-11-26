@@ -442,14 +442,15 @@ Do not flip it earlier: until submission it is what gives iOS 26 TestFlight test
    answers 403 `no_entitlement` for existing `no_category_fallback` keys and legacy tester keys
    with no `tierReason` (logged `detail: "fallback_disabled"`, enum only; the client body is the
    same as any other `no_entitlement`). Category-2 keys (`testflight_category`, iOS 27+ TestFlight)
-   keep minting. Nothing is deleted: refusal happens at each mint, and issued install tokens
-   expire within 30 minutes.
+   keep minting. Nothing is deleted: refusal happens at each mint, and `/api/tts` re-checks the
+   key record on every request (the reserve script), so install tokens minted before the flip
+   stop at once with 401 `reattest` (logged `reason: "fallback_disabled"`) and nothing is charged.
 3. After the flip, iOS 26 testers need iOS 27 for cloud voice; on iOS 26 the app uses the
    on-device voice.
 4. Rollback: unset the variable (or set exactly `true`) and redeploy. Pre-flip fallback keys mint
    again; installs that registered while it was `false` have no tier and need delete + reinstall.
 
-Pinned by the `#407 launch state` and `#407 N1` tests in `test/install-token.test.ts`.
+Pinned by the `#407 launch state`, `#407 N1` and `#407: turning off no_category_fallback stops already-minted` tests in `test/install-token.test.ts`.
 
 ## `GET /api/flags` (public app flags, #525)
 
