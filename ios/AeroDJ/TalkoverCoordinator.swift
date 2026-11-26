@@ -414,7 +414,10 @@ final class TalkoverCoordinator {
         handedOut = nil
         guard let h = held, h.afterTrack == k else {
             interlude.abandonHandOut()
-            music.logBreakSkipped(after: k, reason: PlaybackLog.noBreakReason(djSession.lastNoBreak))
+            // #304: a no-duration song's skip was logged once at song start.
+            if let reason = PlaybackLog.boundarySkipToLog(djSession.lastNoBreak) {
+                music.logBreakSkipped(after: k, reason: reason)
+            }
             music.skipInterlude()
             return
         }
