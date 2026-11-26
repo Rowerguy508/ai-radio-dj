@@ -34,7 +34,7 @@ public enum SearchFailureCopy {
         case .timedOut:
             "Search took too long. Check your connection and try again."
         case .notAuthorized:
-            "AeroDJ needs access to Apple Music to search. You can allow it in Settings."
+            "\(AppName.display) needs access to Apple Music to search. You can allow it in Settings."
         case .notSignedIn:
             "Sign in to Apple Music to search for songs."
         case .privacyAcknowledgementRequired:

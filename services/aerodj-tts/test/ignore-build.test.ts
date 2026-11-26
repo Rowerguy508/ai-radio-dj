@@ -5,7 +5,7 @@
  * tip commit. Integration 6307545 (the #273 merge, ray-do only) sat on top of
  * 96aa006 (the #256 merge, proxy changes) in one push, so Production was skipped.
  * The script now diffs VERCEL_GIT_PREVIOUS_SHA (last successful deploy for the
- * branch) against HEAD over services/aerodj-tts/, and fails open (builds) on
+ * branch) against HEAD over services/aerodj-tts/, and fails toward building on
  * anything it can't prove. Exit 0 = skip, exit 1 = build.
  *
  * Each case builds a throwaway git repo shaped like this one and runs the real
@@ -34,6 +34,7 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_TERMINAL_PROMPT: '0',
 };
 delete GIT_ENV.VERCEL_GIT_PREVIOUS_SHA;
+delete GIT_ENV.VERCEL_ENV;
 
 let tmpRoot = '';
 let counter = 0;
@@ -88,8 +89,14 @@ function newRepo(): string {
 
 interface Result { code: number | null; out: string }
 
+/**
+ * Runs the script as a Preview deploy unless extraEnv sets VERCEL_ENV: only
+ * preview/development ever compare against PREV (Orion's report, see the
+ * 'VERCEL_ENV' describe below). `VERCEL_ENV: undefined` runs it with VERCEL_ENV unset.
+ */
 function run(repo: string, prev: string | undefined, cwdRel = TTS, extraEnv: NodeJS.ProcessEnv = {}): Result {
-  const env: NodeJS.ProcessEnv = { ...GIT_ENV, IGNORE_BUILD_FETCH_TIMEOUT_S: '10', ...extraEnv };
+  const env: NodeJS.ProcessEnv = { ...GIT_ENV, IGNORE_BUILD_FETCH_TIMEOUT_S: '10', VERCEL_ENV: 'preview', ...extraEnv };
+  if (Object.prototype.hasOwnProperty.call(extraEnv, 'VERCEL_ENV') && extraEnv.VERCEL_ENV === undefined) delete env.VERCEL_ENV;
   if (prev !== undefined) env.VERCEL_GIT_PREVIOUS_SHA = prev;
   const r = spawnSync('bash', [SCRIPT], { cwd: path.join(repo, cwdRel), env, encoding: 'utf8', timeout: 30_000 });
   return { code: r.status, out: `${r.stdout}${r.stderr}` };
@@ -110,9 +117,11 @@ function expectCode(r: Result, code: number, why: string): void {
  * success (SHIM_FETCH_NOOP), make `fetch --deepen=N` or `fetch --unshallow` fail
  * (SHIM_FAIL_DEEPEN, SHIM_FAIL_UNSHALLOW), or make either one hang for N seconds
  * (SHIM_SLEEP_DEEPEN, SHIM_SLEEP_UNSHALLOW) so the script's timeout has to cut it off.
+ * A `timeout` wrapper next to it records the bound each fetch got (SHIM_TIMEOUT_LOG)
+ * and then runs the real timeout(1).
  */
 let shimDir = '';
-interface ShimOpts { fetchNoop?: boolean; failDeepen?: boolean; failUnshallow?: boolean; sleepDeepen?: number; sleepUnshallow?: number }
+interface ShimOpts { fetchNoop?: boolean; failDeepen?: boolean; failUnshallow?: boolean; sleepDeepen?: number; sleepUnshallow?: number; timeoutLog?: string }
 function shimEnv(log: string, opts: ShimOpts = {}): NodeJS.ProcessEnv {
   return {
     PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
@@ -122,6 +131,7 @@ function shimEnv(log: string, opts: ShimOpts = {}): NodeJS.ProcessEnv {
     ...(opts.failUnshallow ? { SHIM_FAIL_UNSHALLOW: '1' } : {}),
     ...(opts.sleepDeepen ? { SHIM_SLEEP_DEEPEN: String(opts.sleepDeepen) } : {}),
     ...(opts.sleepUnshallow ? { SHIM_SLEEP_UNSHALLOW: String(opts.sleepUnshallow) } : {}),
+    ...(opts.timeoutLog ? { SHIM_TIMEOUT_LOG: opts.timeoutLog } : {}),
   };
 }
 function shimCalls(log: string): string[] {
@@ -131,6 +141,7 @@ function shimCalls(log: string): string[] {
 before(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tts-ignore-build-'));
   const realGit = execFileSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  const realTimeout = execFileSync('bash', ['-c', 'command -v timeout'], { encoding: 'utf8' }).trim();
   shimDir = path.join(tmpRoot, 'shim');
   fs.mkdirSync(shimDir);
   fs.writeFileSync(
@@ -148,6 +159,16 @@ before(() => {
       '  esac',
       'done',
       `exec ${JSON.stringify(realGit)} "$@"`,
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(shimDir, 'timeout'),
+    [
+      '#!/usr/bin/env bash',
+      'if [ -n "${SHIM_TIMEOUT_LOG:-}" ]; then printf "%s\\n" "$1" >> "$SHIM_TIMEOUT_LOG"; fi',
+      `exec ${JSON.stringify(realTimeout)} "$@"`,
       '',
     ].join('\n'),
     { mode: 0o755 },
@@ -264,7 +285,7 @@ describe('vercel-ignore-build.sh', () => {
     expectCode(run(changed.clone, changed.prev), BUILD, 'fetched PREV, proxy changed');
   });
 
-  test('PREV outside the clone and the fetch fails -> BUILD (fail open)', () => {
+  test('PREV outside the clone and the fetch fails -> BUILD (fails toward building)', () => {
     // Only ray-do changed, so a script that guessed "skip" would be wrong to do so.
     const { clone, prev } = shallowSetup(false);
     git(clone, 'remote', 'set-url', 'origin', `file://${path.join(tmpRoot, 'does-not-exist.git')}`);
@@ -289,7 +310,7 @@ describe('vercel-ignore-build.sh', () => {
     fs.mkdirSync(dir, { recursive: true });
     const r = spawnSync('bash', [SCRIPT], {
       cwd: dir,
-      env: { ...GIT_ENV, VERCEL_GIT_PREVIOUS_SHA: '0123456789abcdef0123456789abcdef01234567', GIT_CEILING_DIRECTORIES: tmpRoot },
+      env: { ...GIT_ENV, VERCEL_ENV: 'preview', VERCEL_GIT_PREVIOUS_SHA: '0123456789abcdef0123456789abcdef01234567', GIT_CEILING_DIRECTORIES: tmpRoot },
       encoding: 'utf8',
     });
     expectCode({ code: r.status, out: `${r.stdout}${r.stderr}` }, BUILD, 'no repo');
@@ -350,6 +371,26 @@ describe('vercel-ignore-build.sh', () => {
       // Every history fetch keeps --end-of-options before its revision.
       for (const l of shimCalls(log).filter((x) => x.includes('--deepen='))) assert.match(l, /--end-of-options origin [0-9a-f]{40}$/);
     }
+  });
+
+  test('every --end-of-options the header promises is on the real git call (PREV fetch, --deepen, --unshallow, merge-base, diff)', () => {
+    // Sentinel's #288 N1: dropping it from --unshallow or from the final diff survived.
+    const { clone, prev } = shallowSetup(false); // PREV outside the clone; --deepen=1 too shallow -> all three fetches
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    expectCode(run(clone, prev, TTS, { ...shimEnv(log), IGNORE_BUILD_DEEPEN_COMMITS: '1' }), SKIP, 'every call ran');
+    const calls = shimCalls(log);
+    const hex = '[0-9a-f]{40}';
+    const expectEvery = (what: string, pick: (l: string) => boolean, shape: RegExp, min = 1) => {
+      const lines = calls.filter(pick);
+      assert.ok(lines.length >= min, `${what}: expected at least ${min} call(s), got ${lines.length}\n${calls.join('\n')}`);
+      for (const l of lines) assert.match(l, shape, what);
+    };
+    const isFetch = (l: string) => /(^|\s)fetch(\s|$)/.test(l);
+    expectEvery('PREV fetch', (l) => isFetch(l) && l.includes('--depth=1'), new RegExp(`--depth=1 --end-of-options origin ${prev}$`));
+    expectEvery('--deepen fetch', (l) => isFetch(l) && l.includes('--deepen='), new RegExp(`--deepen=1 --end-of-options origin ${hex}$`));
+    expectEvery('--unshallow fetch', (l) => isFetch(l) && l.includes('--unshallow'), new RegExp(`--unshallow --end-of-options origin ${hex}$`));
+    expectEvery('merge-base', (l) => /(^|\s)merge-base(\s|$)/.test(l), new RegExp(`^merge-base --is-ancestor --end-of-options ${prev} ${hex}$`), 2);
+    expectEvery('diff', (l) => /^diff(\s|$)/.test(l), new RegExp(`^diff --quiet --end-of-options ${prev} ${hex} -- `));
   });
 
   test('--deepen reaches PREV on a long history: clone stays shallow and --unshallow is never run', () => {
@@ -425,6 +466,50 @@ describe('vercel-ignore-build.sh', () => {
       expectCode(run(clone, prev, TTS, { ...shimEnv(log), IGNORE_BUILD_DEEPEN_COMMITS: value }), SKIP, `value ${JSON.stringify(value)}`);
       assert.equal(historyFetches(log)[0], `--deepen=${used}`, `value ${JSON.stringify(value)}`);
     }
+  });
+
+  test('IGNORE_BUILD_FETCH_TIMEOUT_S: only a positive integer up to 300 is used; anything else (0 included) is 20', () => {
+    for (const [value, used] of [
+      ['1', '1'], ['7', '7'], ['20', '20'], ['300', '300'],
+      ['0', '20'], ['00', '20'], ['-5', '20'], ['abc', '20'], ['1.5', '20'], ['1e3', '20'], ['', '20'], [' 5', '20'],
+      ['5s', '20'], ['5;id', '20'], ['07', '20'], ['301', '20'], ['999', '20'], ['1000', '20'], ['99999999999999999999', '20'],
+    ]) {
+      const { clone, prev } = shallowSetup(false);
+      const log = path.join(tmpRoot, `shim-${counter++}.log`);
+      const tlog = path.join(tmpRoot, `timeout-${counter++}.log`);
+      // PREV is outside the clone and --deepen=1 is too shallow, so all three fetches run
+      // (PREV, --deepen, --unshallow) and each one gets the same bound.
+      const r = run(clone, prev, TTS, { ...shimEnv(log, { timeoutLog: tlog }), IGNORE_BUILD_DEEPEN_COMMITS: '1', IGNORE_BUILD_FETCH_TIMEOUT_S: value });
+      expectCode(r, SKIP, `value ${JSON.stringify(value)}`);
+      assert.deepEqual(historyFetches(log), ['--deepen=1', '--unshallow'], `value ${JSON.stringify(value)}`);
+      assert.deepEqual(shimCalls(tlog), [used, used, used], `value ${JSON.stringify(value)}`);
+    }
+  });
+
+  test('IGNORE_BUILD_FETCH_TIMEOUT_S unset: every fetch, the PREV fetch included, gets the 20 s default', () => {
+    const { clone, prev } = shallowSetup(false); // PREV outside the clone: fetched first
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const tlog = path.join(tmpRoot, `timeout-${counter++}.log`);
+    const env = { ...shimEnv(log, { timeoutLog: tlog }), IGNORE_BUILD_DEEPEN_COMMITS: '1', IGNORE_BUILD_FETCH_TIMEOUT_S: undefined };
+    const r = run(clone, prev, TTS, env);
+    expectCode(r, SKIP, 'unset timeout');
+    const calls = shimCalls(tlog);
+    assert.deepEqual(calls, ['20', '20', '20']);
+  });
+
+  test('IGNORE_BUILD_FETCH_TIMEOUT_S=0 still bounds a hanging fetch (default 20 s, not unbounded) -> BUILD', () => {
+    const { clone, prev } = shallowSetup(false); // a guess would skip
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const tlog = path.join(tmpRoot, `timeout-${counter++}.log`);
+    const started = Date.now();
+    const r = run(clone, prev, TTS, { ...shimEnv(log, { sleepUnshallow: 60, timeoutLog: tlog }), IGNORE_BUILD_DEEPEN_COMMITS: '1', IGNORE_BUILD_FETCH_TIMEOUT_S: '0' });
+    const elapsed = Date.now() - started;
+    assert.notEqual(r.code, null, `the script itself was killed by the test's 30 s guard: the 60 s hang was not bounded (${elapsed} ms)`);
+    expectCode(r, BUILD, 'timed-out unshallow leaves ancestry unproven');
+    assert.match(r.out, /not an ancestor of HEAD/);
+    assert.deepEqual(historyFetches(log), ['--deepen=1', '--unshallow']);
+    assert.deepEqual(shimCalls(tlog), ['20', '20', '20']);
+    assert.ok(elapsed >= 19_000 && elapsed < 29_000, `cut off at the 20 s default (took ${elapsed} ms)`);
   });
 
   test('shallow force-push shape: --deepen fetches all of it, still not an ancestor -> BUILD with no --unshallow', () => {
@@ -544,5 +629,66 @@ describe('vercel-ignore-build.sh', () => {
     const body = fs.readFileSync(path.join(SERVICE_DIR, 'scripts', 'vercel-ignore-build.sh'), 'utf8');
     const code = body.split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n');
     assert.doesNotMatch(code, /HEAD(~|\^(?!\{))/, 'no last-commit comparison left in the script');
+  });
+});
+
+describe('vercel-ignore-build.sh: VERCEL_ENV (Orion: PREVIOUS_SHA can be another environment\'s deploy)', () => {
+  const PROD_LINE = 'vercel-ignore-build: BUILD - production deploys always build (PREVIOUS_SHA may be a preview deploy)';
+  const UNKNOWN_LINE = 'vercel-ignore-build: BUILD - VERCEL_ENV is unset, empty or not preview/development/production';
+  const onlyLine = (r: Result) => r.out.split('\n').filter((l) => l.length > 0)[0];
+
+  test('dpl_CuqEdr shape: Preview of X builds, then Production of the same X with PREV = X still builds; Preview with PREV = X skips', () => {
+    const repo = newRepo();
+    const older = git(repo, 'rev-parse', 'HEAD');
+    const x = commit(repo, 'proxy change', { [`${TTS}/src/handler.ts`]: 'export const h = 2;\n' });
+
+    // 1. Preview deploy of X: PREV is the older deploy, the proxy changed -> BUILD.
+    const preview = run(repo, older, TTS, { VERCEL_ENV: 'preview' });
+    expectCode(preview, BUILD, 'preview of X, proxy changed since the older deploy');
+    assert.match(preview.out, /services\/aerodj-tts\/ changed since last deploy/);
+
+    // 2. ~50 s later, Production of the same X: Vercel hands it PREV = X (the preview deploy).
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const prod = run(repo, x, TTS, { ...shimEnv(log), VERCEL_ENV: 'production' });
+    expectCode(prod, BUILD, 'production must not compare against a preview deploy of the same SHA');
+    assert.equal(onlyLine(prod), PROD_LINE);
+    assert.deepEqual(shimCalls(log), [], 'decided before any git or fetch work');
+
+    // 3. A Preview (or Development) run with PREV = X still skips: the diff-based skip is kept there.
+    for (const d of ['preview', 'development']) {
+      const r = run(repo, x, TTS, { VERCEL_ENV: d });
+      expectCode(r, SKIP, `${d} with PREV = HEAD`);
+      assert.match(r.out, new RegExp(`no changes under services/aerodj-tts/ since last deploy ${x.slice(0, 12)}`));
+    }
+  });
+
+  test('Production with an unchanged proxy diff still builds, with no git call (also when PREV is unset or junk)', () => {
+    const repo = newRepo();
+    const prev = git(repo, 'rev-parse', 'HEAD');
+    commit(repo, 'ray-do only', { 'lib/telegram/webhook-auth.ts': 'export const a = 2;\n', 'site/index.html': '<p>2</p>\n' });
+    expectCode(run(repo, prev, TTS, { VERCEL_ENV: 'preview' }), SKIP, 'control: preview skips this diff');
+    expectCode(run(repo, prev, TTS, { VERCEL_ENV: 'development' }), SKIP, 'control: development skips this diff');
+    for (const p of [prev, undefined, 'not-a-sha', `--upload-pack=x;#${'a'.repeat(40)}`]) {
+      const log = path.join(tmpRoot, `shim-${counter++}.log`);
+      const r = run(repo, p, TTS, { ...shimEnv(log), VERCEL_ENV: 'production' });
+      expectCode(r, BUILD, `production, PREV ${JSON.stringify(p)}`);
+      assert.equal(onlyLine(r), PROD_LINE);
+      assert.deepEqual(shimCalls(log), [], 'no git call at all');
+    }
+  });
+
+  test('unset, empty or unknown VERCEL_ENV builds (fails toward building), with no git call', () => {
+    const repo = newRepo();
+    const prev = git(repo, 'rev-parse', 'HEAD');
+    commit(repo, 'ray-do only', { 'lib/telegram/webhook-auth.ts': 'export const a = 3;\n' });
+    expectCode(run(repo, prev, TTS, { VERCEL_ENV: 'preview' }), SKIP, 'control: preview skips this diff');
+    const values: (string | undefined)[] = [undefined, '', 'Production', 'PRODUCTION', 'Preview', 'prod', 'staging', 'test', ' preview', 'preview ', 'preview\n', 'production\n', 'development;true', '*'];
+    for (const v of values) {
+      const log = path.join(tmpRoot, `shim-${counter++}.log`);
+      const r = run(repo, prev, TTS, { ...shimEnv(log), VERCEL_ENV: v });
+      expectCode(r, BUILD, `VERCEL_ENV ${JSON.stringify(v)}`);
+      assert.equal(onlyLine(r), UNKNOWN_LINE, `VERCEL_ENV ${JSON.stringify(v)}`);
+      assert.deepEqual(shimCalls(log), [], 'no git call at all');
+    }
   });
 });

@@ -19,11 +19,12 @@ export const CHALLENGE_VERSION = 1;
 export const CHALLENGE_TTL_MS = 120_000;
 /** Tolerated issue-time skew between function instances. */
 export const CLOCK_SKEW_MS = 5_000;
-export const PURPOSES = ['attest', 'tts', 'ent'] as const;
+/** `tok` (#378): the key-bound challenge an install signs to mint a 30-minute install token. */
+export const PURPOSES = ['attest', 'tts', 'ent', 'tok'] as const;
 export type Purpose = (typeof PURPOSES)[number];
-const PURPOSE_CODES: Record<Purpose, number> = { attest: 1, tts: 2, ent: 3 };
+const PURPOSE_CODES: Record<Purpose, number> = { attest: 1, tts: 2, ent: 3, tok: 4 };
 /** Purposes whose challenge must be bound to the install's keyId. */
-export const KEY_BOUND_PURPOSES: ReadonlySet<Purpose> = new Set(['tts', 'ent']);
+export const KEY_BOUND_PURPOSES: ReadonlySet<Purpose> = new Set(['tts', 'ent', 'tok']);
 
 const DOMAIN = Buffer.from('onairly-challenge-v1\0', 'utf8');
 const HEADER_BYTES = 1 + 1 + 1 + 8 + 16;
