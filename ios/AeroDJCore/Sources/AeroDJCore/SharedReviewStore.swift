@@ -39,6 +39,10 @@ public struct SharedReviewStore: Sendable {
     public let file: URL
     let backupExclusion: any BackupExclusionMarking
     let backupExclusionLog: @Sendable (String) -> Void
+    /// Test seam (#424 n1, -Nova): the move used to set an unreadable store aside. Production
+    /// always uses `FileManager.default.moveItem`; tests swap it to prove a failed set-aside
+    /// leaves the previous `.unreadable` copy in place. No behavior change.
+    var setAsideMove: @Sendable (URL, URL) throws -> Void = { try FileManager.default.moveItem(at: $0, to: $1) }
 
     public init(file: URL, backupExclusion: any BackupExclusionMarking = FoundationBackupExclusion(),
                 backupExclusionLog: @escaping @Sendable (String) -> Void = SharedReviewStore.emitBackupExclusionFailure) {
@@ -106,7 +110,7 @@ public struct SharedReviewStore: Sendable {
               decodedFile() == nil else { return }
         // Move aside under a fresh name first, so a failed move leaves every older copy in place.
         let fresh = file.appendingPathExtension("unreadable-\(UUID().uuidString)")
-        try fm.moveItem(at: file, to: fresh)
+        try setAsideMove(file, fresh)
         for old in unreadableCopies() where old.lastPathComponent != fresh.lastPathComponent {
             try? fm.removeItem(at: old)
         }
