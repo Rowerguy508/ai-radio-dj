@@ -41,19 +41,32 @@ private actor Gate {
     var hasArrived: Bool { arrivedCount > 0 }
 }
 
-/// True once the gated provider is reached; false if `render` finishes first without reaching it
-/// (e.g. a regressed gate sent the cue to an earlier, ungated route). Never sleeps or times out:
-/// whichever happens first decides, so a regression fails at once instead of hanging the suite.
-private func reaches<T: Sendable>(_ gate: Gate, before render: Task<T, Never>) async -> Bool {
-    let (events, sink) = AsyncStream.makeStream(of: Bool.self)
-    let arrival = Task { await gate.arrived(); sink.yield(await gate.hasArrived) }
-    let finish = Task { _ = await render.value; sink.yield(false) }
+/// How `reaches(_:before:)` ended: the gated provider was reached, `render` finished first without
+/// reaching it, or neither happened before the deadline (the render stalled before the gate).
+private enum Reach: Equatable { case reached, finished, timedOut }
+
+/// `.reached` once the gated provider is reached; `.finished` if `render` finishes first without
+/// reaching it (e.g. a regressed gate sent the cue to an earlier, ungated route); `.timedOut` if
+/// neither happens within `limit`, so a stall before the gate fails clearly instead of hanging the
+/// suite. Whichever event comes first decides; every helper task is cancelled on every exit path.
+private func reaches<T: Sendable>(_ gate: Gate, before render: Task<T, Never>,
+                                  within limit: Duration = .seconds(10)) async -> Reach {
+    let (events, sink) = AsyncStream.makeStream(of: Reach.self)
+    let arrival = Task { await gate.arrived(); sink.yield(await gate.hasArrived ? .reached : .finished) }
+    let finish = Task { _ = await render.value; sink.yield(.finished) }
+    let clock = Task {
+        do { try await Task.sleep(for: limit) } catch { return }
+        sink.yield(.timedOut)
+    }
+    defer {
+        sink.finish()
+        arrival.cancel(); finish.cancel(); clock.cancel()
+    }
     var first = events.makeAsyncIterator()
-    let reached = await first.next() ?? false
-    sink.finish()
-    if !reached { await gate.releaseArrivals() }
-    _ = (arrival, finish)
-    return reached
+    let outcome = await first.next() ?? .timedOut
+    // `arrived()` waits on a continuation that ignores cancellation: resume it explicitly.
+    if outcome != .reached { await gate.releaseArrivals() }
+    return outcome
 }
 
 private struct GatedDeviceVoice: VoiceProvider {
@@ -297,12 +310,21 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
             await r.render(cue, userID: "u", stationID: "s",
                            attribution: .personalContext(itemID: item, source: .calendar, provenance: "test:item"))
         }
-        guard await reaches(gate, before: render) else {
+        switch await reaches(gate, before: render) {
+        case .reached:
+            break
+        case .finished:
             // Without the per-cue gate the cue is spoken by the cloud route first and the gated
             // on-device voice is never called: fail now rather than wait on `arrived()` forever.
             let result = await render.value
             XCTAssertTrue(spy.received.isEmpty, "personal cue text reached an off-device route")
             return XCTFail("the render finished without reaching the on-device route: \(result)")
+        case .timedOut:
+            // The render stalled before the gate: don't wait on it, unblock and cancel it, and fail.
+            render.cancel()
+            await gate.open()
+            XCTAssertTrue(spy.received.isEmpty, "personal cue text reached an off-device route")
+            return XCTFail("the render neither reached the on-device route nor finished within 10 s")
         }
         await NarrationPurger(cache: cache, preparer: nil, revocations: revocations).purge(sourceItemIDs: [item])
         await gate.open()
