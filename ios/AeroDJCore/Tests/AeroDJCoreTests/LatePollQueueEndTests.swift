@@ -141,5 +141,9 @@ final class LatePollQueueEndTests: XCTestCase {
         }
         XCTAssertNil(d.consume(stopped(30.4, uptime: 230.5)))
         XCTAssertNil(d.consume(stopped(30.4, uptime: 231.5)))
+        // Atlas's #633 nit: MusicKit may also rewind the stopped replay to 0. The restart reset
+        // the furthest position, so that rewind is not song 1's end either.
+        XCTAssertNil(d.consume(stopped(0, uptime: 232.5)), "rewind to 0 after a restart is not an end")
+        XCTAssertNil(d.consume(stopped(0, uptime: 233.5)))
     }
 }
