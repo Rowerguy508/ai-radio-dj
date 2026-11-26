@@ -82,6 +82,10 @@ public final class DJBreakSession {
     /// #304 (-Fry): songs that started with no usable duration. The app already logged
     /// `durationUnknown` at song start; their boundary reports that same reason, not `notPlanned`.
     private var durationUnknownSongs: Set<Int> = []
+    /// #304 (-Fry, Echo's #116 finding): a no-duration song start that arrived while tap-first
+    /// queue setup was pending. `queueStarted` clears `durationUnknownSongs` (old-queue marks
+    /// must drop), so this one is re-inserted after it, the way `pendingSongStart` is replayed.
+    private var pendingDurationUnknownSong: Int?
     /// True while `beginQueueInBackground`'s task has not finished `queueStarted`.
     private var queueSetupPending = false
     /// Bumped on every begin/cancel so a cancelled setup cannot clear a newer one.
@@ -250,6 +254,7 @@ public final class DJBreakSession {
         queueSetupTask?.cancel()
         queueSetupTask = nil
         pendingSongStart = nil
+        pendingDurationUnknownSong = nil
         // A newer tap captures fresh sources; prior mid-setup withdrawals do not apply to it.
         // Withdrawals from here on (including during `play`) do apply.
         pendingWithdrawnIntegrations = []
@@ -282,6 +287,10 @@ public final class DJBreakSession {
                                     stationID: stationID)
             guard !Task.isCancelled, generation == self.queueSetupGeneration else { return }
             self.queueSetupPending = false
+            if let index = self.pendingDurationUnknownSong {
+                self.pendingDurationUnknownSong = nil
+                self.durationUnknownSongs.insert(index)
+            }
             if let pending = self.pendingSongStart {
                 self.pendingSongStart = nil
                 let held = max(0, self.now().timeIntervalSince(pending.heldAt))
@@ -301,6 +310,7 @@ public final class DJBreakSession {
         queueSetupPending = false
         reservedStation = nil
         pendingSongStart = nil
+        pendingDurationUnknownSong = nil
         pendingWithdrawnIntegrations = []
     }
 
@@ -310,6 +320,7 @@ public final class DJBreakSession {
         queueSetupTask?.cancel()
         queueSetupTask = nil
         pendingSongStart = nil
+        pendingDurationUnknownSong = nil
         queueSetupGeneration += 1
         queueSetupPending = false
         reservedStation = nil
@@ -624,8 +635,15 @@ public final class DJBreakSession {
     /// returned `durationUnknown`, and the app logged it). Nothing is planned or prepared; the
     /// song's boundary records `durationUnknown` in `lastNoBreak`, so the app does not log a
     /// second, misleading `notPlanned` line for the same missed break.
+    /// While tap-first queue setup is pending (#116), the mark is held and applied after
+    /// `queueStarted`, so the new queue's first song still logs only once.
     public func songStartedWithoutDuration(index: Int) {
         playing = index
+        if queueSetupPending {
+            pendingDurationUnknownSong = index
+            if pendingSongStart?.index == index { pendingSongStart = nil }
+            return
+        }
         durationUnknownSongs.insert(index)
     }
 
@@ -638,6 +656,7 @@ public final class DJBreakSession {
         durationUnknownSongs.remove(index)
         // Queue identity not applied yet (tap played first; break prep still in flight).
         if queueSetupPending {
+            if pendingDurationUnknownSong == index { pendingDurationUnknownSong = nil }
             pendingSongStart = (index, remaining, now())
             return
         }

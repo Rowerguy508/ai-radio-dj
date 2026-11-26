@@ -85,6 +85,56 @@ final class DurationUnknownLoggedOnceTests: XCTestCase {
         XCTAssertEqual(s.lastNoBreak?.reason, .notPlanned)
     }
 
+    /// Echo's #116 finding: on the tap-first path the song starts while queue setup is pending.
+    /// The mark is held and re-applied after `queueStarted`, so the first song logs one line.
+    func testTapFirstSetupKeepsTheMarkForTheNewQueuesFirstSong() async {
+        let s = await session()
+        let reservation = s.reserveQueueSetup()
+        var lines: [String] = []
+        if let skip = PlaybackLog.songStartSkipReason(duration: nil) {
+            lines.append(PlaybackLog.breakSkipped(after: 0, reason: skip))
+            s.songStartedWithoutDuration(index: 0)
+        }
+        XCTAssertTrue(s.testQueueSetupPending)
+        await s.beginQueueInBackground(reservation, djTracks(8)).value
+        XCTAssertFalse(s.testQueueSetupPending)
+        XCTAssertNil(s.testHeldSongStartIndex)
+        if await s.naturalBoundary(afterTrack: 0) == nil,
+           let reason = PlaybackLog.boundarySkipToLog(s.lastNoBreak) {
+            lines.append(PlaybackLog.breakSkipped(after: 0, reason: reason))
+        }
+        XCTAssertEqual(lines, ["break skipped after=0 reason=durationUnknown"])
+        XCTAssertEqual(s.lastNoBreak?.reason, .durationUnknown)
+    }
+
+    func testAKnownDurationStartDuringSetupDropsTheHeldMark() async {
+        let s = await session()
+        let reservation = s.reserveQueueSetup()
+        s.songStartedWithoutDuration(index: 0)
+        await s.songStarted(index: 0, remaining: .seconds(180))
+        await s.beginQueueInBackground(reservation, djTracks(8)).value
+        XCTAssertNotEqual(s.lastNoBreak?.reason, .durationUnknown)
+        _ = await s.naturalBoundary(afterTrack: 0)
+        XCTAssertNotEqual(s.lastNoBreak?.reason, .durationUnknown)
+    }
+
+    func testAReleasedOrCancelledSetupDropsTheHeldMark() async {
+        let s = await session()
+        let released = s.reserveQueueSetup()
+        s.songStartedWithoutDuration(index: 1)
+        s.releaseQueueSetup(released)
+        _ = await s.naturalBoundary(afterTrack: 1)
+        XCTAssertEqual(s.lastNoBreak?.reason, .notPlanned)
+
+        let cancelled = s.reserveQueueSetup()
+        s.songStartedWithoutDuration(index: 1)
+        s.cancelBackgroundQueueSetup()
+        await s.beginQueueInBackground(cancelled, djTracks(8)).value
+        await s.queueStarted(djTracks(8))
+        _ = await s.naturalBoundary(afterTrack: 1)
+        XCTAssertEqual(s.lastNoBreak?.reason, .notPlanned)
+    }
+
     func testBoundarySkipToLogDropsOnlyDurationUnknown() {
         XCTAssertNil(PlaybackLog.boundarySkipToLog((.durationUnknown, true)))
         XCTAssertEqual(PlaybackLog.boundarySkipToLog(nil), .notPlanned)
