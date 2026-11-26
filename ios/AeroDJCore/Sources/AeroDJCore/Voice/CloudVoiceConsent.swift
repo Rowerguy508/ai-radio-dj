@@ -164,10 +164,11 @@ extension VoiceRenderer {
         gated(by: store, age: nil)
     }
 
-    /// Same as `gated(by:)`, with the 18+ answer in front of the consent scope: until `age`
-    /// confirms adult, the scope is `.noLines`, so no cue leaves the device (#267). Pass `nil`
-    /// (or an age that `PaidVoiceAgeGate.allowsCloudVoice` accepts) to keep today's consent-only
-    /// rule. Owner A/B builds should pass `nil` (the owner trial is not age-gated).
+    /// Same as `gated(by:)`, with an optional 18+ answer in front of the consent scope.
+    /// `nil` (the default, and what `gated(by:)` passes) is no age gate: the scope is exactly
+    /// `store.scope`, as on 9a1e0242. Do not pass `NoPaidVoiceAgeAnswer` as a stand-in for
+    /// "unwired"; that would treat the missing step as unanswered and drop the cloud voice.
+    /// When a store is passed and it has no yes, the scope is `.noLines`.
     public func gated(by store: CloudVoiceConsentStore, age: (any PaidVoiceAgeProviding)?) -> VoiceRenderer {
         VoiceRenderer(routes: routes, budget: budget, cache: cache, revocations: revocations,
                       cloudScope: {

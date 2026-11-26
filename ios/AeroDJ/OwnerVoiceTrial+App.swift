@@ -38,7 +38,7 @@ extension VoiceRenderer {
         // is accepted (#432), nothing before (`CloudVoiceConsentStore.scope`), read per cue. -Fry
         return VoiceRenderer(routes: TesterCloudVoice.compose(onDevice: base.routes), budget: base.budget,
                              cache: base.cache, revocations: base.revocations)
-            .gated(by: TesterCloudVoice.consentStore, age: PaidVoiceAgeStore.live)
+            .gated(by: TesterCloudVoice.consentStore)
         #else
         return base
         #endif

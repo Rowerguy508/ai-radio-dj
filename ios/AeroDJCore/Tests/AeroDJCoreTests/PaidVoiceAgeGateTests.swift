@@ -8,7 +8,9 @@ import XCTest
 // 18+ gate for the cloud voice (Orion + owner, 2026-10-29: Pro voice is 18+, the app stays 13+).
 // Re-cut of #267's intent onto current integration: the Keychain store, ProVoiceAccess.requiringAdult,
 // compose's `.ageNotConfirmed`, the preparer's drop/take/re-prepare path, and one voice per break.
-// All providers and storage are in-process fakes: no network, no proxy, no Keychain writes. -Atlas
+// The live app is not wired (no age on the tester/owner renderer or preparerConsent) until #281's
+// age step lands; nil age is no gate, not `NoPaidVoiceAgeAnswer`. All providers and storage are
+// in-process fakes: no network, no proxy, no Keychain writes. -Atlas
 
 struct FixedAge: PaidVoiceAgeProviding {
     let answer: PaidVoiceAgeAnswer
@@ -55,6 +57,15 @@ private struct HookedDeviceVoice: VoiceProvider {
         onRender()
         return try await DJFakeVoice().synthesize(text, voice: voice, context: context)
     }
+}
+
+/// Injected `DJBreakSession` clock. Starts at a fixed instant so elapsed-time tests are deterministic.
+private final class AdjustableClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date: Date
+    init(_ date: Date = Date(timeIntervalSince1970: 1_000_000)) { self.date = date }
+    var now: Date { lock.withLock { date } }
+    func advance(seconds: TimeInterval) { lock.withLock { date = date.addingTimeInterval(seconds) } }
 }
 
 private func readyOutcome(_ preparer: DJBreakPreparer, _ k: Int) async -> DJBreakOutcome? {
@@ -122,7 +133,8 @@ final class PaidVoiceAgeGateTests: XCTestCase {
                 PaidVoiceAgeGate.allowsCloudVoice(age) && consent == .accepted ? .transitionsOnly : .noLines
             })
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", talkOverEnabled: { false },
-                                       cloudVoiceConsent: { consent == .accepted && age.isAdultConfirmed })
+                                       cloudVoiceConsent: { consent == .accepted && age.isAdultConfirmed },
+                                       age: age)
         return (preparer, cloud)
     }
 
@@ -352,6 +364,49 @@ final class PaidVoiceAgeGateTests: XCTestCase {
         XCTAssertEqual(cloud.calls, 0)
     }
 
+    @MainActor
+    private func sessionWithAge(_ age: PaidVoiceAgeStore, now: @escaping () -> Date = { Date() }) async -> (DJBreakSession, DJBreakPreparer, AgeCloudFake) {
+        let (p, cloud) = rig(age: age)
+        let config = StationConfiguration(commentary: .frequent)
+        let station = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config))),
+            consent: StaticIntegrationConsent([:]))
+        await station.load()
+        let session = DJBreakSession(preparer: p, station: station, dj: DJPresentationStore(), seed: 1, hour: { 14 }, now: now)
+        await session.start()
+        await session.queueStarted(djTracks(8))
+        return (session, p, cloud)
+    }
+
+    /// Fry: `playingRemaining` is a snapshot; a grant mid-song must subtract elapsed time
+    /// (`now() - snapshotAt`) before the 20 s lead check. 60 s start, margin 3 s, lead 20 s:
+    /// remaining must be at least 23 s to re-prepare. 30 s elapsed still qualifies; 45 s does not.
+    @MainActor
+    func testAGrantUsesElapsedTimeFromTheRemainingSnapshot() async {
+        for (elapsed, shouldUpgrade) in [(30.0, true), (45.0, false)] {
+            let clock = AdjustableClock()
+            let age = store(.unanswered)
+            let (session, p, cloud) = await sessionWithAge(age, now: { clock.now })
+            guard let k = session.plannedBoundaries.first else { return XCTFail("no break planned") }
+            await session.songStarted(index: k, remaining: .seconds(60))
+            let first = await readyOutcome(p, k)
+            XCTAssertEqual(Set(providers(first)), ["device"], "\(elapsed)")
+            XCTAssertEqual(cloud.calls, 0, "\(elapsed)")
+            clock.advance(seconds: elapsed)
+            age.record(isAdult: true)
+            await session.paidVoiceAccessChanged()
+            if shouldUpgrade {
+                let again = await readyOutcome(p, k)
+                XCTAssertTrue(providers(again).contains("cloud"), "\(elapsed)s elapsed should re-prepare")
+                XCTAssertGreaterThan(cloud.calls, 0, "\(elapsed)")
+            } else {
+                let kept = await p.testResult(afterTrack: k)
+                XCTAssertEqual(kept, first, "\(elapsed)s elapsed is too close; kept on-device")
+                XCTAssertEqual(cloud.calls, 0, "\(elapsed)")
+            }
+        }
+    }
+
     func testGatedRendererScopeIsNoLinesUntilAYes() {
         let store = CloudVoiceConsentStore.inMemory(.accepted)
         let age = self.store(.unanswered)
@@ -362,5 +417,34 @@ final class PaidVoiceAgeGateTests: XCTestCase {
         XCTAssertEqual(renderer.cloudScope(), store.scope)
         age.record(isAdult: false)
         XCTAssertEqual(renderer.cloudScope(), .noLines)
+    }
+
+    /// The gate is opt-in and unwired until #281's age step lands. `gated(by:)`, compose,
+    /// and a preparer with no age argument must keep the 9a1e0242 consent-only rule when
+    /// consent is granted. This would fail if the default age were `NoPaidVoiceAgeAnswer`
+    /// (unanswered), which would pin the scope at `.noLines` and keep the break on-device.
+    func testExistingConsentPathWithNoAgeProviderStillAllowsTheCloudVoice() async {
+        let store = CloudVoiceConsentStore.inMemory(.accepted)
+        let cloud = AgeCloudFake()
+        let renderer = VoiceRenderer(
+            routes: [VoiceRoute(providerID: "cloud", provider: cloud, voice: djVoice, leavesDevice: true),
+                     VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
+            budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
+            .gated(by: store)
+        XCTAssertEqual(renderer.cloudScope(), store.scope)
+        XCTAssertNotEqual(renderer.cloudScope(), .noLines, "consent granted, no age wired")
+
+        let decision = await ProVoiceAccess(entitlement: FixedEntitlement(pro), consent: FixedConsent(true)).decision()
+        XCTAssertEqual(decision, .allowed)
+        let composition = compose(decision)
+        XCTAssertEqual(composition.decision, .included(catalogIndex: 0), "compose has no implicit age omit")
+        XCTAssertEqual(composition.routes.first?.providerID, PremiumVoiceRoutes.providerID)
+
+        let p = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", talkOverEnabled: { false },
+                                cloudVoiceConsent: { store.isGranted })
+        await p.prepare(presenterBreak(afterTrack: 0), deadline: .seconds(10), onDeviceOnly: false)
+        let used = providers(await readyOutcome(p, 0))
+        XCTAssertEqual(used, ["cloud"])
+        XCTAssertEqual(cloud.calls, 1)
     }
 }

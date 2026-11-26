@@ -167,6 +167,9 @@ public actor DJBreakPreparer {
     /// break rendered in a cloud voice never plays after a decline. Nil: no cloud-consent check
     /// (every build without the tester voice, and tests whose renderer has no cloud route). -Nova
     private let cloudVoiceConsent: (@Sendable () -> Bool)?
+    /// Optional 18+ answer (#267). `nil` (the default) is no age gate: prepare, take and
+    /// drop behave as on 9a1e0242. A store is opt-in; never defaulted to `NoPaidVoiceAgeAnswer`.
+    private let paidVoiceAge: (any PaidVoiceAgeProviding)?
     /// The renderer's routes that are not on-device and free (cloud or paid), and those that
     /// are, worked out once in `init` (Fry's nit 3 on #398: no set rebuilt per call). -Nova
     private let cloudProviderIDs: Set<String>
@@ -249,6 +252,7 @@ public actor DJBreakPreparer {
     public init(renderer: VoiceRenderer, userID: String, stationID: String, cadence: DJCadence = .init(),
                 talkOverEnabled: @escaping @Sendable () -> Bool = { DJTalkoverFlag.isEnabled() },
                 cloudVoiceConsent: (@Sendable () -> Bool)? = nil,
+                age: (any PaidVoiceAgeProviding)? = nil,
                 bundledClips: BundledClipResolver? = nil,
                 now: @escaping @Sendable () -> Date = DJBreakPreparer.systemNow,
                 sleepUntil: (@Sendable (ContinuousClock.Instant) async throws -> Void)? = nil) {
@@ -270,6 +274,7 @@ public actor DJBreakPreparer {
         }
         self.bundledClips = bundledClips
         self.cloudVoiceConsent = cloudVoiceConsent
+        self.paidVoiceAge = age
         self.now = now
         // Nil default, filled in here: an async function value in a default argument is emitted
         // into every client object, and Swift 6.3.3 gives those copies a smaller async context
@@ -355,12 +360,11 @@ public actor DJBreakPreparer {
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
         // Owner, Nov 9 2026: with consent to copy v2 (`.allLines`) a library station's lines may use
         // the cloud voice too; each cue is still checked by `mayLeaveDevice` as it renders. -Fry
-        // #267: if the cloud scope is `.noLines` at the start of this render (18+ unanswered
-        // or no), the whole break stays on-device, so a later yes cannot switch voices mid-break.
-        // Consent withdrawal is a different check (`cloudVoiceWithdrawn`): a decline must not
-        // rewrite a new render onto the on-device route, so a cloud clip that still lands is
-        // dropped at the take, as TesterVoiceOffTests require.
-        let deniedAtStart = self.renderer.cloudScope() == .noLines
+        // #267: if an age provider is wired and it has no yes at the start of this render,
+        // the whole break stays on-device, so a later yes cannot switch voices mid-break.
+        // `nil` age (the default) does not snapshot: existing consent/scope paths stay live,
+        // as on 9a1e0242. Consent withdrawal is a different check (`cloudVoiceWithdrawn`).
+        let deniedAtStart = paidVoiceAge.map { !PaidVoiceAgeGate.allowsCloudVoice($0) } ?? false
         let renderer: VoiceRenderer?
         if deniedAtStart {
             renderer = self.renderer.onDeviceOnly
@@ -907,7 +911,8 @@ public actor DJBreakPreparer {
     /// is cleared (no skip is reported) and `true` is returned so the session can prepare it
     /// again. Anything else: `false`, and the on-device break stays.
     public func releaseBreakPreparedWhileDenied(afterTrack k: Int) -> Bool {
-        guard eligibleForUpgrade(k), !cloudVoiceWithdrawn, eligibleForUpgrade(k) else { return false }
+        let ageAllows = paidVoiceAge.map { PaidVoiceAgeGate.allowsCloudVoice($0) } ?? true
+        guard eligibleForUpgrade(k), !cloudVoiceWithdrawn, ageAllows, eligibleForUpgrade(k) else { return false }
         preparedWhileDenied.remove(k)
         tasks[k] = nil      // finished (its result is set); `prepare` needs the slot free
         results[k] = nil

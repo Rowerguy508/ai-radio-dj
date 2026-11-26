@@ -54,10 +54,13 @@ public final class DJBreakSession {
     private var deliveredBriefing: Set<UUID> = []
     /// Index of the song playing now; breaks after it may be replanned, its own may not.
     private var playing: Int?
-    /// Time left in the playing song, as last reported by `songStarted` or `songSeeked`.
-    /// Used by `paidVoiceAccessChanged` to decide whether a mid-session 18+ yes can
-    /// re-prepare the playing break (#267).
+    /// Time left in the playing song, as last reported by `songStarted` or `songSeeked`,
+    /// and when that snapshot was taken. `paidVoiceAccessChanged` subtracts
+    /// `now() - snapshotAt` so a grant mid-song does not use a stale remaining (#267, Fry).
+    /// A pause under-counts elapsed, which is the safe direction (less likely to start a
+    /// cloud render that cannot finish before the boundary).
     private var playingRemaining: Duration?
+    private var playingRemainingSnapshotAt: Date?
     private var changeTask: Task<Void, Never>?
     private var observing = false
     /// The break handed to the player at the last natural boundary, until its audio ends.
@@ -626,7 +629,7 @@ public final class DJBreakSession {
     /// replayed once `beginQueueInBackground` completes — the song itself is already playing.
     public func songStarted(index: Int, remaining: Duration) async {
         playing = index
-        playingRemaining = remaining
+        notePlayingRemaining(remaining)
         // Queue identity not applied yet (tap played first; break prep still in flight).
         if queueSetupPending {
             pendingSongStart = (index, remaining, now())
@@ -664,7 +667,7 @@ public final class DJBreakSession {
             if pendingSongStart?.index == index { pendingSongStart = (index, remaining, now()) }
             return
         }
-        playingRemaining = remaining
+        notePlayingRemaining(remaining)
         guard playing == index, breaks[index] != nil,
               let deadline = DJBreakPreparer.deadline(remainingInSong: remaining),
               await preparer.mayRearm(afterTrack: index) else { return }
@@ -1020,8 +1023,21 @@ public final class DJBreakSession {
     /// to finish (`PremiumVoiceRoutes.timeout` is 16 s; plus 4 s is the 20 s lead in #267).
     static let paidVoiceUpgradeLead: Duration = PremiumVoiceRoutes.timeout + .seconds(4)
 
+    /// Snapshot remaining minus elapsed time on `now`. Nil if nothing is playing.
+    /// Under-counts while paused (the clock still advances), which is the safe direction.
+    private func playingRemainingNow() -> Duration? {
+        guard let remaining = playingRemaining, let at = playingRemainingSnapshotAt else { return nil }
+        let elapsed = max(0, now().timeIntervalSince(at))
+        return remaining - .seconds(elapsed)
+    }
+
+    private func notePlayingRemaining(_ remaining: Duration) {
+        playingRemaining = remaining
+        playingRemainingSnapshotAt = now()
+    }
+
     private func preparePlayingBreakAgainAfterGrant() async {
-        guard !queueSetupPending, let k = playing, let remaining = playingRemaining,
+        guard !queueSetupPending, let k = playing, let remaining = playingRemainingNow(),
               let djBreak = breaks[k],
               let deadline = DJBreakPreparer.deadline(remainingInSong: remaining),
               deadline >= Self.paidVoiceUpgradeLead,
