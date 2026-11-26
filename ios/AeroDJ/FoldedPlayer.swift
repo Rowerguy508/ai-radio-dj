@@ -540,19 +540,17 @@ struct FoldedPlayer: View {
                                             isOnAir: orb.card == .talking)
                                 .scrollTargetLayout()
                         } else {
-                            // #578 (-Nova): no outer `.scrollTargetLayout()` here. `upper` marks its
-                            // own VStack, whose children carry the art, title and continuity row ids.
-                            // An outer one on this wrapper made the header and `upper` the only
-                            // targets, so after unfolding `scrollPosition` never found row 4 and the
-                            // guard stayed armed with the column at the top (run 45467620327).
-                            // `railColumn` already scrolls `upper` this way.
-                            VStack(alignment: .leading, spacing: 0) {
-                                RailDStationHeader(name: heading.header.name)
-                                upper(artSide: CGFloat(min(layout.artSide, layout.leftWidth)), centered: false,
-                                      includesStatus: true, keepArtVisible: orb.card != .talking,
-                                      includesSearch: false,
-                                      titleSize: openTitleSize(column: layout.leftWidth), compactStatus: true)
-                            }
+                            // #578 (-Nova): `upper` is the scroll target layout, with the station
+                            // header inside it. A wrapper VStack around header and `upper` hid the
+                            // art, title and continuity row ids from `scrollPosition`: after
+                            // unfolding the guard stayed armed and the column stayed at the top
+                            // (iPad Studio job, run 45647330548, row 4 at y 1422).
+                            upper(artSide: CGFloat(min(layout.artSide, layout.leftWidth)), centered: false,
+                                  includesStatus: true, keepArtVisible: orb.card != .talking,
+                                  includesSearch: false,
+                                  titleSize: openTitleSize(column: layout.leftWidth), compactStatus: true,
+                                  stationHeader: heading.header.name)
+                                .scrollTargetLayout()
                         }
                     }
                     .frame(width: CGFloat(layout.leftWidth), alignment: .leading)
@@ -894,13 +892,14 @@ struct FoldedPlayer: View {
         return HStack(alignment: .top, spacing: gutter) {
             VStack(spacing: 0) {
                 ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        RailDStationHeader(name: heading.header.name)
-                        upper(artSide: art, centered: false,
-                              titleSize: openTitleSize(column: Double(column)), compactStatus: true,
-                              statusWithoutTrack: true)
-                    }
-                    .frame(width: column)
+                    // #578 (-Nova): the header is inside `upper`, which is the scroll target
+                    // layout, so the stored art, title and row ids are found after a fold. A
+                    // wrapper VStack around both hid them from `scrollPosition`.
+                    upper(artSide: art, centered: false,
+                          titleSize: openTitleSize(column: Double(column)), compactStatus: true,
+                          statusWithoutTrack: true, stationHeader: heading.header.name)
+                        .frame(width: column)
+                        .scrollTargetLayout()
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollContentBackground(.hidden)
@@ -1183,8 +1182,15 @@ struct FoldedPlayer: View {
     private func upper(artSide: CGFloat, centered: Bool, includesStatus: Bool = true,
                        includesArt: Bool = true, keepArtVisible: Bool = false,
                        includesSearch: Bool = true, titleSize: CGFloat? = nil,
-                       compactStatus: Bool = false, statusWithoutTrack: Bool = false) -> some View {
+                       compactStatus: Bool = false, statusWithoutTrack: Bool = false,
+                       stationHeader: String? = nil) -> some View {
         VStack(alignment: centered ? .center : .leading, spacing: 0) {
+            // #578 (-Nova): the rail header is a child of this VStack, not of a wrapper around
+            // it. A wrapper VStack made `upper` one opaque child of the scroll target layout, so
+            // `scrollPosition` could not find the art, title or continuity row ids inside it.
+            if let stationHeader {
+                RailDStationHeader(name: stationHeader)
+            }
             switch content {
             case .track(let track):
                 if includesArt {
