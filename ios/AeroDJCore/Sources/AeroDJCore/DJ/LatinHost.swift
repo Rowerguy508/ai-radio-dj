@@ -2,8 +2,10 @@ import Foundation
 
 // #196 (-Fry): Latin host persona, host language and Spanglish controls. Core only: the model,
 // the copy rules and the AI-path style fields. No UI here (#198 owns the controls) and no voice
-// inventory (#197 supplies which Spanish voices the device really has). Nothing in this file is
-// wired into `DJBreakSession` yet, so today's English breaks are unchanged.
+// inventory (#197 supplies which Spanish voices the device really has). `DJBreakSession` reads
+// the hosted tone through `EditorialTone.forStation` (#680), dark by default: with no Spanish
+// voice passed (today's only value) every host resolves to English, so today's English breaks
+// are unchanged byte for byte.
 //
 // Spec rules this file encodes (#190 §2, Latin-station requirements):
 // - Latin host is an explicit choice. It may be *suggested* from the station's own genre tags,
@@ -459,5 +461,33 @@ public enum LatinHostPromptRules {
     /// pass `[]` only when the line names no song.
     public static func acceptsOutput(_ text: String, genre: LatinGenre?, names: [String]) -> Bool {
         LatinHostScriptRules.textProblems(text, genre: genre, names: names).isEmpty
+    }
+}
+
+/// #196 template wiring (-Fry): the session's copy bank for a resolved host. Dark by default:
+/// an English host (the default preference, or any preference with no installed Spanish voice)
+/// gets `self` back unchanged, so today's breaks are byte for byte what they were.
+/// A host that speaks Spanish swaps only the closing pool for `LatinHostCopy.closingPool`, and
+/// empties `combined` (its lines are English) so that shape falls back to the closing line.
+/// Every other pool stays the personality's own. No new copy, request field or provider.
+public extension EditorialTone {
+    func hosted(by host: ResolvedHostLanguage, genre: LatinGenre?) -> EditorialTone {
+        guard host.speaksSpanish else { return self }
+        let pool = LatinHostCopy.closingPool(host: host, genre: genre).map(\.text)
+        guard !pool.isEmpty else { return self }
+        var tone = self
+        tone.closing = pool
+        tone.combined = []
+        return tone
+    }
+
+    /// The tone a station speaks in: its personality's bank, hosted by its resolved host
+    /// language. `spanishVoiceStyles` is the device's Spanish voice inventory (#197); empty,
+    /// today's only value, resolves every preference to English.
+    static func forStation(_ config: StationConfiguration,
+                           spanishVoiceStyles: Set<SpanishVoiceStyle>) -> EditorialTone {
+        let host = DJHostLanguageResolver.resolve(config.hostLanguage, availableStyles: spanishVoiceStyles)
+        return forPersonality(config.personality)
+            .hosted(by: host, genre: LatinHostSuggestion.dominantGenre(genres: config.genres))
     }
 }
