@@ -173,12 +173,13 @@ public enum LatinGenre: String, Codable, Sendable, CaseIterable {
         }
     }
 
-    /// Fixed style note for the AI path, one per genre so they never sound alike (§2).
+    /// Fixed style note for the AI path, one per genre so they never sound alike (§2). A note sets
+    /// the host's delivery only: it never names instruments, tempo or anything else about the song.
     public var styleNote: String {
         switch self {
-        case .salsa: "Warm and musical; point at the horns, piano or percussion. No hype."
+        case .salsa: "Warm and musical; no hype."
         case .merengue: "Bright and quick; short lines that keep the dance moving."
-        case .bachata: "Soft and romantic; slow the pace and mention the guitar when it fits."
+        case .bachata: "Soft and romantic; speak gently."
         case .reggaeton: "Relaxed confidence over the beat; no shouting."
         case .dembow: "Short and punchy; let the rhythm do the work."
         case .cumbia: "Easygoing and festive; keep it simple."
@@ -274,6 +275,13 @@ public enum LatinHostScriptRules {
     /// the Spanish articles and the one short switch.
     public static let maxClosingWords = 12
 
+    /// Spanish hype and verdicts, checked after the English `EditorialPhrasing.forbiddenHype`.
+    /// Matched case- and accent-insensitively, so "Que tema" and "qué tema" both count.
+    public static let forbiddenSpanishHype = [
+        "temazo", "joya", "increíble", "el mejor", "la mejor", "nunca falla", "bomba", "qué tema",
+        "qué clase de tema", "tremendo tema", "brutal", "épico", "un palo", "candela",
+    ]
+
     static func folded(_ s: String) -> String {
         s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
     }
@@ -285,6 +293,7 @@ public enum LatinHostScriptRules {
         for p in forbiddenPhrases where f.contains(folded(p)) { out.append(.forbiddenPhrase(p)) }
         for p in forbiddenIdentityClaims where f.contains(folded(p)) { out.append(.identityClaim(p)) }
         for p in EditorialPhrasing.forbiddenHype where f.contains(p) { out.append(.hype(p)) }
+        for p in forbiddenSpanishHype where f.contains(folded(p)) { out.append(.hype(p)) }
         if text.contains("¡") || text.contains("!") {
             if !(genre?.allowsExclamation ?? false) { out.append(.exclamationOffGenre) }
         }
@@ -314,7 +323,8 @@ public enum LatinHostScriptRules {
 }
 
 /// The Latin host's "up next" lines. Templates and tone references, not a playlist (§3).
-/// Facts stay out: only the next title and artist slots.
+/// Facts stay out: only the next title and artist slots. No instruments, tempo, genre claims
+/// or verdicts on the song ("nunca falla", "un temazo"): the copy has no song data to back them.
 public enum LatinHostCopy {
     public static let closing: [LatinHostLine] = [
         // Spanish only.
@@ -323,28 +333,27 @@ public enum LatinHostCopy {
         .init([.es("Vamos con {nextArtist}, {nextTitle}.")]),
         .init([.es("Aquí está {nextTitle}, de {nextArtist}.")]),
         .init([.es("Nos quedamos en esa vibra con {nextTitle}.")]),
-        .init([.es("Escucha los metales en {nextTitle}.")], genres: [.salsa]),
-        .init([.es("Una bachata para bajar el ritmo: {nextTitle}.")], genres: [.bachata]),
+        .init([.es("Sigue {nextArtist} con {nextTitle}.")]),
         .init([.es("¡Dale! Seguimos con {nextArtist}.")], genres: [.merengue, .dembow, .cumbia, .reggaeton]),
-        .init([.es("Con calma, ahora {nextTitle}.")], genres: [.bolero]),
+        .init([.es("Con calma, ahora {nextTitle}.")], genres: [.bolero, .bachata]),
         .init([.es("Seguimos con {nextArtist}, {nextTitle}.")], genres: [.regionalMexican]),
         // Spanglish, Spanish base: mostly Spanish, one short English switch.
         .init([.es("Seguimos con buena música."), .en("Up next, {nextTitle}.")]),
-        .init([.es("Ese tema nunca falla."), .en("Now, {nextTitle}.")]),
+        .init([.es("Seguimos aquí con ustedes."), .en("Now, {nextTitle}.")]),
         .init([.es("Vamos con {nextArtist} ahora."), .en("Here we go.")]),
-        .init([.es("Una bachata para bajar el ritmo."), .en("Listen for the guitar.")], genres: [.bachata]),
+        .init([.es("Con calma, seguimos con {nextArtist}."), .en("Here's {nextTitle}.")], genres: [.bachata, .bolero]),
         // Spanglish, either base: as much English as Spanish, one switch.
-        .init([.en("Here's {nextArtist},"), .es("un temazo.")]),
+        .init([.en("Here's {nextArtist},"), .es("con {nextTitle}.")]),
         // Spanglish, English base: mostly English, one short Spanish switch.
         .init([.es("Mi gente,"), .en("here comes {nextTitle}.")]),
         .init([.en("Okay, {nextTitle} is next,"), .es("mi gente.")]),
-        .init([.es("Qué tema."), .en("Here's {nextTitle} by {nextArtist}.")]),
+        .init([.es("Ahora sí."), .en("Here's {nextTitle} by {nextArtist}.")]),
         .init([.en("Let's get into {nextTitle},"), .es("dale.")], genres: [.reggaeton, .dembow]),
         // Conversational: up to two switches.
-        .init([.es("Qué clase de tema."), .en("And next,"), .es("{nextTitle}.")]),
+        .init([.es("Seguimos un rato."), .en("And next,"), .es("{nextTitle}.")]),
         .init([.es("Un poquito de contexto,"), .en("then {nextTitle}.")]),
         .init([.en("Up next,"), .es("una de {nextArtist}"), .en("you might know.")]),
-        .init([.en("Coming up,"), .es("una joya,"), .en("{nextTitle}.")]),
+        .init([.en("Coming up,"), .es("una más,"), .en("{nextTitle}.")]),
     ]
 
     /// Lines that pass every rule for this host and genre, in bank order. Genre-tagged lines
@@ -364,6 +373,7 @@ public enum LatinHostPromptRules {
     public static let rules: [String] = [
         "Speak as a warm Latin radio host. You are a voice style, not a real person: never claim an identity, origin or nationality.",
         "Use only the facts provided. Do not invent facts, accents or slang.",
+        "Mention instruments, tempo or a song's history only if the provided facts mention them.",
         "Pronounce artist names, Spanish titles and place names correctly.",
         "No stereotyped catchphrases, caricature, or food and costume clichés.",
         "Do not assume everyone in Latin America speaks alike.",

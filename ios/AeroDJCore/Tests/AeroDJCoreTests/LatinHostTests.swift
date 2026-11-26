@@ -156,7 +156,7 @@ final class LatinHostTests: XCTestCase {
     func testLightSpanglishAllowsOneShortSwitch() {
         let one = LatinHostLine([.es("Mi gente,"), .en("here comes {nextTitle}.")])
         XCTAssertEqual(LatinHostScriptRules.problems(one, host: host(.english, .light), genre: nil), [])
-        let two = LatinHostLine([.es("Qué tema."), .en("And next,"), .es("{nextTitle}.")])
+        let two = LatinHostLine([.es("Ahora sí."), .en("And next,"), .es("{nextTitle}.")])
         XCTAssertEqual(LatinHostScriptRules.problems(two, host: host(.spanish, .light), genre: nil), [.tooManySwitches(2)])
         XCTAssertEqual(LatinHostScriptRules.problems(two, host: host(.spanish, .conversational), genre: nil), [])
     }
@@ -173,7 +173,7 @@ final class LatinHostTests: XCTestCase {
         let mostlyEnglish = LatinHostLine([.es("Mi gente,"), .en("here comes {nextTitle}.")])
         XCTAssertEqual(LatinHostScriptRules.problems(mostlyEnglish, host: host(.english, .light), genre: nil), [])
         XCTAssertEqual(LatinHostScriptRules.problems(mostlyEnglish, host: host(.spanish, .light), genre: nil), [.wrongBaseLanguage])
-        let mostlySpanish = LatinHostLine([.es("Ese tema nunca falla."), .en("Now, {nextTitle}.")])
+        let mostlySpanish = LatinHostLine([.es("Seguimos aquí con ustedes."), .en("Now, {nextTitle}.")])
         XCTAssertEqual(LatinHostScriptRules.problems(mostlySpanish, host: host(.spanish, .light), genre: nil), [])
         XCTAssertEqual(LatinHostScriptRules.problems(mostlySpanish, host: host(.english, .light), genre: nil), [.wrongBaseLanguage])
     }
@@ -184,10 +184,47 @@ final class LatinHostTests: XCTestCase {
     }
 
     func testStereotypesIdentityClaimsAndHypeAreRefused() {
-        XCTAssertEqual(LatinHostScriptRules.textProblems("¡Ay caramba, qué tema!", genre: .merengue), [.forbiddenPhrase("ay caramba")])
+        XCTAssertEqual(LatinHostScriptRules.textProblems("¡Ay caramba, qué tema!", genre: .merengue),
+                       [.forbiddenPhrase("ay caramba"), .hype("qué tema")])
         XCTAssertEqual(LatinHostScriptRules.textProblems("Soy dominicano y esto es lo mío.", genre: nil),
                        [.identityClaim("soy dominicano")])
         XCTAssertEqual(LatinHostScriptRules.textProblems("Un tema legendary.", genre: nil), [.hype("legendary")])
+    }
+
+    func testSpanishHypeIsRefusedWithOrWithoutAccents() {
+        XCTAssertEqual(LatinHostScriptRules.textProblems("Here's {nextArtist}, un temazo.", genre: nil), [.hype("temazo")])
+        XCTAssertEqual(LatinHostScriptRules.textProblems("Coming up, una joya.", genre: nil), [.hype("joya")])
+        XCTAssertEqual(LatinHostScriptRules.textProblems("Ese tema nunca falla.", genre: nil), [.hype("nunca falla")])
+        XCTAssertEqual(LatinHostScriptRules.textProblems("Que tema.", genre: nil), [.hype("qué tema")])
+        XCTAssertEqual(LatinHostScriptRules.textProblems("Qué clase de tema.", genre: nil), [.hype("qué clase de tema")])
+        XCTAssertEqual(LatinHostScriptRules.textProblems("Algo increible.", genre: nil), [.hype("increíble")])
+        XCTAssertFalse(LatinHostPromptRules.acceptsOutput("Una bomba de {nextArtist}.", genre: .dembow))
+    }
+
+    /// Echo's #670 review: the copy and the AI genre notes have no song data, so neither may name
+    /// instruments, tempo, a genre for the song, or a verdict on it.
+    private let inventedFacts = ["metales", "horn", "piano", "percus", "guitar", "guitarra", "bajar el ritmo",
+                                 "tempo", "bachata", "nunca falla", "listen for", "escucha"]
+
+    func testCopyBankInventsNoFactsAndHasNoHype() {
+        for line in LatinHostCopy.closing {
+            let f = line.text.lowercased()
+            for word in inventedFacts { XCTAssertFalse(f.contains(word), "\(word) in \(line.text)") }
+            let hype = LatinHostScriptRules.textProblems(line.text, genre: line.genres?.first).filter {
+                if case .hype = $0 { return true } else { return false }
+            }
+            XCTAssertEqual(hype, [], line.text)
+        }
+    }
+
+    func testGenreNotesNeverInviteSongClaims() {
+        for genre in LatinGenre.allCases {
+            let note = genre.styleNote.lowercased()
+            for word in inventedFacts + ["mention", "point at"] { XCTAssertFalse(note.contains(word), "\(genre): \(note)") }
+        }
+        XCTAssertTrue(LatinHostPromptRules.rules.contains {
+            $0.contains("instruments") && $0.contains("only if the provided facts mention them")
+        })
     }
 
     func testExclamationOnlyOnDanceGenres() {
