@@ -27,13 +27,9 @@ public enum OrdinaryCapReportLog {
     public static func record(_ report: OrdinaryBreakCapReport, afterTrack k: Int) -> String? {
         guard let line = message(report, afterTrack: k) else { return nil }
         #if canImport(os)
-        // Integers and closed reason codes only, each marked public: no text, titles or ids.
-        let trimmed = report.trimmedOptionalLines[k] ?? 0
-        let overCap = report.skippedOverCap.contains(k) ? 1 : 0
-        let drop = report.droppedTimeChecks[k]?.reason.rawValue ?? "none"
-        let opener = report.omittedOpenerTimeChecks[k]?.rawValue ?? "none"
-        Logger(subsystem: "com.aerodj.app", category: "dj").notice(
-            "AeroDJ.dj capReport after=\(k, privacy: .public) trimmed=\(trimmed, privacy: .public) overCap=\(overCap, privacy: .public) timeCheckDrop=\(drop, privacy: .public) openerTime=\(opener, privacy: .public)")
+        // Logs exactly `line`, so the tests that pin message() pin what is logged. Public is safe
+        // only because message() builds the line from integers and closed reason codes; keep it so.
+        Logger(subsystem: "com.aerodj.app", category: "dj").notice("\(line, privacy: .public)")
         #endif
         return line
     }
