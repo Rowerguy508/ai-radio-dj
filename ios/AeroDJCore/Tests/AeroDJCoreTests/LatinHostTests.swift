@@ -198,7 +198,7 @@ final class LatinHostTests: XCTestCase {
         XCTAssertEqual(LatinHostScriptRules.textProblems("Que tema.", genre: nil), [.hype("qué tema")])
         XCTAssertEqual(LatinHostScriptRules.textProblems("Qué clase de tema.", genre: nil), [.hype("qué clase de tema")])
         XCTAssertEqual(LatinHostScriptRules.textProblems("Algo increible.", genre: nil), [.hype("increíble")])
-        XCTAssertFalse(LatinHostPromptRules.acceptsOutput("Una bomba de {nextArtist}.", genre: .dembow))
+        XCTAssertFalse(LatinHostPromptRules.acceptsOutput("Una bomba de {nextArtist}.", genre: .dembow, names: []))
     }
 
     /// Echo's #670 follow-up: real titles and artists are not hype, and a hype word inside a
@@ -208,8 +208,8 @@ final class LatinHostTests: XCTestCase {
         XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Ahora, Bomba Estéreo.", genre: .cumbia, names: ["Bomba Estéreo"]))
         XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Seguimos con El Mejor Día.", genre: .latinPop,
                                                          names: ["el mejor dia"]))
-        XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Seguimos con Joyas Prestadas.", genre: .latinPop))
-        XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Seguimos con Bombardeo.", genre: .latinPop))
+        XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Seguimos con Joyas Prestadas.", genre: .latinPop, names: ["Joyas Prestadas"]))
+        XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Seguimos con Bombardeo.", genre: .latinPop, names: []))
         XCTAssertEqual(LatinHostScriptRules.textProblems("La Bomba, un temazo.", genre: nil, names: ["La Bomba"]),
                        [.hype("temazo")])
         XCTAssertEqual(LatinHostScriptRules.textProblems("Bomba Estéreo, una bomba.", genre: nil,
@@ -321,9 +321,9 @@ final class LatinHostTests: XCTestCase {
     }
 
     func testAIOutputGoesThroughTheSameRules() {
-        XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Seguimos con buena música. Up next, Obsesión.", genre: .bachata))
-        XCTAssertFalse(LatinHostPromptRules.acceptsOutput("Arriba arriba, here comes the next one.", genre: .cumbia))
-        XCTAssertFalse(LatinHostPromptRules.acceptsOutput("As a Latina, I love this one.", genre: .latinPop))
+        XCTAssertTrue(LatinHostPromptRules.acceptsOutput("Seguimos con buena música. Up next, Obsesión.", genre: .bachata, names: ["Obsesión"]))
+        XCTAssertFalse(LatinHostPromptRules.acceptsOutput("Arriba arriba, here comes the next one.", genre: .cumbia, names: []))
+        XCTAssertFalse(LatinHostPromptRules.acceptsOutput("As a Latina, I love this one.", genre: .latinPop, names: []))
     }
 
     // MARK: Not wired yet

@@ -431,7 +431,9 @@ public enum LatinHostPromptRules {
     /// AI output check: the same text rules as the templates. A line with any problem is
     /// dropped and the template pool is used instead. Pass the line's song titles and
     /// artists as `names` so a name like "La Bomba" is not read as hype.
-    public static func acceptsOutput(_ text: String, genre: LatinGenre?, names: [String] = []) -> Bool {
+    /// `names` is required (no default) so a caller on the AI output path cannot forget it;
+    /// pass `[]` only when the line names no song.
+    public static func acceptsOutput(_ text: String, genre: LatinGenre?, names: [String]) -> Bool {
         LatinHostScriptRules.textProblems(text, genre: genre, names: names).isEmpty
     }
 }
