@@ -437,3 +437,31 @@ public enum LatinHostPromptRules {
         LatinHostScriptRules.textProblems(text, genre: genre, names: names).isEmpty
     }
 }
+
+/// #196 template wiring (-Fry): the session's copy bank for a resolved host. Dark by default:
+/// an English host (the default preference, or any preference with no installed Spanish voice)
+/// gets `self` back unchanged, so today's breaks are byte for byte what they were.
+/// A host that speaks Spanish swaps only the closing pool for `LatinHostCopy.closingPool`, and
+/// empties `combined` (its lines are English) so that shape falls back to the closing line.
+/// Every other pool stays the personality's own. No new copy, request field or provider.
+public extension EditorialTone {
+    func hosted(by host: ResolvedHostLanguage, genre: LatinGenre?) -> EditorialTone {
+        guard host.speaksSpanish else { return self }
+        let pool = LatinHostCopy.closingPool(host: host, genre: genre).map(\.text)
+        guard !pool.isEmpty else { return self }
+        var tone = self
+        tone.closing = pool
+        tone.combined = []
+        return tone
+    }
+
+    /// The tone a station speaks in: its personality's bank, hosted by its resolved host
+    /// language. `spanishVoiceStyles` is the device's Spanish voice inventory (#197); empty,
+    /// today's only value, resolves every preference to English.
+    static func forStation(_ config: StationConfiguration,
+                           spanishVoiceStyles: Set<SpanishVoiceStyle>) -> EditorialTone {
+        let host = DJHostLanguageResolver.resolve(config.hostLanguage, availableStyles: spanishVoiceStyles)
+        return forPersonality(config.personality)
+            .hosted(by: host, genre: LatinHostSuggestion.dominantGenre(genres: config.genres))
+    }
+}

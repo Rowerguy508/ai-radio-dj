@@ -38,6 +38,14 @@ public final class DJBreakSession {
     private var plannedWith: DJCadence?
     /// The DJ personality the current plan was written in (its tone picks the copy bank).
     private var plannedPersonality: DJPersonality?
+    /// #196 (-Fry): the device's Spanish voice inventory (#197). Empty, the default and today's
+    /// only value, keeps every station's host English, so the tone is the personality's alone.
+    private let spanishVoiceStyles: Set<SpanishVoiceStyle>
+
+    /// The station's copy bank: its personality, hosted by its resolved host language (#196).
+    private func stationTone() -> EditorialTone {
+        .forStation(station.active, spanishVoiceStyles: spanishVoiceStyles)
+    }
     /// #445 (-Atlas): the time of day (`DayPart`) the last plan was written in, and the one each
     /// planned break was written in. A break written in another day part than the clock's now
     /// (greeting, atmosphere, opener setup) is re-planned before it prepares and dropped at its
@@ -186,8 +194,10 @@ public final class DJBreakSession {
                 personalUpdates: PersonalUpdateLedger = PersonalUpdateLedger(),
                 calendar: Calendar = .autoupdatingCurrent, clockStyle: DJClockStyle? = nil,
                 extraLineSource: (any DJBreakExtraLineSource)? = nil,
-                lineMemory: any SpokenLineMemoryStoring = InMemorySpokenLineMemoryStore()) {
+                lineMemory: any SpokenLineMemoryStoring = InMemorySpokenLineMemoryStore(),
+                spanishVoiceStyles: Set<SpanishVoiceStyle> = []) {
         self.preparer = preparer
+        self.spanishVoiceStyles = spanishVoiceStyles
         self.now = now
         self.calendar = calendar
         self.clockStyle = clockStyle ?? DJClockStyle(locale: calendar.locale ?? .autoupdatingCurrent)
@@ -200,7 +210,8 @@ public final class DJBreakSession {
         // The station's DJ personality picks the copy bank (lane 4, docs/dj-persona.md). Only the
         // words change: no new data, request or provider (-Fry, agreed with Echo).
         self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed,
-                                     tone: .forPersonality(station.active.personality), shapes: .natural,
+                                     tone: .forStation(station.active, spanishVoiceStyles: spanishVoiceStyles),
+                                     shapes: .natural,
                                      lineMemory: lineMemory)
         // #401 (-Fry): the writer's optional extra line per natural break (Echo's
         // `FactExtraLineSource`: weather and local news). Nil, the default, plans exactly as before.
@@ -1078,6 +1089,7 @@ public final class DJBreakSession {
         // #445: so does a new time of day (morning to afternoon), read from the clock now.
         guard station.active.cadence(base: base) != plannedWith
                 || station.active.personality != plannedPersonality
+                || stationTone() != writer.tone
                 || plannedDayPart.map({ $0 != currentDayPart() }) == true else { return }
         replan(from: k + 1, keepingThrough: k)
     }
@@ -1114,7 +1126,7 @@ public final class DJBreakSession {
         plannedWith = cadence
         writer.cadence = cadence
         plannedPersonality = station.active.personality
-        writer.setTone(.forPersonality(station.active.personality))
+        writer.setTone(stationTone())
         // Lane 2: breaks past `kept` are planned away before airing; forget them first.
         writer.forgetPlannedBreaks(breaks.filter { $0.key > kept }.map(\.value))
         breaks = breaks.filter { $0.key <= kept }
