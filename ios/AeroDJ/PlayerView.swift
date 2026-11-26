@@ -195,6 +195,10 @@ enum PlaybackSessionBinder {
                                           reason: PlaybackLog.noBreakReason(djSession.lastNoBreak))
                     music.skipInterlude()
                 }
+                #if DEBUG || AERODJ_P0_DIAG
+                // #329 (2) (-Fry): counts and reason codes only, never text or cue IDs.
+                OrdinaryCapReportLog.record(djSession.ordinaryCapReport, afterTrack: finishedIndex)
+                #endif
                 await music.startNextTrack(after: finishedIndex)
             }
         }
