@@ -218,6 +218,28 @@ final class LatinHostTests: XCTestCase {
                        "without names the check stays strict")
     }
 
+    /// Echo's #670 re-review (comment 7193911354): a name is removed at most once, as whole words,
+    /// so the hype word repeated after the name still counts; and a name that is the whole line
+    /// is never removed, so passing the line itself as a name hides nothing.
+    func testANameIsRemovedOnceAndNeverAsTheWholeLine() {
+        let repeats: [(String, String, String)] = [
+            ("Bomba, una bomba.", "Bomba", "bomba"), ("Joya, una joya.", "Joya", "joya"),
+            ("El Mejor, el mejor.", "El Mejor", "el mejor"), ("Increíble, increíble.", "Increíble", "increíble"),
+            ("Temazo, un temazo.", "Temazo", "temazo"),
+        ]
+        for (line, name, hype) in repeats {
+            XCTAssertEqual(LatinHostScriptRules.textProblems(line, genre: nil, names: [name]), [.hype(hype)], line)
+            XCTAssertFalse(LatinHostPromptRules.acceptsOutput(line, genre: nil, names: [name]), line)
+        }
+        let line = "La Bomba, un temazo."
+        XCTAssertEqual(LatinHostScriptRules.textProblems(line, genre: nil, names: [line]),
+                       [.hype("temazo"), .hype("bomba")])
+        XCTAssertFalse(LatinHostPromptRules.acceptsOutput(line, genre: nil, names: [line]))
+        XCTAssertFalse(LatinHostPromptRules.acceptsOutput("Temazo.", genre: nil, names: ["Temazo"]))
+        // The gap a name leaves never joins its neighbours into a phrase.
+        XCTAssertTrue(LatinHostPromptRules.acceptsOutput("La Joya mejor.", genre: nil, names: ["Joya"]))
+    }
+
     /// Echo's #670 review: the copy and the AI genre notes have no song data, so neither may name
     /// instruments, tempo, a genre for the song, or a verdict on it.
     private let inventedFacts = ["metales", "horn", "piano", "percus", "guitar", "guitarra", "bajar el ritmo",

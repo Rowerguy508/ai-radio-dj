@@ -298,6 +298,23 @@ public enum LatinHostScriptRules {
         return (0...(words.count - p.count)).contains { i in words[i..<(i + p.count)].elementsEqual(p) }
     }
 
+    /// The line's words with each name removed at most once, as whole words, longest name
+    /// first (Echo's #670 review). A removed name leaves an empty gap, so the words on either
+    /// side never join into a phrase. A name that covers the whole line is never removed, so
+    /// `names: [line]` cannot hide the line's own hype, and a repeat ("Bomba, una bomba.")
+    /// still counts.
+    static func hostWords(_ lineWords: [Substring], names: [String]) -> [Substring] {
+        var w = lineWords
+        let nameWords = names.map { Self.words(folded($0)) }.filter { !$0.isEmpty }
+            .sorted { $0.count > $1.count }
+        for n in nameWords where n.count < lineWords.count && w.count >= n.count {
+            if let i = (0...(w.count - n.count)).first(where: { w[$0..<($0 + n.count)].elementsEqual(n) }) {
+                w.replaceSubrange(i..<(i + n.count), with: [""])
+            }
+        }
+        return w
+    }
+
     /// Text-only checks, shared with AI output that has no segments.
     /// `names` are the song titles and artists in the line ("La Bomba", "Bomba Estéreo",
     /// "El Mejor Día"). They are removed before the Spanish hype check, so a real name is
@@ -305,11 +322,7 @@ public enum LatinHostScriptRules {
     public static func textProblems(_ text: String, genre: LatinGenre?, names: [String] = []) -> [Problem] {
         var out: [Problem] = []
         let f = folded(text)
-        var hostWords = f
-        for name in names.map(folded).filter({ !$0.isEmpty }).sorted(by: { $0.count > $1.count }) {
-            hostWords = hostWords.replacingOccurrences(of: name, with: " ")
-        }
-        let w = words(hostWords)
+        let w = hostWords(words(f), names: names)
         for p in forbiddenPhrases where f.contains(folded(p)) { out.append(.forbiddenPhrase(p)) }
         for p in forbiddenIdentityClaims where f.contains(folded(p)) { out.append(.identityClaim(p)) }
         for p in EditorialPhrasing.forbiddenHype where f.contains(p) { out.append(.hype(p)) }
