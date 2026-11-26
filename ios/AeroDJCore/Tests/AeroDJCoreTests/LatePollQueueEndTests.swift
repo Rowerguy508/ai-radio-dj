@@ -146,4 +146,16 @@ final class LatePollQueueEndTests: XCTestCase {
         XCTAssertNil(d.consume(stopped(0, uptime: 232.5)), "rewind to 0 after a restart is not an end")
         XCTAssertNil(d.consume(stopped(0, uptime: 233.5)))
     }
+
+    /// Atlas's #674 case: after the replay to 30, MusicKit stops and rewinds in one poll, so
+    /// `stopped(0)` is the first stopped sample. The restart reset the furthest position (no
+    /// longer the pre-restart 197.9), so this rewind is not song 1's end.
+    func testReplayThenStopAndRewindInOnePollIsNotAnEnd() {
+        var d = playedTo(lastPoll)
+        for t in stride(from: 0.0, through: 30.0, by: 1.0) {
+            XCTAssertNil(d.consume(playing(t, uptime: 199 + t)))
+        }
+        XCTAssertNil(d.consume(stopped(0, uptime: 230.5)), "rewind to 0 after a restart is not an end")
+        XCTAssertNil(d.consume(stopped(0, uptime: 231.5)))
+    }
 }
