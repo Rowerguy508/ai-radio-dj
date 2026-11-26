@@ -10,7 +10,7 @@ import UIKit
 /// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar. Not required:
 /// rail-d-duo-open-landscape-book-collapsed (#548, the spread's frame with the rail collapsed),
 /// rail-d-duo-open-landscape-book-reported-fold and rail-d-duo-open-landscape-book-more-ax (#507 rest,
-/// a wider off-centre fold).
+/// a wider off-centre fold). Required: rail-d-duo-open-landscape-book-more-ax-title (#589 AX title).
 /// A frame bigger than the simulator window is skipped, as in `AppWideLayoutTests`.
 final class RailDLayoutTests: XCTestCase {
     private static let closed = CGSize(width: 390, height: 844)
@@ -249,6 +249,40 @@ final class RailDLayoutTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(row.frame.minX, box.minX + foldMax - 1, "\(row.identifier) \(row.frame) on the fold")
         }
         save(app, "rail-d-duo-open-landscape-book-more-ax",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
+    }
+
+    /// #589 AX title (-Nova): the same frame as the test above, checked for the song title. The ⋯
+    /// panel wraps to tall rows at accessibility text and used to float over the title (owner
+    /// shot, rail-d-duo-open-landscape-book-more-ax). The page now starts below the panel: the
+    /// title is visible (not truncated away), its frame does not meet the panel's and ends before
+    /// the rail, which holds the ⋯ button. Required in ios.yml.
+    @MainActor
+    func testOpenLandscapeBookPoseMoreMenuAtAccessibilityTextNeverCoversTheTitle() throws {
+        let app = try launch("railDLandscapeSpreadReportedFold", container: Self.landscape, orientation: .landscapeLeft,
+                             extra: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL",
+                                     "-AeroDJForcePhoneIdiom", "YES"])
+        let box = try settledContainer(app, size: Self.landscape)
+        let any = app.descendants(matching: .any)
+        let rail = any["folded.systemBar"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 15), "the rail\n\(app.debugDescription)")
+        let more = rail.buttons.matching(identifier: "folded.more").firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 5), "⋯ missing from the rail\n\(app.debugDescription)")
+        more.tap()
+        let menu = any["folded.moreMenu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5), "⋯ panel missing\n\(app.debugDescription)")
+        let panel = try XCTUnwrap(settledFrame(of: menu, "⋯ panel"))
+        let titleBlock = any.matching(identifier: "folded.titleBlock").firstMatch
+        XCTAssertTrue(titleBlock.waitForExistence(timeout: 5), "the title is gone\n\(app.debugDescription)")
+        // The page re-lays out once the panel is measured, so wait for the title to stop moving.
+        let title = try XCTUnwrap(settledFrame(of: titleBlock, "title") { $0.minY >= panel.maxY - 1 },
+                                  "the title \(titleBlock.frame) never cleared the panel \(panel)")
+        XCTAssertFalse(title.intersects(panel), "the title \(title) is under the ⋯ panel \(panel)")
+        XCTAssertGreaterThanOrEqual(title.minY, panel.maxY - 1, "the title \(title) starts above the panel's end \(panel)")
+        XCTAssertLessThanOrEqual(title.maxX, rail.frame.minX + 1, "the title \(title) runs under the rail \(rail.frame)")
+        XCTAssertGreaterThan(title.height, 20, "the title \(title) is truncated away")
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(CGPoint(x: title.minX, y: title.minY)), "title \(title) outside \(box)")
+        save(app, "rail-d-duo-open-landscape-book-more-ax-title",
              container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
