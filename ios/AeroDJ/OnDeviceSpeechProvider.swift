@@ -80,8 +80,19 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
     private var closed = false  // set before the temp file is deleted; blocks late writes
 
     init(text: String, voiceID: String, url: URL) {
-        let ssml = text.hasPrefix("<speak>") ? AVSpeechUtterance(ssmlRepresentation: text) : nil
-        utterance = ssml ?? AVSpeechUtterance(string: SpeechDelivery.plainText(fromSSML: text))
+        let hints = Self.pronunciationHints
+        // #197: names the voice mangles get a respelling (or IPA) on this on-device route only.
+        // If the engine rejects the hinted SSML, the unhinted SSML is tried next, so a hint can
+        // never cost a break its pacing; the plain-text route carries the hints as well.
+        let ssml: AVSpeechUtterance?
+        if text.hasPrefix("<speak>") {
+            let hinted = hints.applying(toSSML: text)
+            ssml = (hinted != text ? AVSpeechUtterance(ssmlRepresentation: hinted) : nil)
+                ?? AVSpeechUtterance(ssmlRepresentation: text)
+        } else {
+            ssml = nil
+        }
+        utterance = ssml ?? Self.plainUtterance(SpeechDelivery.plainText(fromSSML: text), hints: hints)
         utterance.voice = AVSpeechSynthesisVoice(identifier: voiceID) ?? OnDeviceVoiceChoice.bestVoice()
         self.url = url
         super.init()
@@ -95,6 +106,18 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
     }
 
     private static let log = Logger(subsystem: "com.aerodj.app", category: "speech")
+
+    /// The pronunciation hints the on-device route applies. One place to swap in a merged table.
+    static let pronunciationHints = PronunciationHintTable.standard
+
+    /// Plain text with respellings substituted. Only a table with IPA entries takes the attributed
+    /// string path, since some voices ignore attributed text.
+    private static func plainUtterance(_ plain: String, hints: PronunciationHintTable) -> AVSpeechUtterance {
+        let segments = hints.segments(in: plain)
+        let hasIPA = segments.contains { if case .ipa = $0 { true } else { false } }
+        if hasIPA { return AVSpeechUtterance(attributedString: hints.attributedSpeech(for: plain)) }
+        return AVSpeechUtterance(string: hints.applying(toPlainText: plain))
+    }
 
     func run(firstAudioWithin limit: Duration? = nil) async throws -> (Data, Double) {
         let watchdog = limit.map { limit in
@@ -228,14 +251,9 @@ enum OnDeviceVoiceChoice {
     private static let log = Logger(subsystem: "com.aerodj.app", category: "speech")
 
     static func bestVoice() -> AVSpeechSynthesisVoice? {
-        let installed = AVSpeechSynthesisVoice.speechVoices()
-        let candidates = installed.map { voice in
-            VoiceCandidate(identifier: voice.identifier, language: voice.language, tier: tier(voice.quality),
-                           isNovelty: voice.voiceTraits.contains(.isNoveltyVoice),
-                           isPersonalVoice: voice.voiceTraits.contains(.isPersonalVoice))
-        }
-        guard let pick = VoiceQualitySelector.best(from: candidates),
-              let voice = installed.first(where: { $0.identifier == pick.identifier }) else {
+        let inventory = OnDeviceVoiceInventory(provider: AVSpeechVoiceProvider())
+        guard let pick = inventory.best(),
+              let voice = AVSpeechSynthesisVoice(identifier: pick.identifier) else {
             log.info("voice selected tier=fallback")
             return AVSpeechSynthesisVoice(language: "en-US")
         }
@@ -249,13 +267,5 @@ enum OnDeviceVoiceChoice {
     /// is unproven through `write()` on device.
     static func standardVoice() -> AVSpeechSynthesisVoice? {
         AVSpeechSynthesisVoice(language: "en-US")
-    }
-
-    private static func tier(_ quality: AVSpeechSynthesisVoiceQuality) -> VoiceQualityTier {
-        switch quality {
-        case .premium: .premium
-        case .enhanced: .enhanced
-        default: .standard
-        }
     }
 }
