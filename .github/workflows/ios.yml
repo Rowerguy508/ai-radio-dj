@@ -749,37 +749,56 @@ jobs:
             xcodebuild -downloadComponent MetalToolchain
             xcrun metal --version || { echo "::error::Metal toolchain still unavailable"; exit 1; }
           fi
-      - name: Pick an iPhone simulator
+      - name: Pick an iPad simulator (the Duo-size test needs a 640 x 820 window)
+        # Atlas's #632 review: on a 390 x 844 iPhone the test skips and writes no shot (run
+        # 45489111620). Any full-screen iPad window is at least 640 x 820, as in #653. Newest
+        # available iOS runtime, then the last iPad on it; no iPhone fallback. -Fry
         run: |
-          PHONE=$(xcrun simctl list devices available -j \
-            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
-                      | select(.name | startswith("iPhone"))] | last | .udid // empty')
-          test -n "$PHONE" || { echo "Need an iPhone simulator"; exit 1; }
-          echo "PHONE_UDID=$PHONE" >> "$GITHUB_ENV"
+          set -euo pipefail
+          PAD=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[]
+                      | select(.key | startswith("com.apple.CoreSimulator.SimRuntime.iOS-"))
+                      | (.key | ltrimstr("com.apple.CoreSimulator.SimRuntime.iOS-") | split("-") | map(tonumber)) as $v
+                      | .value[] | select(.name | startswith("iPad")) | select(.isAvailable != false)
+                      | {udid, name, v: $v}]
+                     | sort_by(.v) | last | select(. != null) | "\(.udid)\t\(.name)"')
+          test -n "$PAD" || { echo "::error::Need an available iPad simulator. Not substituting an iPhone."; xcrun simctl list devices available; exit 1; }
+          IFS=$'\t' read -r PAD_UDID PAD_NAME <<<"$PAD"
+          echo "Picked simulator: $PAD_NAME ($PAD_UDID)"
+          echo "PAD_UDID=$PAD_UDID" >> "$GITHUB_ENV"
       - name: Build for testing (${{ matrix.conds }})
         run: |
           xcodebuild build-for-testing \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJStudioUI \
-            -destination "id=$PHONE_UDID" \
+            -destination "id=$PAD_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO \
             "SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited) ${{ matrix.conds }}"
       - name: Local-area prompt at Duo width (${{ matrix.leg }} copy)
         timeout-minutes: 20
         run: |
+          set -euo pipefail
           mkdir -p "$SHOTS"
-          xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
-          xcrun simctl bootstatus "$PHONE_UDID" -b
-          ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
+          xcrun simctl boot "$PAD_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$PAD_UDID" -b
+          ios/scripts/ui-launch-timeout-retry.sh --udid "$PAD_UDID" -- \
             env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJStudioUI \
             -test-timeouts-enabled YES -default-test-execution-time-allowance 600 \
-            -destination "id=$PHONE_UDID" \
+            -destination "id=$PAD_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
+            -resultBundlePath "$RUNNER_TEMP/consent-${{ matrix.leg }}.xcresult" \
             -only-testing:AeroDJUITests/AppWideLayoutTests/testDuoWideLocalAreaPromptIsTheReadableColumn \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/consent-${{ matrix.leg }}.log"
+      - name: The ${{ matrix.leg }} consent test actually ran (not skipped)
+        # A skip is not a pass: xcodebuild exits 0 when the only test skips. -Fry
+        run: |
+          ios/scripts/check-xcresult-test-count.sh --bundle AeroDJUITests --min 1 \
+            --xcresult "$RUNNER_TEMP/consent-${{ matrix.leg }}.xcresult" \
+            --log "$RUNNER_TEMP/consent-${{ matrix.leg }}.log"
       - name: Require the ${{ matrix.leg }} consent shot
         run: |
           ls -la "$SHOTS"
