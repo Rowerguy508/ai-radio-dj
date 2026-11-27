@@ -566,7 +566,9 @@ final class RailDLayoutTests: XCTestCase {
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
                                "-AeroDJStudioCaptureScenario", scenario] + extra
         XCUIDevice.shared.orientation = orientation
-        app.launchUntilAccessible(readyIdentifiers: ["capture.railDContainer", "capture.failed"], in: self)
+        // railDPhone uses the plain PlayingScreen path and never sets capture.railDContainer.
+        // transport.playPause is on every RailD frame (closed rail and open rail).
+        app.launchUntilAccessible(readyIdentifiers: ["transport.playPause", "capture.failed"], in: self)
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10), "no window\n\(app.debugDescription)")
         if let container {
