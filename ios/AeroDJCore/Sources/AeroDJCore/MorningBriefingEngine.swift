@@ -271,9 +271,21 @@ public struct MorningBriefingEngine: BriefingPlanner {
                               estimatedSpokenSeconds: DefaultBriefingPlanner.estimatedSpokenSeconds(for: text))
     }
 
+    /// The briefing can play at any hour (first session of the local day), so the
+    /// greeting follows the local hour from the injected calendar, never the device's
+    /// time zone. Only 4 AM to noon says "morning"; after midnight and before 4 AM
+    /// neither "morning" nor "evening" sounds right, so it is a neutral hello.
     private func greeting(at date: Date) -> String {
-        let hour = calendar.component(.hour, from: date)
-        return hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening"
+        Self.greeting(hour: calendar.component(.hour, from: date))
+    }
+
+    static func greeting(hour: Int) -> String {
+        switch hour {
+        case 4..<12: "Good morning"
+        case 12..<17: "Good afternoon"
+        case 17..<24: "Good evening"
+        default: "Hi there"
+        }
     }
 
     private func clockTime(_ date: Date) -> String {
