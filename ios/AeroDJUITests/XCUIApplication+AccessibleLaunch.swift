@@ -27,24 +27,34 @@ extension XCUIApplication {
     @MainActor
     func launchUntilAccessible(readyIdentifier: String, in test: XCTestCase,
                                timeout: TimeInterval = 30) {
+        launchUntilAccessible(readyIdentifiers: [readyIdentifier], in: test, timeout: timeout)
+    }
+
+    /// Same as `launchUntilAccessible(readyIdentifier:in:timeout:)`, but the probe is ready
+    /// when any of `readyIdentifiers` is present. For a launch helper shared across capture
+    /// scenarios or layouts that do not share one identifier.
+    @MainActor
+    func launchUntilAccessible(readyIdentifiers: [String], in test: XCTestCase,
+                               timeout: TimeInterval = 30) {
+        let readyLabel = readyIdentifiers.joined(separator: ", ")
         launchAfterLeftoverExits()
-        switch firstProbe(readyIdentifier: readyIdentifier, in: test, timeout: timeout) {
+        switch firstProbe(readyIdentifiers: readyIdentifiers, in: test, timeout: timeout) {
         case .ready:
             return
         case .notReady(let reason):
-            XCTFail("App not accessible on first launch (\(readyIdentifier)): \(reason); no relaunch")
+            XCTFail("App not accessible on first launch (\(readyLabel)): \(reason); no relaunch")
             return
         case .accessibilityServerError:
             break
         }
-        let note = "#654 Duo UI: kAXError/snapshot error on first launch; relaunching once (\(readyIdentifier), \(test.name))"
+        let note = "#654 Duo UI: kAXError/snapshot error on first launch; relaunching once (\(readyLabel), \(test.name))"
         print("::warning::\(note)")
         NSLog("AERODJ-AX-RELAUNCH %@", note)
         XCTContext.runActivity(named: "Relaunch once: \(note)") { _ in
             terminateIfRunning()
             launchAfterLeftoverExits()
-            if !probe(readyIdentifier: readyIdentifier, timeout: timeout) {
-                XCTFail("App still not accessible after one relaunch (\(readyIdentifier))")
+            if !probe(readyIdentifiers: readyIdentifiers, timeout: timeout) {
+                XCTFail("App still not accessible after one relaunch (\(readyLabel))")
             }
         }
     }
@@ -57,7 +67,7 @@ extension XCUIApplication {
 
     /// First attempt: absorbs only kAX/snapshot issues, and reports whether one was seen.
     @MainActor
-    private func firstProbe(readyIdentifier: String, in test: XCTestCase,
+    private func firstProbe(readyIdentifiers: [String], in test: XCTestCase,
                             timeout: TimeInterval) -> FirstProbeResult {
         let flag = AXIssueFlag()
         let options = XCTExpectedFailure.Options()
@@ -74,7 +84,7 @@ extension XCUIApplication {
         defer { test.continueAfterFailure = previous }
         var ready = false
         XCTExpectFailure("Hosted-Mac accessibility server not ready after launch", options: options) {
-            ready = probe(readyIdentifier: readyIdentifier, timeout: timeout)
+            ready = probe(readyIdentifiers: readyIdentifiers, timeout: timeout)
         }
         if ready { return .ready }
         guard flag.value else { return .notReady("timed out with no accessibility error, state \(state.rawValue)") }
@@ -85,13 +95,23 @@ extension XCUIApplication {
         return .accessibilityServerError
     }
 
-    /// True once the app is in the foreground with its main window and `readyIdentifier` present.
+    /// True once the app is in the foreground with its main window and any of
+    /// `readyIdentifiers` present. A single identifier uses `waitForExistence`, same as before.
     @MainActor
-    private func probe(readyIdentifier: String, timeout: TimeInterval) -> Bool {
+    private func probe(readyIdentifiers: [String], timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         guard wait(for: .runningForeground, timeout: timeout) else { return false }
         guard windows.firstMatch.waitForExistence(timeout: max(1, deadline.timeIntervalSinceNow)) else { return false }
-        return descendants(matching: .any)[readyIdentifier]
-            .waitForExistence(timeout: max(1, deadline.timeIntervalSinceNow))
+        let remaining = max(1, deadline.timeIntervalSinceNow)
+        let query = descendants(matching: .any)
+        if readyIdentifiers.count == 1 {
+            return query[readyIdentifiers[0]].waitForExistence(timeout: remaining)
+        }
+        let end = Date().addingTimeInterval(remaining)
+        while Date() < end {
+            if readyIdentifiers.contains(where: { query[$0].exists }) { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        return readyIdentifiers.contains(where: { query[$0].exists })
     }
 }
