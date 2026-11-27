@@ -113,11 +113,28 @@ public enum BreakHandoff: Equatable, Sendable {
 
 /// The boundary either plays one prepared break or continues music. A skip is one transition.
 public enum BreakHandoffPolicy {
-    public static func decide(prepared: PreparedDJBreak?) -> BreakHandoff {
-        guard let prepared else { return .continueMusic }
-        let line = prepared.cues.map(\.text).joined(separator: " ")
-        guard !prepared.clips.isEmpty, !line.isEmpty else { return .continueMusic }
-        return .play(prepared)
+    /// #302 (-Atlas): before handing out a break, drop any cue attributed to an unplayable next
+    /// song (`tracks[k + 1].song == nil`), matching `DJBreakSession.naturalBoundary`'s stale-next
+    /// filter. Returns `nil` when no cues remain.
+    public static func filteringUnplayableNext(
+        _ prepared: PreparedDJBreak,
+        unplayableNextTrackID: String?
+    ) -> PreparedDJBreak? {
+        guard let unplayableNextTrackID else { return prepared }
+        return StationRatingBreakNarrowing.narrowed(prepared, excluding: [unplayableNextTrackID])
+    }
+
+    public static func decide(
+        prepared: PreparedDJBreak?,
+        unplayableNextTrackID: String? = nil
+    ) -> BreakHandoff {
+        guard let prepared,
+              let filtered = filteringUnplayableNext(prepared, unplayableNextTrackID: unplayableNextTrackID) else {
+            return .continueMusic
+        }
+        let line = filtered.cues.map(\.text).joined(separator: " ")
+        guard !filtered.clips.isEmpty, !line.isEmpty else { return .continueMusic }
+        return .play(filtered)
     }
 
     public static func decide(_ outcome: DJBreakOutcome) -> BreakHandoff {

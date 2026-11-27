@@ -277,9 +277,15 @@ export interface InstallCharge {
   readonly chars: number;
   readonly recordKey: string;
   readonly revokedKey: string;
+  /**
+   * #407: whether `no_category_fallback` (and legacy un-reasoned) tester keys may still spend.
+   * `false` makes the script refuse every record without `"tierReason":"testflight_category"`,
+   * so turning the fallback off also stops install tokens minted before the flip (30 min TTL).
+   */
+  readonly fallbackAllowed: boolean;
 }
 
-export type InstallRefusal = 'install_daily' | 'global_daily' | 'reattest';
+export type InstallRefusal = 'install_daily' | 'global_daily' | 'reattest' | 'fallback_disabled';
 export type InstallReserveOutcome =
   | { readonly ok: true; readonly reservation: Reservation }
   | { readonly ok: false; readonly reason: InstallRefusal; readonly detail?: 'tester_pool' };
@@ -526,19 +532,23 @@ return 1`;
  * Tester install reserve (#378 §2). KEYS[1] install day counter, KEYS[2] global (shared by
  * every deployment), KEYS[3] tester pool (shared), KEYS[4] attest key record, KEYS[5]
  * revocation entry, optional KEYS[6] non-production sub-cap.
- * ARGV = chars, install cap, global cap, pool cap, ttl s, [sub-cap].
- * Order: -6 key record gone, -7 revoked, -2 global, -5 sub-cap, -3 tester pool, -1 install;
+ * ARGV = chars, install cap, global cap, pool cap, ttl s, fallback allowed ('1' | '0'), [sub-cap].
+ * Order: -6 key record gone, -7 revoked, -8 fallback disabled and the record is not
+ * `testflight_category` (#407; fails closed on any other value or a missing reason),
+ * -2 global, -5 sub-cap, -3 tester pool, -1 install;
  * any refusal changes NO counter. Otherwise increments every counter and returns the
  * install's new total.
  */
-export const INSTALL_RESERVE_SCRIPT = `if not redis.call('GET', KEYS[4]) then return -6 end
+export const INSTALL_RESERVE_SCRIPT = `local rec = redis.call('GET', KEYS[4])
+if not rec then return -6 end
 if redis.call('GET', KEYS[5]) then return -7 end
+if ARGV[6] ~= '1' and not string.find(rec, '"tierReason":"testflight_category"', 1, true) then return -8 end
 local c = tonumber(ARGV[1])
 local g = tonumber(redis.call('GET', KEYS[2]) or '0')
 if g + c > tonumber(ARGV[3]) then return -2 end
 if KEYS[6] then
   local e = tonumber(redis.call('GET', KEYS[6]) or '0')
-  if e + c > tonumber(ARGV[6]) then return -5 end
+  if e + c > tonumber(ARGV[7]) then return -5 end
 end
 local p = tonumber(redis.call('GET', KEYS[3]) or '0')
 if p + c > tonumber(ARGV[4]) then return -3 end
@@ -777,6 +787,7 @@ export class RedisUsageLimiter implements UsageLimiter {
     if (pool === null) throw new TypeError('tester pool not configured');
     if (!Number.isSafeInteger(charge.chars) || charge.chars < 1) throw new TypeError('invalid install charge');
     if (typeof charge.recordKey !== 'string' || typeof charge.revokedKey !== 'string') throw new TypeError('invalid install charge');
+    if (typeof charge.fallbackAllowed !== 'boolean') throw new TypeError('invalid install charge');
     const day = utcDay(now);
     const bucket = subjectBucket({ kind: 'install', id: charge.id });
     if (!bucket.startsWith('install:')) throw new TypeError('invalid install bucket');
@@ -785,9 +796,10 @@ export class RedisUsageLimiter implements UsageLimiter {
     const result = await this.eval(
       INSTALL_RESERVE_SCRIPT,
       [installKey, globalKey, testerPoolDayKey(day), charge.recordKey, charge.revokedKey, ...sub.keys],
-      [charge.chars, this.options.installDailyCharCap ?? DEFAULT_INSTALL_DAILY_CHAR_CAP, this.options.dailyCharCap, pool, DAY_TTL_SECONDS, ...sub.args],
+      [charge.chars, this.options.installDailyCharCap ?? DEFAULT_INSTALL_DAILY_CHAR_CAP, this.options.dailyCharCap, pool, DAY_TTL_SECONDS, charge.fallbackAllowed ? 1 : 0, ...sub.args],
     );
     if (result === -6 || result === -7) return { ok: false, reason: 'reattest' };
+    if (result === -8) return { ok: false, reason: 'fallback_disabled' };
     if (result === -1) return { ok: false, reason: 'install_daily' };
     if (result === -3) return { ok: false, reason: 'global_daily', detail: 'tester_pool' };
     if (result === -2 || (result === -5 && this.nonprodCap !== null)) return { ok: false, reason: 'global_daily' };

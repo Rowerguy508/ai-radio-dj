@@ -70,7 +70,7 @@ export async function reserveForInstall(
   try {
     if (gate) {
       if (!limiter.reserveInstall) return STORE_REFUSAL;
-      return await limiter.reserveInstall({ id: keyId, chars, recordKey: gate.recordKey, revokedKey: gate.revokedKey }, now);
+      return await limiter.reserveInstall({ id: keyId, chars, recordKey: gate.recordKey, revokedKey: gate.revokedKey, fallbackAllowed: gate.fallbackAllowed }, now);
     }
     return await limiter.reserve({ kind: 'install', id: keyId }, chars, now);
   } catch (error) {

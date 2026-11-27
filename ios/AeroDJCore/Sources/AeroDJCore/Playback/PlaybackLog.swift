@@ -29,6 +29,16 @@ public enum PlaybackLog {
         lastNoBreak?.reason ?? .notPlanned
     }
 
+    /// #304: the boundary skip line to log, or nil when it was already logged. A song with no
+    /// usable duration logs `durationUnknown` once at song start (`songStartSkipReason`); its
+    /// boundary, which the session records as `durationUnknown`, logs nothing more.
+    public static func boundarySkipToLog(
+        _ lastNoBreak: (reason: DJBreakSkipReason, cadencePlanned: Bool)?
+    ) -> DJBreakSkipReason? {
+        let reason = noBreakReason(lastNoBreak)
+        return reason == .durationUnknown ? nil : reason
+    }
+
     /// The reason a handed-out break that never started is logged under. An empty line or
     /// no clips, and clips that did not decode, mean the prepared audio was unusable.
     public static func handedOutReason(_ skip: HandedOutBreakSkip) -> DJBreakSkipReason {

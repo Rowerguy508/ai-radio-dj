@@ -780,6 +780,42 @@ describe('/api/tts with an install token (#378)', () => {
     assert.equal(h.upstreamBodies.length, 1);
   });
 
+  test('#407: turning off no_category_fallback stops already-minted fallback and legacy tokens at /api/tts; category 2 keeps rendering', async () => {
+    const redis = new FakeRedis(() => NOW);
+    const cat2 = newInstall();
+    const fallback = newInstall();
+    const legacy = newInstall();
+    seed(redis, 'production', cat2, { tierReason: 'testflight_category' });
+    seed(redis, 'production', fallback, { tierReason: 'no_category_fallback' });
+    seed(redis, 'production', legacy); // tester record written before #407: no tierReason
+    // Tokens minted while the fallback was allowed (unset), still inside their 30 min TTL.
+    const tokens = [cat2, fallback, legacy].map((inst) => tokenFor(inst));
+    const allowed = ttsHarness({}, redis);
+    for (const t of tokens) assert.equal((await handleTts(ttsReq('hello', { installToken: t }), allowed.deps)).status, 200);
+    assert.equal(redis.data.get(testerPoolDayKey(day)), '15');
+
+    for (const flag of ['false', 'TRUE', '']) {
+      const off = ttsHarness({ AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK: flag }, redis);
+      assert.equal((await handleTts(ttsReq('hello', { installToken: tokens[0] }), off.deps)).status, 200, `cat2 with ${flag}`);
+      const pool = redis.data.get(testerPoolDayKey(day));
+      const global = redis.data.get(`aerodj-tts:chars:global:${day}`);
+      for (const t of [tokens[1], tokens[2]]) {
+        const res = await handleTts(ttsReq('hello', { installToken: t }), off.deps);
+        assert.equal(res.status, 401);
+        assert.equal(JSON.parse(res.body.toString()).reason, 'reattest');
+        assert.equal(off.logs.at(-1)?.reason, 'fallback_disabled');
+      }
+      // Nothing charged and nothing sent upstream for the refused tokens.
+      assert.equal(redis.data.get(testerPoolDayKey(day)), pool);
+      assert.equal(redis.data.get(`aerodj-tts:chars:global:${day}`), global);
+      assert.equal(off.upstreamBodies.length, 1);
+    }
+
+    // Rollback (unset or exact 'true') lets the same tokens render again.
+    const back = ttsHarness({ AERODJ_TTS_ALLOW_NO_CATEGORY_FALLBACK: 'true' }, redis);
+    for (const t of tokens) assert.equal((await handleTts(ttsReq('hello', { installToken: t }), back.deps)).status, 200);
+  });
+
   test('key record expired (90 days) → 401 reattest', async () => {
     const h = ttsHarness();
     const inst = newInstall();
