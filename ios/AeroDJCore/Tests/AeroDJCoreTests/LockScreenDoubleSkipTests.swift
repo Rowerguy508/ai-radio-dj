@@ -1261,19 +1261,27 @@ private final class Show {
     func untilLoadSuspended() async {
         let deadline = ContinuousClock.now + .seconds(5)
         while !gate.isWaiting, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
+            do {
+                try await Task.sleep(for: .milliseconds(10))
+            } catch {
+                break
+            }
         }
         XCTAssertTrue(gate.isWaiting, "the skip load is in flight")
     }
 
     /// Waits until the coordinator is idle and the test gate is not holding a load, or the
     /// deadline elapses. The existing assert still fails by name if a skip is still in flight.
-    func untilIdle() async {
+    func untilIdle(file: StaticString = #filePath, line: UInt = #line) async {
         let deadline = ContinuousClock.now + .seconds(5)
         while coordinator.isInFlight || gate.isWaiting, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
+            do {
+                try await Task.sleep(for: .milliseconds(10))
+            } catch {
+                break
+            }
         }
-        XCTAssertFalse(coordinator.isInFlight)
+        XCTAssertFalse(coordinator.isInFlight, file: file, line: line)
     }
 
     func untilDropsSettle() async {
