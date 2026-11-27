@@ -182,37 +182,95 @@ struct TesterCloudVoiceToggleCard: View {
 /// wrong screen. The copy itself is left to Atlas's consent-text fix on #395 (N2).
 private struct CloudVoiceConsentSheet: View {
     let answer: (Bool) -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
+        GeometryReader { proxy in
+            let layout = OnboardingDuoLayout.decide(.init(
+                containerWidth: Double(proxy.size.width),
+                containerHeight: Double(proxy.size.height),
+                accessibilityTextSize: dynamicTypeSize.isAccessibilitySize))
+            if layout.mode == .twoPane {
+                twoPaneBody(layout)
+            } else {
+                singleColumnBody
+            }
+        }
+    }
+
+    private var singleColumnBody: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(CloudVoiceConsentCopy.title)
-                        .font(.title2.bold())
-                        .accessibilityAddTraits(.isHeader)
-                    Text(CloudVoiceConsentCopy.intro)
-                    labelled(CloudVoiceConsentCopy.sentHeading, CloudVoiceConsentCopy.sent)
-                    labelled(CloudVoiceConsentCopy.neverSentHeading, CloudVoiceConsentCopy.neverSent)
-                    labelled(CloudVoiceConsentCopy.storedHeading, CloudVoiceConsentCopy.stored)
-                    Link(CloudVoiceConsentCopy.elevenLabsPolicyLabel, destination: CloudVoiceConsentCopy.elevenLabsPolicyURL)
-                        .font(.footnote)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(20)
+                disclosureCopy
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
             }
-            VStack(spacing: 10) {
-                Button { answer(true) } label: {
-                    Text(CloudVoiceConsentCopy.accept).font(.headline).frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("cloudVoiceConsent.accept")
-                Button { answer(false) } label: {
-                    Text(CloudVoiceConsentCopy.decline).font(.headline).frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .accessibilityIdentifier("cloudVoiceConsent.decline")
+            consentButtons
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+        }
+    }
+
+    /// #461 PR 4 (-Nova): Open-Duo Landscape (`820 × 640 pt`) horizontal two-pane Consent v3
+    /// sheet (`04-onboarding-duo.png`). All `CloudVoiceConsentCopy` strings and actions stay
+    /// 100% verbatim; a 32 pt center gutter clears the fold (`x = 410 pt`).
+    private func twoPaneBody(_ layout: OnboardingDuoLayout.Decision) -> some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: layout.leadingPadding)
+
+            ScrollView(showsIndicators: false) {
+                disclosureCopy
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 24)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
+            .frame(width: layout.leftPaneWidth)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("onboarding.consent.pane.copy")
+
+            Color.clear
+                .frame(width: layout.gutterWidth)
+                .accessibilityHidden(true)
+
+            VStack(spacing: 12) {
+                Spacer(minLength: 16)
+                consentButtons
+                Spacer(minLength: 16)
+            }
+            .frame(width: layout.rightPaneWidth)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("onboarding.consent.pane.actions")
+
+            Color.clear.frame(width: layout.trailingPadding)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding.consent.twoPane")
+    }
+
+    private var disclosureCopy: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(CloudVoiceConsentCopy.title)
+                .font(.title2.bold())
+                .accessibilityAddTraits(.isHeader)
+            Text(CloudVoiceConsentCopy.intro)
+            labelled(CloudVoiceConsentCopy.sentHeading, CloudVoiceConsentCopy.sent)
+            labelled(CloudVoiceConsentCopy.neverSentHeading, CloudVoiceConsentCopy.neverSent)
+            labelled(CloudVoiceConsentCopy.storedHeading, CloudVoiceConsentCopy.stored)
+            Link(CloudVoiceConsentCopy.elevenLabsPolicyLabel, destination: CloudVoiceConsentCopy.elevenLabsPolicyURL)
+                .font(.footnote)
+        }
+    }
+
+    private var consentButtons: some View {
+        VStack(spacing: 10) {
+            Button { answer(true) } label: {
+                Text(CloudVoiceConsentCopy.accept).font(.headline).frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("cloudVoiceConsent.accept")
+            Button { answer(false) } label: {
+                Text(CloudVoiceConsentCopy.decline).font(.headline).frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .accessibilityIdentifier("cloudVoiceConsent.decline")
         }
     }
 

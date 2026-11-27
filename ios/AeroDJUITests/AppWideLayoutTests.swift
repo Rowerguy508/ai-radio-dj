@@ -220,6 +220,50 @@ final class AppWideLayoutTests: XCTestCase {
         save(app, "duo-landscape-library", container: any["capture.appWideContainer"])
     }
 
+    /// #461 PR 4 (-Nova): Open-Duo Landscape (`820 × 640 pt`) horizontal two-pane Onboarding
+    /// (`LocalAreaPrompt`), keeping `LocalAreaConsentCopy` labels and actions 100% verbatim.
+    @MainActor
+    func testDuoLandscapeLocalAreaTwoPane() throws {
+        let (app, box) = try launch("duoLandscapeLocalArea", size: Self.duoLandscape, orientation: .landscapeLeft)
+        let any = app.descendants(matching: .any)
+        // The two-pane HStack fills the 820 x 640 container, so XCUI folds its identifier into
+        // capture.appWideContainer (Studio job 138221795660). The actions pane only renders in
+        // two-pane mode, so wait on it instead.
+        XCTAssertTrue(any["onboarding.localArea.pane.actions"].waitForExistence(timeout: 10),
+                      "two-pane onboarding missing\n\(app.debugDescription)")
+        let copyPane = any["onboarding.localArea.pane.copy"]
+        let actionsPane = any["onboarding.localArea.pane.actions"]
+        XCTAssertTrue(copyPane.exists && actionsPane.exists,
+                      "expected copy and actions panes\n\(app.debugDescription)")
+
+        // Verbatim copy and labels (locked by LocalAreaPromptCopyTests).
+        let title = app.staticTexts["Local weather and news?"]
+        let approximate = app.buttons["localArea.approximate"]
+        let manual = app.buttons["localArea.manual"]
+        let notNow = app.buttons["localArea.notNow"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(approximate.exists && manual.exists && notNow.exists, app.debugDescription)
+        XCTAssertEqual(approximate.label, "Use approximate location")
+        XCTAssertEqual(manual.label, "Enter a city or ZIP instead")
+        XCTAssertEqual(notNow.label, "Not now")
+
+        // Fold gutter centered on box.midX (x = 410 pt on 820 × 640).
+        XCTAssertLessThanOrEqual(copyPane.frame.maxX, box.midX - 15,
+                                 "copy pane crossed fold gutter: \(copyPane.frame) midX=\(box.midX)")
+        XCTAssertGreaterThanOrEqual(actionsPane.frame.minX, box.midX + 15,
+                                    "actions pane crossed fold gutter: \(actionsPane.frame) midX=\(box.midX)")
+
+        for (id, button) in [("localArea.approximate", approximate),
+                             ("localArea.manual", manual),
+                             ("localArea.notNow", notNow)] {
+            assertTarget(button, in: box, id)
+            XCTAssertGreaterThanOrEqual(button.frame.minX, box.midX + 15,
+                                        "\(id) crossed into fold gutter: \(button.frame)")
+        }
+
+        save(app, "duo-landscape-localarea", container: any["capture.appWideContainer"])
+    }
+
     // MARK: Narrow Split View: the phone path, unchanged
 
     @MainActor
