@@ -8,14 +8,16 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { handleTts, secondsUntilNextUtcDay, DEFAULT_PRO_REQUESTS_PER_MINUTE, type Deps, type Env, type LogEntry, type RefundLostLog, type TtsRequest } from '../src/handler.js';
+import { handleTts, secondsUntilNextUtcDay, DEFAULT_PRO_DAILY_CHARS, DEFAULT_PRO_REQUESTS_PER_MINUTE, MIN_PRO_DAILY_CHARS, type Deps, type Env, type LogEntry, type RefundLostLog, type TtsRequest } from '../src/handler.js';
 import {
+  DEFAULT_GLOBAL_DAILY_CHAR_CAP,
   InMemoryUsageLimiter,
   LimiterStoreError,
   PRO_RELEASE_SCRIPT,
   PRO_RESERVE_SCRIPT,
   RESERVE2_SCRIPT,
   RedisUsageLimiter,
+  effectiveProCharCap,
   isDeployment,
   proDayKeys,
   type LimiterOptions,
@@ -109,6 +111,20 @@ describe('Pro allowance: sizing', () => {
     assert.equal(PRO_DAILY_BREAKS, 40);
     assert.equal(MAX_CLOUD_RENDERS_PER_BREAK, 4);
     assert.equal(PRO_DAILY_RENDER_ALLOWANCE, 160);
+  });
+
+  test('#284: at default caps the char cap, not the render ceiling, bounds Pro breaks', () => {
+    const cap = effectiveProCharCap(DEFAULT_PRO_DAILY_CHARS, DEFAULT_GLOBAL_DAILY_CHAR_CAP);
+    assert.equal(cap, 9_000);
+    // 160 full-length renders would be 96,000 chars: the render ceiling never binds first.
+    assert.ok(PRO_DAILY_RENDER_ALLOWANCE * MIN_PRO_DAILY_CHARS > cap);
+    // The figures src/pro-allowance.ts and the README document.
+    assert.equal(Math.floor(cap / PRO_DAILY_BREAKS), 225);
+    assert.equal(Math.floor(cap / 300), 30);
+    assert.equal(Math.floor(cap / (MAX_CLOUD_RENDERS_PER_BREAK * MIN_PRO_DAILY_CHARS)), 3);
+    const doc = readFileSync(new URL('../src/pro-allowance.ts', import.meta.url), 'utf8');
+    assert.equal(/never fewer/i.test(doc), false, 'the header must not promise 40 breaks');
+    assert.match(doc, /9,000 \/ 40 = 225 billed chars per break/);
   });
 });
 

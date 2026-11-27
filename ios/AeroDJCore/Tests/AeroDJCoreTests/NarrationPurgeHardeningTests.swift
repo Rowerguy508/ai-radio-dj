@@ -177,9 +177,9 @@ final class CacheRetentionSweepTests: XCTestCase {
         await run.value
     }
 
-    /// Sentinel item 3 (clock skew): a clip stored while the clock was 30 days ahead is clamped
-    /// to `now` by the first sweep that sees it, so it cannot outlive 7 days once the clock is
-    /// corrected. File cache (relaunch-safe) and in-memory cache alike.
+    /// Sentinel item 3 (clock skew), tightened by #82 F2: a clip stored while the clock was 30
+    /// days ahead is deleted by the first sweep that sees it once the clock is corrected, never
+    /// re-stamped. File cache (relaunch-safe) and in-memory cache alike.
     func testClipStampedInTheFutureCannotOutliveSevenDays() async throws {
         let t0 = Date(timeIntervalSince1970: 1_800_000_000)
         let clock = TestClock(t0.addingTimeInterval(30 * 24 * 3600))
@@ -197,14 +197,8 @@ final class CacheRetentionSweepTests: XCTestCase {
             var done = sweeps.makeAsyncIterator()
             let run = Task { await AudioCacheSweeper(cache: cache).run(ticks: ticks, onSweep: { swept.yield() }) }
             _ = await done.next()
-            let clamped = await cache.audio(for: "skewed")
-            XCTAssertEqual(clamped?.createdAt, t0, "\(type(of: cache)): stamp clamped to no later than now")
-
-            clock.set(t0.addingTimeInterval(7 * 24 * 3600 + 1))
-            tick.yield()
-            _ = await done.next()
             let left = await cache.audio(for: "skewed")
-            XCTAssertNil(left, "\(type(of: cache)): gone 7 days after the corrected clock first saw it")
+            XCTAssertNil(left, "\(type(of: cache)): a future-stamped clip is deleted by the first sweep")
             tick.finish()
             await run.value
         }
@@ -213,7 +207,7 @@ final class CacheRetentionSweepTests: XCTestCase {
     }
 
     /// Sentinel item 4 (relaunch with stale files), through the production entry point
-    /// `start(purgingPersonalFirst:)` that `OnDeviceSpeechProvider` calls at launch: personal clips
+    /// `startPurgingPersonalFirst` that `OnDeviceSpeechProvider` calls at launch: personal clips
     /// (metadata and audio), orphaned audio and expired generic clips left by an earlier run are
     /// deleted before the first tick, and the launch log line counts what is left.
     func testLaunchSweepRemovesStalePersonalAndOrphanFilesBeforeTheFirstTick() async throws {
@@ -236,7 +230,7 @@ final class CacheRetentionSweepTests: XCTestCase {
         // sweep's own signal instead of a wall clock, as the other sweeper tests here do. The
         // assertions are unchanged; a sweep that never ran still fails them (or hangs the suite).
         let (launches, launched) = AsyncStream<String?>.makeStream()
-        let task = AudioCacheSweeper(cache: relaunched).start(every: .seconds(3600), purgingPersonalFirst: true,
+        let task = AudioCacheSweeper.startPurgingPersonalFirst(relaunched, every: .seconds(3600),
                                                               onLaunchSweep: { launched.yield($0) })
         var signals = launches.makeAsyncIterator()
         let line = await signals.next()

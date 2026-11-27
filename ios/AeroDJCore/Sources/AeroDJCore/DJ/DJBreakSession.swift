@@ -79,6 +79,13 @@ public final class DJBreakSession {
     /// must subtract that time or the render deadline lands past the real boundary
     /// (build 22 P0: the afterTrack 0 break ran into `notReadyAtBoundary`, -Fry).
     private var pendingSongStart: (index: Int, remaining: Duration, heldAt: Date)?
+    /// #304 (-Fry): songs that started with no usable duration. The app already logged
+    /// `durationUnknown` at song start; their boundary reports that same reason, not `notPlanned`.
+    private var durationUnknownSongs: Set<Int> = []
+    /// #304 (-Fry, Echo's #116 finding): a no-duration song start that arrived while tap-first
+    /// queue setup was pending. `queueStarted` clears `durationUnknownSongs` (old-queue marks
+    /// must drop), so this one is re-inserted after it, the way `pendingSongStart` is replayed.
+    private var pendingDurationUnknownSong: Int?
     /// True while `beginQueueInBackground`'s task has not finished `queueStarted`.
     private var queueSetupPending = false
     /// Bumped on every begin/cancel so a cancelled setup cannot clear a newer one.
@@ -99,7 +106,8 @@ public final class DJBreakSession {
     /// Planning-time ordinary-break cap report for the current queue, shifted to queue indices (#329).
     private var plannedCapReport = OrdinaryBreakCapReport()
     /// Render-time outcomes taken at `naturalBoundary`, merged via `DJSessionPlan.capReport(afterBreaks:)` (#329).
-    private var breakOutcomes: [Int: DJBreakOutcome] = [:]
+    /// Only what that report reads (Sentinel's B1 on #603): never the prepared break, its cue text or its audio.
+    private var breakOutcomes: [Int: DJBreakCapOutcome] = [:]
     /// Show opener on a new station (-Fry, #358, for Echo's #359): the `StationQueueKey` of the station
     /// the last queue was started for (outer nil: no queue yet). This is the value the feed records
     /// for every queue start (`StationQueueKey(committedDisplayed)`), and `queueStarted` reopens the
@@ -246,6 +254,7 @@ public final class DJBreakSession {
         queueSetupTask?.cancel()
         queueSetupTask = nil
         pendingSongStart = nil
+        pendingDurationUnknownSong = nil
         // A newer tap captures fresh sources; prior mid-setup withdrawals do not apply to it.
         // Withdrawals from here on (including during `play`) do apply.
         pendingWithdrawnIntegrations = []
@@ -278,6 +287,10 @@ public final class DJBreakSession {
                                     stationID: stationID)
             guard !Task.isCancelled, generation == self.queueSetupGeneration else { return }
             self.queueSetupPending = false
+            if let index = self.pendingDurationUnknownSong {
+                self.pendingDurationUnknownSong = nil
+                self.durationUnknownSongs.insert(index)
+            }
             if let pending = self.pendingSongStart {
                 self.pendingSongStart = nil
                 let held = max(0, self.now().timeIntervalSince(pending.heldAt))
@@ -297,6 +310,7 @@ public final class DJBreakSession {
         queueSetupPending = false
         reservedStation = nil
         pendingSongStart = nil
+        pendingDurationUnknownSong = nil
         pendingWithdrawnIntegrations = []
     }
 
@@ -306,6 +320,7 @@ public final class DJBreakSession {
         queueSetupTask?.cancel()
         queueSetupTask = nil
         pendingSongStart = nil
+        pendingDurationUnknownSong = nil
         queueSetupGeneration += 1
         queueSetupPending = false
         reservedStation = nil
@@ -396,6 +411,7 @@ public final class DJBreakSession {
         // isn't one); there is no queue-change case, so the nearest non-revoke reason is used.
         if let live = onAir { requestStop(afterTrack: live.afterTrack, .interruption) }
         if stationIntroToAir != nil { stationIntroWasNotAired() }
+        durationUnknownSongs = []
         await preparer.cancelAll()
         guard !Task.isCancelled else { return }
         if briefing != nil { await station.handle(.briefingWillPlan) }
@@ -615,14 +631,32 @@ public final class DJBreakSession {
         await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: onDeviceOnly || Self.speaksOnDeviceOnly(station.active))
     }
 
+    /// #304: song `index` started with no usable duration (`PlaybackLog.songStartSkipReason`
+    /// returned `durationUnknown`, and the app logged it). Nothing is planned or prepared; the
+    /// song's boundary records `durationUnknown` in `lastNoBreak`, so the app does not log a
+    /// second, misleading `notPlanned` line for the same missed break.
+    /// While tap-first queue setup is pending (#116), the mark is held and applied after
+    /// `queueStarted`, so the new queue's first song still logs only once.
+    public func songStartedWithoutDuration(index: Int) {
+        playing = index
+        if queueSetupPending {
+            pendingDurationUnknownSong = index
+            if pendingSongStart?.index == index { pendingSongStart = nil }
+            return
+        }
+        durationUnknownSongs.insert(index)
+    }
+
     /// Song `index` started with `remaining` time left. Starts rendering its break, if one is
     /// planned and there is time to render before the boundary.
     /// When background queue setup has not finished planning yet, the start is held and
     /// replayed once `beginQueueInBackground` completes — the song itself is already playing.
     public func songStarted(index: Int, remaining: Duration) async {
         playing = index
+        durationUnknownSongs.remove(index)
         // Queue identity not applied yet (tap played first; break prep still in flight).
         if queueSetupPending {
+            if pendingDurationUnknownSong == index { pendingDurationUnknownSong = nil }
             pendingSongStart = (index, remaining, now())
             return
         }
@@ -708,9 +742,10 @@ public final class DJBreakSession {
             }
         }
         let taken = await preparer.takeBreak(afterTrack: k)
+        let durationUnknown = durationUnknownSongs.remove(k) != nil
         if case .skipped(let reason) = taken {
-            breakOutcomes[k] = .skipped(reason)
-            lastNoBreak = (reason, cadencePlanned)
+            breakOutcomes[k] = DJBreakCapOutcome(.skipped(reason))
+            lastNoBreak = (durationUnknown && reason == .notPlanned ? .durationUnknown : reason, cadencePlanned)
         }
         guard case .ready(let ready) = taken else { return nil }
         // #445 (-Atlas): prepared for another time of day (paused in the morning, resumed in the
@@ -797,7 +832,7 @@ public final class DJBreakSession {
                 prepared.timeCheckAirTime = ready.timeCheckAirTime
             }
         }
-        breakOutcomes[k] = .ready(prepared)
+        breakOutcomes[k] = DJBreakCapOutcome(.ready(prepared))
         deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
         // The writer's id is the planned break's first cue, even if a later filter dropped it.
         if let id = breaks[k]?.cues.first?.id { handedBreak = (k, id) }
@@ -955,6 +990,12 @@ public final class DJBreakSession {
             briefing = NarrationHandoff(cues: b.cues.filter { !mentions($0) },
                                         maxSpokenSeconds: b.maxSpokenSeconds, experienceSeconds: b.experienceSeconds)
         }
+        // Sentinel's B1 on #603: a handed-out break's personal lines for these items are not kept
+        // for the ledger either. (`breakOutcomes` holds no cue text or audio by construction.)
+        if var aired = handedOutPersonal {
+            aired.cues.removeAll(where: mentions)
+            handedOutPersonal = aired.cues.isEmpty ? nil : aired
+        }
         guard let first = breaks.filter({ $0.value.cues.contains(where: mentions) }).keys.min() else { return }
         replan(from: first, keepingThrough: first - 1)
     }
@@ -967,6 +1008,7 @@ public final class DJBreakSession {
         if let live = onAir, !live.sources.isEmpty {
             ids.formUnion(live.sources)
         }
+        ids.formUnion(handedOutPersonal?.cues.compactMap(\.sourceItemID) ?? [])
         purge(sourceItemIDs: ids)
         return ids
     }
@@ -1175,6 +1217,10 @@ public final class DJBreakSession {
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
     /// Test hook: the planned breaks by boundary (what `replan` wrote).
     var testPlannedBreaks: [Int: DJBreak] { breaks }
+    /// Test hook (Sentinel's B1 on #603): what the session keeps per taken break for the cap report.
+    var testBreakOutcomes: [Int: DJBreakCapOutcome] { breakOutcomes }
+    /// Test hook (Sentinel's B1 on #603): personal cue ids still held for the aired-line ledger.
+    var testHandedOutPersonalCueIDs: [UUID] { handedOutPersonal?.cues.map(\.id) ?? [] }
     /// Test hook (#358): why a planned opener left the time out, by boundary.
     var testOpenerTimeOmissions: [Int: DJOpenerTimeCheckOmission] { openerTimeOmissions }
     /// Test hook: the phrase bank the session's writer plans with.
