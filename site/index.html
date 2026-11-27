@@ -50,6 +50,42 @@
       </div>
     </section>
 
+    <section class="section visuals" aria-label="OnAirly on iPhone">
+      <figure class="fold-figure">
+        <div class="media-frame media-wide">
+          <video class="autoplay-when-visible" muted loop playsinline preload="none" width="1280" height="720"
+                 poster="/assets/visuals/duo-fold-poster.jpg"
+                 aria-label="An iPhone opens from its folded outer screen to its wide unfolded screen and closes again. Both screens show OnAirly playing a sample song on the Morning Calm station, with a DJ break coming up after this song.">
+            <source src="/assets/visuals/duo-fold.webm" type="video/webm">
+            <source src="/assets/visuals/duo-fold.mp4" type="video/mp4">
+          </video>
+        </div>
+        <figcaption><strong>Folded or unfolded.</strong> Your radio DJ on iPhone, on either screen.</figcaption>
+      </figure>
+      <div class="grid gallery">
+        <figure class="card shot">
+          <img src="/assets/visuals/connections-unfolded.webp" width="1200" height="1000" loading="lazy" decoding="async"
+               alt="OnAirly on an unfolded iPhone. The Connections tab lists Calendar, Notes and Shared items, each marked Connected, beside the sample song that is playing.">
+          <figcaption><h3>You choose what your DJ knows.</h3><p>Calendar, notes and items you share. Nothing is used until you say so.</p></figcaption>
+        </figure>
+        <figure class="card shot">
+          <img src="/assets/visuals/stations-folded.webp" width="1200" height="1000" loading="lazy" decoding="async"
+               alt="Two folded iPhones. One shows the Stations list with Morning Calm, Late Night and a New station button. The other plays a sample song.">
+          <figcaption><h3>Unwind. Focus. Commute.</h3><p>Stations for every part of your day, hosted by your own AI radio DJ.</p></figcaption>
+        </figure>
+        <figure class="card shot">
+          <video class="autoplay-when-visible" muted loop playsinline preload="none" width="1200" height="1000"
+                 poster="/assets/visuals/new-station-folded.webp"
+                 aria-label="The New station sheet on a folded iPhone: a station named Graphite Afternoon, with the ambient and jazz genres and a focused mood selected, is added to the Stations list.">
+            <source src="/assets/visuals/new-station.webm" type="video/webm">
+            <source src="/assets/visuals/new-station.mp4" type="video/mp4">
+          </video>
+          <figcaption><h3>Build a station for any mood.</h3><p>Pick genres and a mood. Your DJ hosts it.</p></figcaption>
+        </figure>
+      </div>
+      <p class="footnote">Screens shown with sample music. Requires an Apple Music subscription.</p>
+    </section>
+
     <section class="section" aria-labelledby="how-title">
       <h2 id="how-title">How it works <span class="onair">ON AIR</span></h2>
       <div class="grid">
@@ -108,5 +144,23 @@
     </nav>
   </div>
 </footer>
+<script>
+/* Visuals: play muted loops only while on screen; with reduced motion, show the poster and let people start it themselves. */
+(function () {
+  var vids = document.querySelectorAll("video.autoplay-when-visible");
+  var rm = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+  function still() { for (var i = 0; i < vids.length; i++) { vids[i].pause(); vids[i].controls = true; } }
+  if (rm.matches || !("IntersectionObserver" in window)) { still(); return; }
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (rm.matches) return;
+      if (e.isIntersecting) { var p = e.target.play(); if (p && p.catch) p.catch(function () { e.target.controls = true; }); }
+      else e.target.pause();
+    });
+  }, { rootMargin: "120px 0px" });
+  for (var i = 0; i < vids.length; i++) io.observe(vids[i]);
+  if (rm.addEventListener) rm.addEventListener("change", function () { if (rm.matches) still(); });
+})();
+</script>
 </body>
 </html>

@@ -101,6 +101,19 @@ mark.owner { background: var(--pending-bg); color: var(--pending-fg); padding: 0
 .site-footer a { color: var(--cream); }
 .site-footer p { margin: 0; }
 
+/* Visuals: fold video under the hero, then a three-shot gallery. */
+.visuals { padding-top: 0.5rem; }
+.visuals figure { margin: 0; }
+.media-frame { background: var(--surface); border-radius: var(--radius); overflow: hidden; }
+.visuals video, .visuals .shot img { display: block; width: 100%; height: auto; background: var(--surface); }
+.media-wide video { aspect-ratio: 16 / 9; }
+.fold-figure figcaption { margin: 0.9rem 0 2rem; color: var(--cream); text-align: center; }
+.gallery .shot { padding: 0; overflow: hidden; }
+.gallery .shot img, .gallery .shot video { aspect-ratio: 6 / 5; }
+.gallery .shot figcaption { padding: 1.25rem 1.5rem 1.5rem; }
+.gallery .shot figcaption p { margin: 0; }
+.footnote { color: var(--muted); font-size: 0.875rem; margin: 1.25rem 0 0; }
+
 @media (max-width: 52rem) {
   .hero { grid-template-columns: 1fr; padding-top: 1.5rem; gap: 1.75rem; }
   .hero-art { max-width: 20rem; order: -1; padding: 1rem; }
