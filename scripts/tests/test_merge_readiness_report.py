@@ -34,15 +34,528 @@ class JobNames(NoNetwork):
                          ["changes", "AeroDJCore tests", "Release archive (Xcode 27.2, unsigned)"])
         self.assertEqual(m.job_check_names(f["workflows"][1]["text"]), ["checks"])
 
-    def test_repo_workflows_give_8_ios_jobs_and_2_ci_jobs(self):
+    def test_repo_workflows_give_10_ios_jobs_and_2_ci_jobs(self):
         with open(os.path.join(ROOT, ".github/workflows/ios.yml")) as f:
             ios = m.job_check_names(f.read())
         with open(os.path.join(ROOT, ".github/workflows/ci.yml")) as f:
             ci = m.job_check_names(f.read())
-        self.assertEqual(len(ios), 8, ios)
+        # 10 since #653 added the dispatch-only system bars capture. job_check_names lists every
+        # job (it is not hidden). The capture job is N/A on PR runs; see DispatchOnlyNA.
+        self.assertEqual(len(ios), 10, ios)
+        self.assertIn("Duo UI tests (Xcode 27.2, iOS 27.2)", ios)
         self.assertIn("Release archive (Xcode 27.2, unsigned)", ios)
         self.assertIn("changes", ios)
+        self.assertIn("System vertical bars capture (Xcode 27.2, iPad iOS 27.2)", ios)
         self.assertEqual(ci, ["checks", "tts-proxy"])
+
+
+IOS = ".github/workflows/ios.yml"
+CI = ".github/workflows/ci.yml"
+BARS = "System vertical bars capture (Xcode 27.2, iPad iOS 27.2)"
+
+DISPATCH_AND_PR = """
+name: iOS
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      capture_system_bars:
+        type: boolean
+jobs:
+  changes:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+  core-tests:
+    name: AeroDJCore tests
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+  capture:
+    name: Capture shot
+    if: github.event_name == 'workflow_dispatch' && inputs.capture_system_bars == true
+"""
+
+# A job that normally runs on PRs, plus one that never can.
+class DispatchOnlyNA(NoNetwork):
+    """Dispatch-only jobs are N/A on PR runs, never a missing required check (#653 / #556)."""
+
+    def _report(self, workflows, check_runs=None, head_branch=None):
+        f = fixture()
+        f["workflows"] = workflows
+        f["check_runs"] = check_runs if check_runs is not None else f["check_runs"]
+        if head_branch is not None:
+            f["pr"] = dict(f["pr"], head_branch=head_branch)
+        return m.build_report(**f)
+
+    def test_a_dispatch_only_job_is_na_on_a_pr_and_a_missing_pr_job_is_still_flagged(self):
+        # Fail-first: before the fix, Capture shot is a missing required check.
+        wf = [{"path": IOS, "text": DISPATCH_AND_PR}, fixture()["workflows"][1]]
+        r = self._report(wf, check_runs=[])
+        rendered = m.render(r)
+        self.assertIn("Capture shot: N/A", rendered)
+        self.assertIn("N/A (dispatch-only", rendered)
+        bad = r["checks"]["bad"]
+        self.assertFalse(any("Capture shot" in b for b in bad), bad)
+        self.assertTrue(any("changes: missing" in b or "AeroDJCore tests: missing" in b for b in bad), bad)
+        self.assertIn("required check(s) not green", " ".join(r["reasons"]))
+        # The N/A job is listed, not hidden.
+        self.assertTrue(any("Capture shot" in n and s.startswith("N/A") for n, s in r["checks"]["rows"]))
+
+    def test_repo_system_bars_job_is_na_on_a_pr_and_is_not_hidden(self):
+        with open(os.path.join(ROOT, ".github/workflows/ios.yml")) as f:
+            ios = f.read()
+        names = m.job_check_names(ios)
+        self.assertIn(BARS, names)
+        wf = [{"path": IOS, "text": ios}, fixture()["workflows"][1]]
+        r = self._report(wf, check_runs=[])
+        self.assertTrue(any(BARS in n and s.startswith("N/A") for n, s in r["checks"]["rows"]), r["checks"]["rows"])
+        self.assertFalse(any(BARS in b for b in r["checks"]["bad"]), r["checks"]["bad"])
+        # A job that normally runs on PRs is still flagged when missing.
+        self.assertTrue(any("Duo UI tests" in b and "missing" in b for b in r["checks"]["bad"]), r["checks"]["bad"])
+
+    def test_or_with_pull_request_is_still_required(self):
+        text = """
+name: iOS
+on:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  both:
+    name: PR or dispatch
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+"""
+        r = self._report([{"path": IOS, "text": text}], check_runs=[])
+        self.assertTrue(any("PR or dispatch: missing" in b for b in r["checks"]["bad"]), r["checks"]["bad"])
+        self.assertFalse(any(s.startswith("N/A") for _, s in r["checks"]["rows"]))
+
+    def test_workflow_without_pull_request_is_na(self):
+        text = """
+name: Manual
+on:
+  workflow_dispatch:
+jobs:
+  only:
+    name: Dispatch job
+"""
+        r = self._report([{"path": IOS, "text": text}], check_runs=[])
+        self.assertTrue(any("Dispatch job" in n and s.startswith("N/A") for n, s in r["checks"]["rows"]))
+        self.assertFalse(r["checks"]["bad"])
+
+    def _assert_stays_required(self, if_expr, job_name):
+        text = f"""
+name: iOS
+on:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  j:
+    name: {job_name}
+    if: {if_expr}
+"""
+        r = self._report([{"path": IOS, "text": text}], check_runs=[])
+        self.assertTrue(any(f"{job_name}: missing" in b for b in r["checks"]["bad"]),
+                        (if_expr, r["checks"]["bad"], r["checks"]["rows"]))
+        self.assertFalse(any(s.startswith("N/A") for _, s in r["checks"]["rows"]),
+                         (if_expr, r["checks"]["rows"]))
+
+    def test_negated_dispatch_comparisons_stay_required(self):
+        """Sentinel B1: these run on every PR; a missing run must not be hidden as N/A."""
+        self._assert_stays_required("${{ !(github.event_name == 'workflow_dispatch') }}",
+                                    "Negated dispatch")
+        self._assert_stays_required("github.event_name == 'workflow_dispatch' == false",
+                                    "Chained false")
+
+    def test_inequality_and_unparseable_if_stay_required(self):
+        self._assert_stays_required("github.event_name != 'pull_request'", "Not equal pull_request")
+        self._assert_stays_required(
+            "github.event_name == 'workflow_dispatch' && (always())", "Unparseable parens")
+
+    def _assert_on_stays_required(self, workflow, job_name, head_branch=None):
+        r = self._report([{"path": IOS, "text": workflow}], check_runs=[],
+                         head_branch=head_branch)
+        self.assertTrue(any(f"{job_name}: missing" in b for b in r["checks"]["bad"]),
+                        (workflow, r["checks"]))
+        self.assertFalse(any(s.startswith("N/A") for _, s in r["checks"]["rows"]),
+                         (workflow, r["checks"]["rows"]))
+
+    def _assert_on_is_na(self, workflow, job_name, head_branch=None):
+        r = self._report([{"path": IOS, "text": workflow}], check_runs=[],
+                         head_branch=head_branch)
+        self.assertTrue(any(job_name in n and s.startswith("N/A") for n, s in r["checks"]["rows"]),
+                        (workflow, r["checks"]["rows"]))
+        self.assertFalse(any(job_name in b for b in r["checks"]["bad"]), r["checks"]["bad"])
+
+    def test_pull_request_target_on_stays_required(self):
+        """Echo: map, string, and list forms of pull_request_target must stay required."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  pull_request_target:
+jobs:
+  only:
+    name: Target job
+""", "Target job")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+jobs:
+  only:
+    name: Target types job
+""", "Target types job")
+        self._assert_on_stays_required("""
+name: Manual
+on: pull_request_target
+jobs:
+  only:
+    name: Target string job
+""", "Target string job")
+        self._assert_on_stays_required("""
+name: Manual
+on: [pull_request_target]
+jobs:
+  only:
+    name: Target list job
+""", "Target list job")
+
+    def test_empty_or_unrecognized_on_stays_required(self):
+        """Echo: an empty or unparsed `on:` must fail closed, not mark every job N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+
+jobs:
+  only:
+    name: Empty on job
+""", "Empty on job")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+    pull_request:
+jobs:
+  only:
+    name: Four space job
+""", "Four space job")
+
+    def test_unknown_on_keys_stay_required(self):
+        """An `on:` typo or a mix of known and unknown keys must fail closed, not go N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  pull_requets:
+jobs:
+  only:
+    name: Typo on job
+""", "Typo on job")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  workflow_dispatch:
+  pull_requets:
+jobs:
+  only:
+    name: Mixed on job
+""", "Mixed on job")
+
+    def test_pure_dispatch_and_schedule_on_stays_na(self):
+        text = """
+name: Manual
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+jobs:
+  only:
+    name: Scheduled job
+"""
+        r = self._report([{"path": IOS, "text": text}], check_runs=[])
+        self.assertTrue(any("Scheduled job" in n and s.startswith("N/A") for n, s in r["checks"]["rows"]),
+                        r["checks"]["rows"])
+        self.assertFalse(r["checks"]["bad"], r["checks"]["bad"])
+
+    def test_unfiltered_push_stays_required(self):
+        """Sentinel: an unfiltered push also fires on same-repo PR branch pushes."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+jobs:
+  only:
+    name: Unfiltered push job
+""", "Unfiltered push job", head_branch="atlas/foo")
+        self._assert_on_stays_required("""
+name: Manual
+on: [push]
+jobs:
+  only:
+    name: List push job
+""", "List push job", head_branch="atlas/foo")
+        self._assert_on_stays_required("""
+name: Manual
+on: push
+jobs:
+  only:
+    name: String push job
+""", "String push job", head_branch="atlas/foo")
+
+    def test_push_branches_filter_uses_the_head_branch(self):
+        matching = """
+name: Manual
+on:
+  push:
+    branches: [atlas/foo]
+jobs:
+  only:
+    name: Matching push job
+"""
+        other = """
+name: Manual
+on:
+  push:
+    branches:
+      - main
+jobs:
+  only:
+    name: Other branch job
+"""
+        self._assert_on_stays_required(matching, "Matching push job", head_branch="atlas/foo")
+        self._assert_on_is_na(other, "Other branch job", head_branch="atlas/foo")
+
+    def test_tags_only_push_is_na(self):
+        self._assert_on_is_na("""
+name: Manual
+on:
+  push:
+    tags: [v1.0]
+jobs:
+  only:
+    name: Tags only job
+""", "Tags only job", head_branch="atlas/foo")
+
+    def test_unevaluable_push_filter_fails_closed(self):
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches-ignore: [main]
+jobs:
+  only:
+    name: Ignore filter job
+""", "Ignore filter job", head_branch="atlas/foo")
+        # A branches filter without a head branch cannot be evaluated.
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: [main]
+jobs:
+  only:
+    name: No head job
+""", "No head job")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: [atlas/*]
+    paths: ['ios/**']
+jobs:
+  only:
+    name: Glob paths job
+""", "Glob paths job", head_branch="atlas/foo")
+
+    def test_push_branches_items_indented_8_spaces_with_tags_fails_closed(self):
+        """Sentinel B1: 8-space `- feat` under branches: is unread; with tags: this was N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    tags: [v1]
+    branches:
+        - feat
+jobs:
+  only:
+    name: Eight space branches job
+""", "Eight space branches job", head_branch="feat")
+
+    def test_push_branches_items_indented_7_spaces_with_tags_fails_closed(self):
+        """Sentinel B1: 7-space `- feat` under branches: is unread; with tags: this was N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    tags: [v1]
+    branches:
+       - feat
+jobs:
+  only:
+    name: Seven space branches job
+""", "Seven space branches job", head_branch="feat")
+
+    def test_push_empty_branches_then_tags_fails_closed(self):
+        """Sentinel B1: `branches:` with no items, then `tags: [v1]`, must not go N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches:
+    tags: [v1]
+jobs:
+  only:
+    name: Empty branches then tags job
+""", "Empty branches then tags job", head_branch="feat")
+
+    def test_push_mixed_indent_branches_with_tags_fails_closed(self):
+        """A 6-space item plus a deeper unread item must not keep only the readable names."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    tags: [v1]
+    branches:
+      - main
+        - feat
+jobs:
+  only:
+    name: Mixed indent branches job
+""", "Mixed indent branches job", head_branch="feat")
+
+    def test_push_flow_style_multi_branch_list_is_evaluated(self):
+        """Control: `branches: [a, b]` is already fully parsed and can match or miss."""
+        text = """
+name: Manual
+on:
+  push:
+    branches: [feat, release]
+jobs:
+  only:
+    name: Flow list job
+"""
+        self._assert_on_stays_required(text, "Flow list job", head_branch="feat")
+        self._assert_on_is_na(text, "Flow list job", head_branch="atlas/foo")
+
+    def test_plus_and_backslash_branch_patterns_fail_closed(self):
+        """Echo: + and \\ in GitHub branch filters are globs, not literals."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: ['fea+t/x']
+jobs:
+  only:
+    name: Plus glob job
+""", "Plus glob job", head_branch="feaat/x")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: a+
+jobs:
+  only:
+    name: Plus scalar job
+""", "Plus scalar job", head_branch="aaa")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: ['feat\\x']
+jobs:
+  only:
+    name: Backslash pattern job
+""", "Backslash pattern job", head_branch="featx")
+
+    def test_trailing_yaml_comments_on_push_branches_are_stripped(self):
+        """Echo: trailing unquoted comments must not be kept in the branch value."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches:
+      - main # default
+jobs:
+  only:
+    name: Dash comment job
+""", "Dash comment job", head_branch="main")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches:
+      - 'main' # default
+jobs:
+  only:
+    name: Quoted dash comment job
+""", "Quoted dash comment job", head_branch="main")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: main # default
+jobs:
+  only:
+    name: Scalar comment job
+""", "Scalar comment job", head_branch="main")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: # note
+      - main
+jobs:
+  only:
+    name: Key comment job
+""", "Key comment job", head_branch="main")
+        # After stripping, a fully understood non-matching name stays N/A.
+        self._assert_on_is_na("""
+name: Manual
+on:
+  push:
+    branches: develop # default
+jobs:
+  only:
+    name: Other comment job
+""", "Other comment job", head_branch="main")
+
+    def test_glob_only_push_branches_fail_closed(self):
+        """Echo: a glob without paths must stay required so a glob→N/A mutation dies."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: ['atlas/*']
+jobs:
+  only:
+    name: Star glob job
+""", "Star glob job", head_branch="atlas/foo")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: ['!main']
+jobs:
+  only:
+    name: Negation glob job
+""", "Negation glob job", head_branch="feat")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: ['fea+t/x']
+jobs:
+  only:
+    name: Plus glob only job
+""", "Plus glob only job", head_branch="feaat/x")
+
+    def test_empty_flow_branches_list_fails_closed(self):
+        """Echo nit: branches: [] must fail closed, not N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: []
+jobs:
+  only:
+    name: Empty flow list job
+""", "Empty flow list job", head_branch="feat")
 
 
 class Signs(NoNetwork):
@@ -230,6 +743,158 @@ class Overlap(NoNetwork):
         self.assertEqual(m.overlap(["a"], []), [])
 
 
+class DeviceLine(NoNetwork):
+    """#556 acceptance and Echo's #678 non-blocker: NOT TESTED is unbound; TESTED names the head."""
+
+    HEAD = "6d5a15054d340a344e47810e928e6ce617dc8ea6"
+
+    def _ready(self, device_line, head_sha=None):
+        f = fixture()
+        f["pr"] = dict(f["pr"], device_line=device_line, head_sha=head_sha if head_sha is not None else self.HEAD)
+        return m.build_report(**f)
+
+    def test_accepts_the_two_exact_forms_anywhere_in_the_body(self):
+        self.assertEqual(m.parse_device_line("Summary\n\nDevice: NOT TESTED\n\n-Fry"), {"status": "NOT TESTED"})
+        self.assertEqual(m.parse_device_line("Device: NOT TESTED on a phone"), {"status": "NOT TESTED"})
+        self.assertEqual(m.parse_device_line("a\r\nDevice: TESTED " + self.HEAD + "\r\nb"),
+                         {"status": "TESTED", "named": self.HEAD})
+
+    def test_everything_else_is_missing(self):
+        for body in (None, "", "no such line", "Device check: NOT TESTED", "device: NOT TESTED",
+                     "  Device: NOT TESTED", "- Device: NOT TESTED", "> Device: NOT TESTED",
+                     "Device:NOT TESTED", "Device: NOT TESTEDX", "Device: TESTEDX", "Device: untested",
+                     "Notes: Device: NOT TESTED", "Device: NOT"):
+            self.assertIsNone(m.parse_device_line(body), repr(body))
+
+    def test_a_missing_device_line_is_the_only_reason_when_all_else_is_ready(self):
+        r = self._ready(None)
+        self.assertFalse(r["ready"])
+        self.assertEqual(r["reasons"], ["PR body has no line starting `Device: NOT TESTED` (or `Device: TESTED`)"])
+        self.assertIn("Device line: missing", m.render(r))
+
+    def test_a_pr_without_the_field_fails_closed(self):
+        f = fixture()
+        f["pr"].pop("device_line")
+        self.assertFalse(m.build_report(**f)["ready"])
+
+    def test_fetch_reads_the_line_from_the_body_and_never_keeps_the_body(self):
+        def api(path):
+            if path.endswith("/pulls/9"):
+                return {"head": {"sha": "a" * 40}, "base": {"ref": "integration/device-duo"}, "state": "open",
+                        "merged_at": None, "changed_files": 0, "body": "x\n\nDevice: NOT TESTED\nsecret body text"}
+            if "/commits/integration" in path:
+                return {"sha": "b" * 40}
+            if "/compare/" in path:
+                return {"merge_base_commit": {"sha": "b" * 40}, "files": []}
+            return {"content": "bmFtZTogeAo="}  # base64 of "name: x\n"
+        with mock.patch.object(m, "gh_api", side_effect=api), mock.patch.object(m, "gh_list", return_value=[]):
+            got = m.fetch("o/r", 9)
+        self.assertEqual(got["pr"]["device_line"], {"status": "NOT TESTED"})
+        self.assertNotIn("secret body text", json.dumps(got))
+
+    def test_tested_matching_full_sha(self):
+        parsed = m.parse_device_line("Notes\nDevice: TESTED " + self.HEAD + " on a Duo")
+        self.assertEqual(parsed, {"status": "TESTED", "named": self.HEAD})
+        r = self._ready(parsed)
+        self.assertTrue(r["ready"], r["reasons"])
+        self.assertIn("Device line: Device: TESTED " + self.HEAD, m.render(r))
+
+    def test_tested_matching_short_sha(self):
+        parsed = m.parse_device_line("Device: TESTED 6d5a150")
+        self.assertEqual(parsed, {"status": "TESTED", "named": "6d5a150"})
+        r = self._ready(parsed)
+        self.assertTrue(r["ready"], r["reasons"])
+        self.assertIn("Device line: Device: TESTED 6d5a150", m.render(r))
+
+    def test_tested_stale_sha(self):
+        parsed = m.parse_device_line("Device: TESTED e40db684")
+        r = self._ready(parsed)
+        self.assertFalse(r["ready"])
+        self.assertEqual(r["reasons"], ["Device line: stale (names e40db684, head 6d5a1505)"])
+        self.assertIn("Device line: stale (names e40db684, head 6d5a1505)", m.render(r))
+
+    def test_tested_missing_sha(self):
+        parsed = m.parse_device_line("Device: TESTED on an iPhone 17")
+        self.assertEqual(parsed, {"status": "TESTED", "named": None, "defect": "missing-sha"})
+        r = self._ready(parsed)
+        self.assertFalse(r["ready"])
+        self.assertEqual(r["reasons"], ["Device line: TESTED with no sha (head 6d5a1505)"])
+
+    def test_tested_too_short_prefix(self):
+        parsed = m.parse_device_line("Device: TESTED 6d5a15")
+        self.assertEqual(parsed, {"status": "TESTED", "named": "6d5a15", "defect": "too-short"})
+        r = self._ready(parsed)
+        self.assertFalse(r["ready"])
+        self.assertEqual(r["reasons"], ["Device line: TESTED sha too short (names 6d5a15, head 6d5a1505)"])
+
+    def test_tested_uppercase_sha_matches(self):
+        parsed = m.parse_device_line("Device: TESTED 6D5A15054D340A344E47810E928E6CE617DC8EA6")
+        self.assertEqual(parsed["named"], self.HEAD)
+        r = self._ready(parsed)
+        self.assertTrue(r["ready"], r["reasons"])
+        self.assertIn("Device line: Device: TESTED " + self.HEAD, m.render(r))
+
+    def test_indented_or_device_check_line_still_does_not_count(self):
+        for body in ("  Device: TESTED " + self.HEAD,
+                     "Device check: TESTED " + self.HEAD,
+                     "> Device: TESTED " + self.HEAD,
+                     "- Device: NOT TESTED"):
+            self.assertIsNone(m.parse_device_line(body), repr(body))
+        r = self._ready(m.parse_device_line("Device check: TESTED " + self.HEAD))
+        self.assertFalse(r["ready"])
+        self.assertIn("PR body has no line starting `Device: NOT TESTED`", r["reasons"][0])
+
+    def test_not_tested_is_ok_at_any_head_and_ignores_a_sha(self):
+        parsed = m.parse_device_line("Device: NOT TESTED " + self.HEAD)
+        self.assertEqual(parsed, {"status": "NOT TESTED"})
+        r = self._ready(parsed)  # sha on the line is ignored; fixture head still signs
+        self.assertTrue(r["ready"], r["reasons"])
+        self.assertIn("Device line: Device: NOT TESTED", m.render(r))
+        # A later push keeps a true NOT TESTED line ready; no body edit. Signs are sha-bound,
+        # so this checks the device line only.
+        other = "e40db68411f7f058da8cd3d435dee97d32d5ac4b"
+        display, reason = m.assess_device_line({"status": "NOT TESTED"}, other)
+        self.assertEqual(display, "Device: NOT TESTED")
+        self.assertIsNone(reason)
+        _, tested_reason = m.assess_device_line({"status": "TESTED", "named": self.HEAD[:8]}, other)
+        self.assertTrue(tested_reason.startswith("Device line: stale"), tested_reason)
+
+    def test_tested_without_a_head_sha_fails_closed(self):
+        parsed = m.parse_device_line("Device: TESTED " + self.HEAD)
+        r = self._ready(parsed, head_sha="")
+        self.assertFalse(r["ready"])
+        self.assertIn("Device line: head sha unavailable", r["reasons"])
+        for head in (None, "", "not-a-sha", "abc"):
+            _, reason = m.assess_device_line(parsed, head)
+            self.assertEqual(reason, "Device line: head sha unavailable", repr(head))
+
+    def test_tested_ambiguous_sha_tokens_fail_closed(self):
+        parsed = m.parse_device_line("Device: TESTED 6d5a150 e40db684")
+        self.assertEqual(parsed["defect"], "ambiguous")
+        r = self._ready(parsed)
+        self.assertFalse(r["ready"])
+        self.assertEqual(r["reasons"],
+                         ["Device line: TESTED sha ambiguous (names 6d5a150 and e40db684, head 6d5a1505)"])
+
+    def test_fetch_tested_keeps_only_the_named_sha(self):
+        def api(path):
+            if path.endswith("/pulls/9"):
+                return {"head": {"sha": self.HEAD}, "base": {"ref": "integration/device-duo"}, "state": "open",
+                        "merged_at": None, "changed_files": 0,
+                        "body": "secret body\nDevice: TESTED 6D5A150 on a Duo\nmore secret"}
+            if "/commits/integration" in path:
+                return {"sha": "b" * 40}
+            if "/compare/" in path:
+                return {"merge_base_commit": {"sha": "b" * 40}, "files": []}
+            return {"content": "bmFtZTogeAo="}
+        with mock.patch.object(m, "gh_api", side_effect=api), mock.patch.object(m, "gh_list", return_value=[]):
+            got = m.fetch("o/r", 9)
+        self.assertEqual(got["pr"]["device_line"], {"status": "TESTED", "named": "6d5a150"})
+        blob = json.dumps(got)
+        self.assertNotIn("secret", blob)
+        self.assertNotIn("on a Duo", blob)
+
+
 class Verdict(NoNetwork):
     def test_fixture_is_ready(self):
         r = m.build_report(**fixture())
@@ -237,6 +902,7 @@ class Verdict(NoNetwork):
         text = m.render(r)
         self.assertTrue(text.endswith("\nREADY"), text)
         self.assertIn("Signs (2/2 non-author at 6d5a1505)", text)
+        self.assertIn("Device line: Device: NOT TESTED", text)
         self.assertIn("Checks (4/4 green)", text)
         self.assertIn("  ok  CI / checks: success", text)
         self.assertNotIn("Vercel", text)  # only ios.yml and ci.yml jobs are required
@@ -246,13 +912,13 @@ class Verdict(NoNetwork):
         f["postings"] = f["postings"][:1]
         f["check_runs"] = [r for r in f["check_runs"] if r["name"] != "checks"]
         f["base_files"] = ["ios/AeroDJCore/Tests/AeroDJCoreTests/LatePollQueueEndTests.swift", "README.md"]
-        f["pr"] = dict(f["pr"], base="main")
+        f["pr"] = dict(f["pr"], base="main", device_line=None)
         r = m.build_report(**f)
         self.assertFalse(r["ready"])
         line = m.render(r).splitlines()[-1]
         self.assertTrue(line.startswith("NOT READY: "), line)
         for part in ("base is main", "1 required check(s) not green", "1/2 non-author signs",
-                     "1 file(s) also changed on the base"):
+                     "1 file(s) also changed on the base", "PR body has no line starting"):
             self.assertIn(part, line)
         self.assertIn("  ios/AeroDJCore/Tests/AeroDJCoreTests/LatePollQueueEndTests.swift", m.render(r))
 
