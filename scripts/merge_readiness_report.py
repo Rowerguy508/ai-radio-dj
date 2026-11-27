@@ -12,11 +12,16 @@ Prints, at the PR's exact head sha:
       "skipped (path filter, changes passed)". Missing, pending, cancelled, failed, or any other
       skip is not green. A job is N/A on a PR only when that is certain: a plain positive
       dispatch-only `if:` (`github.event_name == 'workflow_dispatch'`, optionally `&&` a
-      positive `inputs.<id>` / `inputs.<id> == true` check), or a fully parsed `on:` whose every key is a known non-PR event (allowlist:
-      `workflow_dispatch`, `schedule`, `push`, `release`, and other documented events that
-      a pull request cannot trigger). Anything else — `!`, `!=`, `||`, chained `==`,
-      parentheses, an empty or unparsed `on:`, or an unknown `on:` key — fails closed and
-      is a missing required check if it has no run.
+      positive `inputs.<id>` / `inputs.<id> == true` check), or a fully parsed `on:` whose
+      every trigger is a known non-PR event (allowlist: `workflow_dispatch`, `schedule`,
+      `release`, and other documented events a pull request cannot trigger). An unfiltered
+      `push` (or a `branches` filter that matches the PR head branch) runs on same-repo PR
+      branches and stays required. A tags-only `push` is N/A. A `push` filter that cannot
+      be evaluated (`branches-ignore`, `paths`, unevaluable globs, a missing head branch,
+      an unread or empty pending `branches`/`tags` list, `branches: []`, glob characters including `+` and `\\`, or any deeper unknown line under
+      `push`) fails closed. Only a fully understood `push` block can be N/A or a branch match. Anything else — `!`, `!=`, `||`, chained `==`, parentheses, an empty or
+      unparsed `on:`, or an unknown `on:` key — fails closed and is a missing required check
+      if it has no run.
       N/A jobs are listed, not hidden.
   (b) signs: a comment or review whose first non-empty line is exactly `SIGN <sha8|sha40> -Name`,
       where the sha is the current head. A review in
@@ -133,24 +138,27 @@ def job_check_names(yaml_text: str) -> list[str]:
     return [j["name"] or j["id"] for j in _parse_jobs(yaml_text)]
 
 
-def workflow_runs_on_pull_request(yaml_text: str) -> bool:
-    """True unless every parsed `on:` key is a known non-PR event.
+def workflow_runs_on_pull_request(yaml_text: str, head_branch: str | None = None) -> bool:
+    """True unless every parsed `on:` trigger is a known non-PR event that does not run
+    on a same-repo PR branch.
 
-    A workflow is N/A on a PR only when at least one event key was parsed and every
-    key is in `_NON_PR_ON_EVENTS`. Any unknown key (a typo such as `pull_requets`),
-    any PR event, or an empty / unparsed `on:` fails closed and is treated as running
-    on a PR, so its jobs stay required.
+    A workflow is N/A on a PR only when at least one event was parsed and none of them
+    can run at the PR head. `push` with no `branches` / `branches-ignore` filter fires
+    on same-repo PR branch pushes and is required. `push.branches` is required if it
+    matches `head_branch`, N/A if it is fully evaluated and does not match, and required
+    (fail closed) if `head_branch` is missing or the filter cannot be evaluated.
+    Tags-only `push` is N/A. Any unknown key, PR event, or empty / unparsed `on:` fails
+    closed and stays required.
     """
-    events = _parse_on_events(yaml_text)
-    if not events:
+    triggers = _parse_on_triggers(yaml_text)
+    if not triggers:
         return True
-    return any(e not in _NON_PR_ON_EVENTS for e in events)
+    return any(_trigger_runs_on_pr(name, info, head_branch) for name, info in triggers.items())
 
 
-# Documented GitHub Actions events that are not triggered by pull-request activity.
-# PR events (`pull_request`, `pull_request_target`, reviews, merge_group) and events
-# that also fire on PRs (`issue_comment`, check runs) are omitted: an unknown key
-# fails closed.
+# Documented GitHub Actions events that are not triggered by pull-request activity
+# and do not fire on a same-repo PR branch push. `push` is handled separately.
+# PR events and events that also fire on PRs (`issue_comment`, check runs) are omitted.
 _NON_PR_ON_EVENTS = frozenset({
     "branch_protection_rule",
     "create",
@@ -168,7 +176,6 @@ _NON_PR_ON_EVENTS = frozenset({
     "milestone",
     "page_build",
     "public",
-    "push",
     "registry_package",
     "release",
     "repository_advisory",
@@ -193,20 +200,168 @@ _NON_PR_ON_EVENTS = frozenset({
 _ON_EVENT = re.compile(r"^[A-Za-z_][\w-]*$")
 _ON_INLINE_LIST = re.compile(r"^on:\s*\[([^]]*)\]\s*$")
 _ON_INLINE_ONE = re.compile(r"^on:\s*([A-Za-z_][\w-]*)\s*$")
-_ON_MAPPING_KEY = re.compile(r"^  ([A-Za-z_][\w-]*)\s*:")
+_ON_MAPPING_KEY = re.compile(r"^  ([A-Za-z_][\w-]*)\s*:(.*)$")
+_ON_FILTER_KEY = re.compile(r"^    ([A-Za-z_][\w-]*)\s*:(.*)$")
+_ON_DASH_ITEM = re.compile(r"^      -\s+(.+?)\s*$")
+_GLOB_CHARS = frozenset("*?[]!+\\")
+
+
+def _strip_unquoted_comment(value: str) -> str:
+    """Drop a YAML comment that starts at an unquoted `#` at the start or after space."""
+    in_single = in_double = False
+    i = 0
+    while i < len(value):
+        c = value[i]
+        if in_single:
+            if c == "'" and i + 1 < len(value) and value[i + 1] == "'":
+                i += 2
+                continue
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            if c == "\\" and i + 1 < len(value):
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+            i += 1
+            continue
+        if c == "'":
+            in_single = True
+            i += 1
+            continue
+        if c == '"':
+            in_double = True
+            i += 1
+            continue
+        if c == "#" and (i == 0 or value[i - 1].isspace()):
+            return value[:i].rstrip()
+        i += 1
+    return value.rstrip()
+
+
+def _unquote_scalar(value: str) -> str:
+    value = _strip_unquoted_comment(value).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def _parse_flow_list(value: str) -> list[str] | None:
+    value = _strip_unquoted_comment(value).strip()
+    if not (value.startswith("[") and value.endswith("]")):
+        return None
+    inner = value[1:-1].strip()
+    if not inner:
+        return []
+    items = [_unquote_scalar(part) for part in inner.split(",")]
+    if any(not item for item in items):
+        return None
+    return items
+
+
+def _trigger_runs_on_pr(name: str, info: dict, head_branch: str | None) -> bool:
+    if name == "push":
+        return _push_fires_on_same_repo_pr(info, head_branch)
+    return name not in _NON_PR_ON_EVENTS
+
+
+def _push_fires_on_same_repo_pr(info: dict, head_branch: str | None) -> bool:
+    """True when this `push` trigger can run for a same-repo PR head (required, not N/A)."""
+    if info.get("unevaluable") or info.get("branches_ignore") or info.get("paths"):
+        return True
+    branches = info.get("branches")
+    tags = info.get("tags")
+    if branches is None:
+        return tags is None  # unfiltered: yes; tags-only: no
+    if not branches:
+        return True  # branches: [] is unevaluable; fail closed
+    if any(_GLOB_CHARS & set(pat) for pat in branches):
+        return True
+    if not head_branch:
+        return True
+    return head_branch in branches
 
 
 def _parse_on_events(yaml_text: str) -> set[str] | None:
     """Event names in `on:`, or None if the block is absent or not fully understood."""
+    triggers = _parse_on_triggers(yaml_text)
+    return None if triggers is None else set(triggers)
+
+
+def _parse_on_triggers(yaml_text: str) -> dict[str, dict] | None:
+    """Event name -> filter info for `on:`, or None if the block is absent or unparsed."""
     in_on = False
-    collected: set[str] = set()
+    triggers: dict[str, dict] = {}
+    current: str | None = None
+    pending_list: str | None = None
+    pending_got_item = False
+
+    def close_pending() -> None:
+        """A pending push list with no items read is unevaluable, not tags-only / unfiltered."""
+        nonlocal pending_list, pending_got_item
+        if current == "push" and pending_list and not pending_got_item:
+            triggers[current]["unevaluable"] = True
+        pending_list = None
+        pending_got_item = False
+
+    def start_event(name: str) -> None:
+        nonlocal current
+        close_pending()
+        current = name
+        triggers.setdefault(name, {})
+
+    def store_filter(event: str, key: str, values: list[str] | None) -> None:
+        info = triggers[event]
+        if key in ("branches-ignore", "paths", "paths-ignore"):
+            info["branches_ignore" if key == "branches-ignore" else "paths"] = True
+            if key == "branches-ignore" and values is not None:
+                info["branches_ignore"] = True
+            return
+        if key in ("branches", "tags"):
+            if values is None:
+                info["unevaluable"] = True
+            else:
+                info[key] = values
+            return
+        if event == "push":
+            # Unknown filter on push cannot be ignored safely.
+            info["unevaluable"] = True
+
+    def take_inline_or_pending(event: str, key: str, rest: str) -> None:
+        nonlocal pending_list, pending_got_item
+        close_pending()
+        rest = _strip_unquoted_comment(rest).strip()
+        if not rest:
+            pending_list = key
+            pending_got_item = False
+            return
+        values = _parse_flow_list(rest) if rest.startswith("[") else None
+        if rest.startswith("[") and values is None:
+            triggers[event]["unevaluable"] = True
+            pending_list = None
+            return
+        if not rest.startswith("["):
+            # A scalar (rare) — treat as a one-item list if it is a plain name.
+            if key in ("branches", "tags") and not (_GLOB_CHARS & set(rest) or rest.startswith("{")):
+                values = [_unquote_scalar(rest)]
+            else:
+                triggers[event]["unevaluable"] = True
+                pending_list = None
+                return
+        store_filter(event, key, values)
+        pending_list = None
+
     for raw in yaml_text.splitlines():
         line = raw.rstrip()
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if not line.startswith(" "):
             if in_on:
-                return collected or None
+                close_pending()
+                return triggers or None
             if re.match(r"^on:\s*$", line):
                 in_on = True
                 continue
@@ -215,24 +370,67 @@ def _parse_on_events(yaml_text: str) -> set[str] | None:
                 if m:
                     items = [i.strip() for i in m.group(1).split(",") if i.strip()]
                     if items and all(_ON_EVENT.fullmatch(i) for i in items):
-                        return set(items)
+                        return {i: {} for i in items}
                     return None
                 m = _ON_INLINE_ONE.match(line)
                 if m:
-                    return {m.group(1)}
+                    return {m.group(1): {}}
                 return None
             if line == "jobs:":
                 break
             continue
-        if in_on:
-            if line.startswith("    "):
+        if not in_on:
+            continue
+        m = _ON_MAPPING_KEY.match(line)
+        if m and line.startswith("  ") and not line.startswith("   "):
+            start_event(m.group(1))
+            rest = m.group(2).strip()
+            if rest and rest not in ("{}",):
+                # `push: [something]` is not a normal event filter; fail closed.
+                if current:
+                    triggers[current]["unevaluable"] = True
+            continue
+        if current is None:
+            return None
+        item = _ON_DASH_ITEM.match(line)
+        if item and pending_list:
+            value = _unquote_scalar(item.group(1))
+            if not value:
+                triggers[current]["unevaluable"] = True
+                pending_list = None
+                pending_got_item = False
                 continue
-            m = _ON_MAPPING_KEY.match(line)
-            if not m or not line.startswith("  ") or line.startswith("   "):
-                return None
-            collected.add(m.group(1))
+            key = pending_list
+            pending_got_item = True
+            if key in ("branches", "tags"):
+                triggers[current].setdefault(key, []).append(value)
+            elif key in ("branches-ignore", "paths", "paths-ignore"):
+                store_filter(current, key, [value])
+            else:
+                triggers[current]["unevaluable"] = True
+            continue
+        # Event-level dashed list, e.g. `schedule: \n    - cron: '0 0 * * *'`.
+        if re.match(r"^    -\s+", line):
+            if current == "push":
+                triggers[current]["unevaluable"] = True
+            close_pending()
+            continue
+        filt = _ON_FILTER_KEY.match(line)
+        if filt and line.startswith("    ") and not line.startswith("     "):
+            take_inline_or_pending(current, filt.group(1), filt.group(2))
+            continue
+        if line.startswith("      "):
+            # Nested mapping under a 4-space key (e.g. workflow_dispatch inputs).
+            # Under push, only a 6-space dash item is understood; anything deeper
+            # (7- or 8-space list items, extra keys) is unevaluable.
+            if current == "push":
+                triggers[current]["unevaluable"] = True
+            close_pending()
+            continue
+        return None
     if in_on:
-        return collected or None
+        close_pending()
+        return triggers or None
     return None
 
 
@@ -280,11 +478,11 @@ def na_on_pull_request_reason(if_expr: str | None, workflow_has_pr: bool) -> str
     return None
 
 
-def job_na_reasons(workflows: list[dict]) -> dict[tuple[str, str], str]:
+def job_na_reasons(workflows: list[dict], head_branch: str | None = None) -> dict[tuple[str, str], str]:
     """(workflow path, job name) -> N/A reason for jobs that cannot run on a pull_request."""
     out: dict[tuple[str, str], str] = {}
     for wf in workflows:
-        has_pr = workflow_runs_on_pull_request(wf["text"])
+        has_pr = workflow_runs_on_pull_request(wf["text"], head_branch)
         for j in _parse_jobs(wf["text"]):
             reason = na_on_pull_request_reason(j["if"], has_pr)
             if reason:
@@ -620,7 +818,7 @@ def build_report(*, pr: dict, base_head: str, merge_base: str, workflows: list[d
         warnings.append(f"ROSTER: commit author(s) outside the bot roster ({', '.join(ROSTER)}): "
                         f"{', '.join(outside)}. Report-only; does not change the verdict")
     checks = assess_checks(check_runs, required, pr["head_sha"], workflow_runs or [], labels,
-                           job_na_reasons(workflows))
+                           job_na_reasons(workflows, pr.get("head_branch")))
     signs = collect_signs(postings, pr["head_sha"], authors)
     ov = overlap(pr_files, base_files)
     ready, reasons = verdict(pr=pr, checks=checks, signs=signs, overlap_files=ov, warnings=warnings)
@@ -655,7 +853,8 @@ def fetch(repo: str, number: int) -> dict:
     p = gh_api(f"repos/{repo}/pulls/{number}")
     head = p["head"]["sha"]
     base_ref = p["base"]["ref"]
-    pr = {"number": number, "head_sha": head, "base": base_ref, "state": p["state"],
+    pr = {"number": number, "head_sha": head, "head_branch": p["head"].get("ref"),
+          "base": base_ref, "state": p["state"],
           "merged": bool(p.get("merged_at")), "device_line": parse_device_line(p.get("body"))}
     warnings: list[str] = []
     base_head = gh_api(f"repos/{repo}/commits/{base_ref}")["sha"]
