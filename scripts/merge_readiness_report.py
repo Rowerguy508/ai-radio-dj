@@ -10,7 +10,19 @@ Prints, at the PR's exact head sha:
       a run that can't be mapped never counts. A skipped iOS job counts as green only when
       ios.yml's own `changes` job (the path filter) concluded success at the same sha; it is shown as
       "skipped (path filter, changes passed)". Missing, pending, cancelled, failed, or any other
-      skip is not green.
+      skip is not green. A job is N/A on a PR only when that is certain: a plain positive
+      dispatch-only `if:` (`github.event_name == 'workflow_dispatch'`, optionally `&&` a
+      positive `inputs.<id>` / `inputs.<id> == true` check), or a fully parsed `on:` whose
+      every trigger is a known non-PR event (allowlist: `workflow_dispatch`, `schedule`,
+      `release`, and other documented events a pull request cannot trigger). An unfiltered
+      `push` (or a `branches` filter that matches the PR head branch) runs on same-repo PR
+      branches and stays required. A tags-only `push` is N/A. A `push` filter that cannot
+      be evaluated (`branches-ignore`, `paths`, unevaluable globs, a missing head branch,
+      an unread or empty pending `branches`/`tags` list, `branches: []`, glob characters including `+` and `\\`, or any deeper unknown line under
+      `push`) fails closed. Only a fully understood `push` block can be N/A or a branch match. Anything else — `!`, `!=`, `||`, chained `==`, parentheses, an empty or
+      unparsed `on:`, or an unknown `on:` key — fails closed and is a missing required check
+      if it has no run.
+      N/A jobs are listed, not hidden.
   (b) signs: a comment or review whose first non-empty line is exactly `SIGN <sha8|sha40> -Name`,
       where the sha is the current head. A review in
       CHANGES_REQUESTED state never counts. The signer is the `-Name`, not the GitHub login (every
@@ -21,7 +33,17 @@ Prints, at the PR's exact head sha:
       changed since the merge-base (merge-base..base head). Any overlap makes the verdict NOT
       READY ("forward-merge or confirm the hunks are disjoint"), because the PR has not been
       tested against those base changes.
-  (d) READY or NOT READY, with every reason.
+  (d) device line: the PR body has a line that starts with `Device: NOT TESTED` or
+      `Device: TESTED`. `Device check: ...` and an indented or quoted line do not count. Missing is
+      NOT READY (#556 acceptance; #671 / Echo's #678 non-blocker -Atlas).
+      `Device: NOT TESTED` is honest at any head and does not need a sha: a later push must not
+      force a body edit for a still-true statement. A sha on that line, if present, is ignored.
+      `Device: TESTED` must name the PR head sha the report already fetches: the full 40-char sha
+      or a prefix of at least 7 hex characters, case-insensitive. A different sha, no sha, a
+      prefix shorter than 7, or two incompatible sha tokens is NOT READY (stale / no sha /
+      too short / ambiguous). If the head sha is unavailable, TESTED is NOT READY (fail closed).
+      Only the parsed result is kept; the body is never stored or printed.
+  (e) READY or NOT READY, with every reason.
   Also warns (report-only, never a reason) when a commit author is outside ROSTER.
 
 Report-only: it is not a required check, writes no check run, and changes no branch protection.
@@ -50,22 +72,35 @@ MAX_PR_COMMITS = 250   # GitHub's pulls/N/commits limit: more than this and we c
 MAX_COMPARE_FILES = 300  # GitHub's compare file limit.
 
 SIGN_LINE = re.compile(r"^SIGN ([0-9a-fA-F]{8}|[0-9a-fA-F]{40}) -([A-Za-z][A-Za-z0-9]*)$")
+DEVICE_LINE = re.compile(r"^Device: (NOT TESTED|TESTED)(?![A-Za-z0-9])")
+# Hex runs on a TESTED line. 7–40 is a sha claim; 4–6 is a too-short prefix (1–3 digit
+# numbers in prose such as "iPhone 17" are ignored).
+SHA_CLAIM = re.compile(r"\b([0-9a-fA-F]{7,40})\b")
+SHORT_SHA = re.compile(r"\b([0-9a-fA-F]{4,6})\b")
+HEAD_SHA = re.compile(r"^[0-9a-f]{7,40}$")
 CO_AUTHOR = re.compile(r"^Co-authored-by:\s*(.+?)\s*<[^>]*>\s*$", re.IGNORECASE | re.MULTILINE)
 
 
 # ---------- pure logic (tested offline) ----------
 
-def job_check_names(yaml_text: str) -> list[str]:
-    """Check-run names for a workflow's jobs: the job's `name:`, or its id when it has none.
-    A tiny line parser for this repo's layout (jobs at 2 spaces, job keys at 4)."""
-    names: list[str] = []
+def _unquote(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def _parse_jobs(yaml_text: str) -> list[dict]:
+    """Jobs as {id, name, if} for this repo's layout (jobs at 2 spaces, keys at 4)."""
+    jobs: list[dict] = []
     in_jobs = False
-    current_id = None
-    current_name = None
+    current = None
 
     def flush():
-        if current_id is not None:
-            names.append(current_name or current_id)
+        nonlocal current
+        if current is not None:
+            jobs.append(current)
+            current = None
 
     for raw in yaml_text.splitlines():
         line = raw.rstrip()
@@ -74,7 +109,6 @@ def job_check_names(yaml_text: str) -> list[str]:
         if not line.startswith(" "):
             if in_jobs:
                 flush()
-                current_id = None
             in_jobs = line == "jobs:"
             continue
         if not in_jobs:
@@ -82,17 +116,378 @@ def job_check_names(yaml_text: str) -> list[str]:
         m = re.match(r"^  ([A-Za-z_][\w-]*):\s*$", line)
         if m:
             flush()
-            current_id, current_name = m.group(1), None
+            current = {"id": m.group(1), "name": None, "if": None}
+            continue
+        if current is None:
             continue
         m = re.match(r"^    name:\s*(.+?)\s*$", line)
-        if m and current_id is not None and current_name is None:
-            value = m.group(1)
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-                value = value[1:-1]
-            current_name = value
+        if m and current["name"] is None:
+            current["name"] = _unquote(m.group(1))
+            continue
+        m = re.match(r"^    if:\s*(.+?)\s*$", line)
+        if m and current["if"] is None:
+            current["if"] = m.group(1).strip()
     if in_jobs:
         flush()
-    return names
+    return jobs
+
+
+def job_check_names(yaml_text: str) -> list[str]:
+    """Check-run names for a workflow's jobs: the job's `name:`, or its id when it has none.
+    A tiny line parser for this repo's layout (jobs at 2 spaces, job keys at 4)."""
+    return [j["name"] or j["id"] for j in _parse_jobs(yaml_text)]
+
+
+def workflow_runs_on_pull_request(yaml_text: str, head_branch: str | None = None) -> bool:
+    """True unless every parsed `on:` trigger is a known non-PR event that does not run
+    on a same-repo PR branch.
+
+    A workflow is N/A on a PR only when at least one event was parsed and none of them
+    can run at the PR head. `push` with no `branches` / `branches-ignore` filter fires
+    on same-repo PR branch pushes and is required. `push.branches` is required if it
+    matches `head_branch`, N/A if it is fully evaluated and does not match, and required
+    (fail closed) if `head_branch` is missing or the filter cannot be evaluated.
+    Tags-only `push` is N/A. Any unknown key, PR event, or empty / unparsed `on:` fails
+    closed and stays required.
+    """
+    triggers = _parse_on_triggers(yaml_text)
+    if not triggers:
+        return True
+    return any(_trigger_runs_on_pr(name, info, head_branch) for name, info in triggers.items())
+
+
+# Documented GitHub Actions events that are not triggered by pull-request activity
+# and do not fire on a same-repo PR branch push. `push` is handled separately.
+# PR events and events that also fire on PRs (`issue_comment`, check runs) are omitted.
+_NON_PR_ON_EVENTS = frozenset({
+    "branch_protection_rule",
+    "create",
+    "delete",
+    "deployment",
+    "deployment_protection_rule",
+    "deployment_review",
+    "deployment_status",
+    "discussion",
+    "discussion_comment",
+    "fork",
+    "gollum",
+    "issues",
+    "label",
+    "milestone",
+    "page_build",
+    "public",
+    "registry_package",
+    "release",
+    "repository_advisory",
+    "repository_dispatch",
+    "schedule",
+    "status",
+    "watch",
+    "workflow_call",
+    "workflow_dispatch",
+    "workflow_run",
+    "member",
+    "membership",
+    "organization",
+    "team",
+    "team_add",
+    "project",
+    "project_card",
+    "project_column",
+    "projects_v2",
+    "projects_v2_item",
+})
+_ON_EVENT = re.compile(r"^[A-Za-z_][\w-]*$")
+_ON_INLINE_LIST = re.compile(r"^on:\s*\[([^]]*)\]\s*$")
+_ON_INLINE_ONE = re.compile(r"^on:\s*([A-Za-z_][\w-]*)\s*$")
+_ON_MAPPING_KEY = re.compile(r"^  ([A-Za-z_][\w-]*)\s*:(.*)$")
+_ON_FILTER_KEY = re.compile(r"^    ([A-Za-z_][\w-]*)\s*:(.*)$")
+_ON_DASH_ITEM = re.compile(r"^      -\s+(.+?)\s*$")
+_GLOB_CHARS = frozenset("*?[]!+\\")
+
+
+def _strip_unquoted_comment(value: str) -> str:
+    """Drop a YAML comment that starts at an unquoted `#` at the start or after space."""
+    in_single = in_double = False
+    i = 0
+    while i < len(value):
+        c = value[i]
+        if in_single:
+            if c == "'" and i + 1 < len(value) and value[i + 1] == "'":
+                i += 2
+                continue
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            if c == "\\" and i + 1 < len(value):
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+            i += 1
+            continue
+        if c == "'":
+            in_single = True
+            i += 1
+            continue
+        if c == '"':
+            in_double = True
+            i += 1
+            continue
+        if c == "#" and (i == 0 or value[i - 1].isspace()):
+            return value[:i].rstrip()
+        i += 1
+    return value.rstrip()
+
+
+def _unquote_scalar(value: str) -> str:
+    value = _strip_unquoted_comment(value).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def _parse_flow_list(value: str) -> list[str] | None:
+    value = _strip_unquoted_comment(value).strip()
+    if not (value.startswith("[") and value.endswith("]")):
+        return None
+    inner = value[1:-1].strip()
+    if not inner:
+        return []
+    items = [_unquote_scalar(part) for part in inner.split(",")]
+    if any(not item for item in items):
+        return None
+    return items
+
+
+def _trigger_runs_on_pr(name: str, info: dict, head_branch: str | None) -> bool:
+    if name == "push":
+        return _push_fires_on_same_repo_pr(info, head_branch)
+    return name not in _NON_PR_ON_EVENTS
+
+
+def _push_fires_on_same_repo_pr(info: dict, head_branch: str | None) -> bool:
+    """True when this `push` trigger can run for a same-repo PR head (required, not N/A)."""
+    if info.get("unevaluable") or info.get("branches_ignore") or info.get("paths"):
+        return True
+    branches = info.get("branches")
+    tags = info.get("tags")
+    if branches is None:
+        return tags is None  # unfiltered: yes; tags-only: no
+    if not branches:
+        return True  # branches: [] is unevaluable; fail closed
+    if any(_GLOB_CHARS & set(pat) for pat in branches):
+        return True
+    if not head_branch:
+        return True
+    return head_branch in branches
+
+
+def _parse_on_events(yaml_text: str) -> set[str] | None:
+    """Event names in `on:`, or None if the block is absent or not fully understood."""
+    triggers = _parse_on_triggers(yaml_text)
+    return None if triggers is None else set(triggers)
+
+
+def _parse_on_triggers(yaml_text: str) -> dict[str, dict] | None:
+    """Event name -> filter info for `on:`, or None if the block is absent or unparsed."""
+    in_on = False
+    triggers: dict[str, dict] = {}
+    current: str | None = None
+    pending_list: str | None = None
+    pending_got_item = False
+
+    def close_pending() -> None:
+        """A pending push list with no items read is unevaluable, not tags-only / unfiltered."""
+        nonlocal pending_list, pending_got_item
+        if current == "push" and pending_list and not pending_got_item:
+            triggers[current]["unevaluable"] = True
+        pending_list = None
+        pending_got_item = False
+
+    def start_event(name: str) -> None:
+        nonlocal current
+        close_pending()
+        current = name
+        triggers.setdefault(name, {})
+
+    def store_filter(event: str, key: str, values: list[str] | None) -> None:
+        info = triggers[event]
+        if key in ("branches-ignore", "paths", "paths-ignore"):
+            info["branches_ignore" if key == "branches-ignore" else "paths"] = True
+            if key == "branches-ignore" and values is not None:
+                info["branches_ignore"] = True
+            return
+        if key in ("branches", "tags"):
+            if values is None:
+                info["unevaluable"] = True
+            else:
+                info[key] = values
+            return
+        if event == "push":
+            # Unknown filter on push cannot be ignored safely.
+            info["unevaluable"] = True
+
+    def take_inline_or_pending(event: str, key: str, rest: str) -> None:
+        nonlocal pending_list, pending_got_item
+        close_pending()
+        rest = _strip_unquoted_comment(rest).strip()
+        if not rest:
+            pending_list = key
+            pending_got_item = False
+            return
+        values = _parse_flow_list(rest) if rest.startswith("[") else None
+        if rest.startswith("[") and values is None:
+            triggers[event]["unevaluable"] = True
+            pending_list = None
+            return
+        if not rest.startswith("["):
+            # A scalar (rare) — treat as a one-item list if it is a plain name.
+            if key in ("branches", "tags") and not (_GLOB_CHARS & set(rest) or rest.startswith("{")):
+                values = [_unquote_scalar(rest)]
+            else:
+                triggers[event]["unevaluable"] = True
+                pending_list = None
+                return
+        store_filter(event, key, values)
+        pending_list = None
+
+    for raw in yaml_text.splitlines():
+        line = raw.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" "):
+            if in_on:
+                close_pending()
+                return triggers or None
+            if re.match(r"^on:\s*$", line):
+                in_on = True
+                continue
+            if line.startswith("on:"):
+                m = _ON_INLINE_LIST.match(line)
+                if m:
+                    items = [i.strip() for i in m.group(1).split(",") if i.strip()]
+                    if items and all(_ON_EVENT.fullmatch(i) for i in items):
+                        return {i: {} for i in items}
+                    return None
+                m = _ON_INLINE_ONE.match(line)
+                if m:
+                    return {m.group(1): {}}
+                return None
+            if line == "jobs:":
+                break
+            continue
+        if not in_on:
+            continue
+        m = _ON_MAPPING_KEY.match(line)
+        if m and line.startswith("  ") and not line.startswith("   "):
+            start_event(m.group(1))
+            rest = m.group(2).strip()
+            if rest and rest not in ("{}",):
+                # `push: [something]` is not a normal event filter; fail closed.
+                if current:
+                    triggers[current]["unevaluable"] = True
+            continue
+        if current is None:
+            return None
+        item = _ON_DASH_ITEM.match(line)
+        if item and pending_list:
+            value = _unquote_scalar(item.group(1))
+            if not value:
+                triggers[current]["unevaluable"] = True
+                pending_list = None
+                pending_got_item = False
+                continue
+            key = pending_list
+            pending_got_item = True
+            if key in ("branches", "tags"):
+                triggers[current].setdefault(key, []).append(value)
+            elif key in ("branches-ignore", "paths", "paths-ignore"):
+                store_filter(current, key, [value])
+            else:
+                triggers[current]["unevaluable"] = True
+            continue
+        # Event-level dashed list, e.g. `schedule: \n    - cron: '0 0 * * *'`.
+        if re.match(r"^    -\s+", line):
+            if current == "push":
+                triggers[current]["unevaluable"] = True
+            close_pending()
+            continue
+        filt = _ON_FILTER_KEY.match(line)
+        if filt and line.startswith("    ") and not line.startswith("     "):
+            take_inline_or_pending(current, filt.group(1), filt.group(2))
+            continue
+        if line.startswith("      "):
+            # Nested mapping under a 4-space key (e.g. workflow_dispatch inputs).
+            # Under push, only a 6-space dash item is understood; anything deeper
+            # (7- or 8-space list items, extra keys) is unevaluable.
+            if current == "push":
+                triggers[current]["unevaluable"] = True
+            close_pending()
+            continue
+        return None
+    if in_on:
+        close_pending()
+        return triggers or None
+    return None
+
+
+_DISPATCH_EVENT = re.compile(r"^github\.event_name\s*==\s*['\"]workflow_dispatch['\"]$")
+_POSITIVE_INPUT = re.compile(r"^inputs\.[A-Za-z_][\w-]*(\s*==\s*true)?$")
+
+
+def _plain_dispatch_only(if_expr: str) -> bool:
+    """True only for an allowlisted positive dispatch-only `if:`.
+
+    Allowed: `github.event_name == 'workflow_dispatch'` and optional `inputs.<id>` or
+    `inputs.<id> == true`, joined only by `&&`. No `||`, `!`, `!=`, parentheses,
+    chained `==`, or any term the parser does not fully understand.
+    """
+    expr = if_expr.strip()
+    if expr.startswith("${{") and expr.endswith("}}"):
+        expr = expr[3:-2].strip()
+    if "${{" in expr or "}}" in expr:
+        return False
+    expr = re.sub(r"\s+", " ", expr)
+    if not expr or "||" in expr:
+        return False
+    terms = [t.strip() for t in expr.split("&&")]
+    if not terms or any(not t for t in terms):
+        return False
+    saw_dispatch = False
+    for t in terms:
+        if _DISPATCH_EVENT.fullmatch(t):
+            saw_dispatch = True
+        elif _POSITIVE_INPUT.fullmatch(t):
+            continue
+        else:
+            return False
+    return saw_dispatch
+
+
+def na_on_pull_request_reason(if_expr: str | None, workflow_has_pr: bool) -> str | None:
+    """Why this job cannot run on a pull_request, or None if it can (or we cannot tell)."""
+    if not workflow_has_pr:
+        return "N/A (workflow does not run on pull_request)"
+    if not if_expr:
+        return None
+    if _plain_dispatch_only(if_expr):
+        return "N/A (dispatch-only; cannot run on a pull_request)"
+    return None
+
+
+def job_na_reasons(workflows: list[dict], head_branch: str | None = None) -> dict[tuple[str, str], str]:
+    """(workflow path, job name) -> N/A reason for jobs that cannot run on a pull_request."""
+    out: dict[tuple[str, str], str] = {}
+    for wf in workflows:
+        has_pr = workflow_runs_on_pull_request(wf["text"], head_branch)
+        for j in _parse_jobs(wf["text"]):
+            reason = na_on_pull_request_reason(j["if"], has_pr)
+            if reason:
+                out[(wf["path"], j["name"] or j["id"])] = reason
+    return out
 
 
 def workflow_display_name(path: str, yaml_text: str) -> str:
@@ -157,6 +552,102 @@ def commit_author_names(commits: list[dict]) -> set[str]:
     return names
 
 
+def _compatible_hex(a: str, b: str) -> bool:
+    return a.startswith(b) or b.startswith(a)
+
+
+def _merge_sha_claims(tokens: list[str]) -> list[str]:
+    """Distinct sha claims: prefix-compatible tokens collapse to the longest."""
+    claims: list[str] = []
+    for t in tokens:
+        for i, c in enumerate(claims):
+            if _compatible_hex(t, c):
+                if len(t) > len(c):
+                    claims[i] = t
+                break
+        else:
+            claims.append(t)
+    return claims
+
+
+def parse_device_line(body: str | None) -> dict | None:
+    """Parsed device line only: never the body rest. None when no line starts `Device: NOT TESTED`
+    or `Device: TESTED`. `Device check:` and indented or quoted lines never match.
+
+    `NOT TESTED` is `{status: "NOT TESTED"}` (a trailing sha, if any, is ignored).
+    `TESTED` is `{status: "TESTED", named: <lowercase hex or None>, defect: ...}` where defect is
+    `missing-sha`, `too-short`, or `ambiguous` when the claim is unusable.
+    """
+    for line in (body or "").replace("\r\n", "\n").split("\n"):
+        found = DEVICE_LINE.match(line)
+        if not found:
+            continue
+        kind = found.group(1)
+        if kind == "NOT TESTED":
+            return {"status": "NOT TESTED"}
+        rest = line[found.end():]
+        long = [t.lower() for t in SHA_CLAIM.findall(rest)]
+        claims = _merge_sha_claims(long)
+        if len(claims) > 1:
+            return {"status": "TESTED", "named": claims, "defect": "ambiguous"}
+        if len(claims) == 1:
+            return {"status": "TESTED", "named": claims[0]}
+        short = [t.lower() for t in SHORT_SHA.findall(rest)]
+        if short:
+            named = max(short, key=len)
+            return {"status": "TESTED", "named": named, "defect": "too-short"}
+        return {"status": "TESTED", "named": None, "defect": "missing-sha"}
+    return None
+
+
+def device_line(body: str | None) -> dict | None:
+    """Back-compat alias for parse_device_line."""
+    return parse_device_line(body)
+
+
+def assess_device_line(parsed: dict | str | None, head_sha: str | None) -> tuple[str, str | None]:
+    """(`display`, `reason`). `reason` is set when the device line is not satisfied.
+
+    `Device: NOT TESTED` is ok at any head (the sha is not required). `Device: TESTED` must
+    name this head (full 40 or a unique prefix of at least 7 hex characters, case-insensitive).
+    Missing or unusable `head_sha` fails a TESTED line closed.
+    """
+    if isinstance(parsed, str):
+        if parsed == "NOT TESTED":
+            parsed = {"status": "NOT TESTED"}
+        elif parsed == "TESTED":
+            parsed = {"status": "TESTED", "named": None, "defect": "missing-sha"}
+        else:
+            parsed = None
+    if not parsed:
+        return "missing", "PR body has no line starting `Device: NOT TESTED` (or `Device: TESTED`)"
+    status = parsed.get("status")
+    if status == "NOT TESTED":
+        return "Device: NOT TESTED", None
+    if status != "TESTED":
+        return "missing", "PR body has no line starting `Device: NOT TESTED` (or `Device: TESTED`)"
+    head = (head_sha or "").strip().lower()
+    if not HEAD_SHA.match(head):
+        return "Device: TESTED (head sha unavailable)", "Device line: head sha unavailable"
+    head8 = head[:8]
+    defect = parsed.get("defect")
+    named = parsed.get("named")
+    if defect == "ambiguous":
+        shown = " and ".join(named) if isinstance(named, list) else (named or "?")
+        display = f"TESTED sha ambiguous (names {shown}, head {head8})"
+        return display, f"Device line: {display}"
+    if defect == "too-short":
+        display = f"TESTED sha too short (names {named}, head {head8})"
+        return display, f"Device line: {display}"
+    if defect == "missing-sha" or not named or not isinstance(named, str):
+        display = f"TESTED with no sha (head {head8})"
+        return display, f"Device line: {display}"
+    if head.startswith(named) or (len(named) >= 7 and named.startswith(head)):
+        return f"Device: TESTED {named}", None
+    display = f"stale (names {named}, head {head8})"
+    return display, f"Device line: {display}"
+
+
 def parse_sign(body: str | None, head_sha: str) -> tuple[str | None, str | None]:
     """(Name, None) for a valid sign at `head_sha`, else (None, why-not) or (None, None) if not a sign."""
     if not body:
@@ -217,17 +708,24 @@ def latest_runs(check_runs: list[dict], head_sha: str | None = None,
 
 
 def assess_checks(check_runs: list[dict], required: list[tuple[str, str]], head_sha: str | None = None,
-                  workflow_runs: list[dict] | None = None, labels: dict[str, str] | None = None) -> dict:
+                  workflow_runs: list[dict] | None = None, labels: dict[str, str] | None = None,
+                  na_reasons: dict[tuple[str, str], str] | None = None) -> dict:
     """Required jobs are keyed by (workflow path, job name), so the same job name in two workflows
     never collides (Sentinel). A skipped iOS job counts as green only when ios.yml's own `changes`
     job concluded success at the same head sha. Any other skip, a skip with that `changes` missing,
-    pending or not successful, or a run that can't be mapped to its workflow, is not green."""
+    pending or not successful, or a run that can't be mapped to its workflow, is not green.
+    A job that cannot run on a pull_request is N/A (listed, not hidden, not a missing check)."""
     runs = latest_runs(check_runs, head_sha, suite_to_workflow(workflow_runs or []))
     labels = labels or {}
+    na_reasons = na_reasons or {}
     ch = runs.get((IOS_WORKFLOW, CHANGES_JOB))
     changes_passed = bool(ch and ch.get("status") == "completed" and ch.get("conclusion") == "success")
     rows, bad = [], []
     for wf, name in required:
+        label = f"{labels.get(wf, wf)} / {name}"
+        if (wf, name) in na_reasons:
+            rows.append((label, na_reasons[(wf, name)]))
+            continue
         r = runs.get((wf, name))
         if r is None:
             state = UNMAPPED if (None, name) in runs else "missing"
@@ -240,7 +738,6 @@ def assess_checks(check_runs: list[dict], required: list[tuple[str, str]], head_
                     state = "skipped (not an iOS path-filter job)"
                 else:
                     state = SKIP_GREEN if changes_passed else "skipped (changes did not pass at this head)"
-        label = f"{labels.get(wf, wf)} / {name}"
         rows.append((label, state))
         if state not in ("success", SKIP_GREEN):
             bad.append(f"{label}: {state}")
@@ -259,6 +756,9 @@ def verdict(*, pr: dict, checks: dict, signs: dict, overlap_files: list[str], wa
         reasons.append(f"base is {pr.get('base')}, not {TARGET_BASE}")
     if checks["bad"]:
         reasons.append(f"{len(checks['bad'])} required check(s) not green")
+    _, device_reason = assess_device_line(pr.get("device_line"), pr.get("head_sha"))
+    if device_reason:
+        reasons.append(device_reason)
     n = len(signs["valid"])
     if n < REQUIRED_SIGNS:
         reasons.append(f"{n}/{REQUIRED_SIGNS} non-author signs at this head")
@@ -275,8 +775,19 @@ def render(report: dict) -> str:
     out = [f"Merge readiness for #{pr['number']} at {pr['head_sha']} (report-only)",
            f"Base {pr['base']} at {report['base_head'][:8]}, merge-base {report['merge_base'][:8]}",
            f"Commit authors on the PR: {', '.join(report['author_display']) or '(none)'}",
-           "", f"Checks ({len(checks['rows']) - len(checks['bad'])}/{len(checks['rows'])} green):"]
-    out += [f"  {'ok ' if s in ('success', SKIP_GREEN) else 'NO '} {n}: {s}" for n, s in checks["rows"]]
+           ""]
+    n_na = sum(1 for _, s in checks["rows"] if s.startswith("N/A"))
+    n_req = len(checks["rows"]) - n_na
+    n_green = n_req - len(checks["bad"])
+    head = f"Checks ({n_green}/{n_req} green"
+    out.append(head + (f", {n_na} N/A):" if n_na else "):"))
+    marks = []
+    for n, s in checks["rows"]:
+        mark = "n/a" if s.startswith("N/A") else ("ok " if s in ("success", SKIP_GREEN) else "NO ")
+        marks.append(f"  {mark} {n}: {s}")
+    out += marks
+    display, _ = assess_device_line(pr.get("device_line"), pr.get("head_sha"))
+    out += ["", f"Device line: {display}"]
     out += ["", f"Signs ({len(signs['valid'])}/{REQUIRED_SIGNS} non-author at {pr['head_sha'][:8]}):"]
     out += [f"  ok  {n} {u}".rstrip() for n, u in signs["valid"].items()] or ["  (none)"]
     out += [f"  --  not counted: {r}" for r in signs["rejected"]]
@@ -306,7 +817,8 @@ def build_report(*, pr: dict, base_head: str, merge_base: str, workflows: list[d
         # Report-only (Atlas): never a reason, never changes READY or NOT READY.
         warnings.append(f"ROSTER: commit author(s) outside the bot roster ({', '.join(ROSTER)}): "
                         f"{', '.join(outside)}. Report-only; does not change the verdict")
-    checks = assess_checks(check_runs, required, pr["head_sha"], workflow_runs or [], labels)
+    checks = assess_checks(check_runs, required, pr["head_sha"], workflow_runs or [], labels,
+                           job_na_reasons(workflows, pr.get("head_branch")))
     signs = collect_signs(postings, pr["head_sha"], authors)
     ov = overlap(pr_files, base_files)
     ready, reasons = verdict(pr=pr, checks=checks, signs=signs, overlap_files=ov, warnings=warnings)
@@ -341,8 +853,9 @@ def fetch(repo: str, number: int) -> dict:
     p = gh_api(f"repos/{repo}/pulls/{number}")
     head = p["head"]["sha"]
     base_ref = p["base"]["ref"]
-    pr = {"number": number, "head_sha": head, "base": base_ref, "state": p["state"],
-          "merged": bool(p.get("merged_at"))}
+    pr = {"number": number, "head_sha": head, "head_branch": p["head"].get("ref"),
+          "base": base_ref, "state": p["state"],
+          "merged": bool(p.get("merged_at")), "device_line": parse_device_line(p.get("body"))}
     warnings: list[str] = []
     base_head = gh_api(f"repos/{repo}/commits/{base_ref}")["sha"]
     cmp_pr = gh_api(f"repos/{repo}/compare/{base_head}...{head}?per_page=1")
