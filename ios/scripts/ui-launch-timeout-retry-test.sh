@@ -160,4 +160,19 @@ set -e
 [[ $(wc -l < "$tmp/count") -eq 2 ]] || fail "launch timeout was retried more than once"
 [[ $always_out == *'::warning::'* ]] || fail "second-timeout run did not warn"
 
+# A missing pid is retried once, after a reboot, and the warning names the real cause.
+: > "$tmp/count"
+set +e
+nopid_out=$("$RETRY" -- \
+  env MODE=always FIXTURE="$tmp/nopid.log" COUNT="$tmp/count" CALLS="$tmp/calls" BUNDLE="$tmp/nopid.xcresult" \
+  "$tmp/fake-xcodebuild" -resultBundlePath "$tmp/nopid.xcresult")
+nopid_run=$?
+set -e
+[[ $nopid_run -eq 65 ]] || fail "missing-pid rerun exited $nopid_run"
+[[ $(wc -l < "$tmp/count") -eq 2 ]] || fail "missing pid was not retried exactly once"
+[[ $nopid_out == *'::warning::Retrying UI tests after a simulator missing process ID: AeroDJUITests/AppWideLayoutTests/testDuoLandscapeLibraryTwoPane'* ]] \
+  || fail "missing-pid warning was:
+$nopid_out"
+[[ $nopid_out != *'launch timeout'* ]] || fail "missing-pid warning still says launch timeout"
+
 echo "OK: UI launch-timeout retry script tests"

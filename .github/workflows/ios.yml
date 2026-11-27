@@ -1276,34 +1276,10 @@ jobs:
             -derivedDataPath "$DERIVED_DATA" \
             -resultBundlePath "$RUNNER_TEMP/duo-ui-warmup.xcresult" \
             -only-testing:AeroDJUITests/LiquidGlassTransportTests/testStandardGlassTransport \
-            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/duo-ui-warmup.log"; then
+            CODE_SIGNING_ALLOWED=NO; then
             echo "::warning::Duo UI warm-up test failed; the counted run below still runs every test."
           fi
           rm -rf "$RUNNER_TEMP/duo-ui-warmup.xcresult"
-      - name: Reboot the Duo between warm-up and the counted run
-        # Run 45970436700 (#656): the warm-up "passed" but logged "Unable to monitor event loop"
-        # and kAXErrorServerNotFound. The counted run then found the Duo "already booted", and
-        # its first test (testDuoLandscapeLibraryTwoPane) sat in launch() for about 162 s and
-        # failed with "Application 'com.aerodj.app' does not have a process ID". The next test
-        # got a new pid. The sick automation session carried over from the warm-up, so reboot
-        # the Duo here. A warm-up that logged that sickness is not a good priming, so that case
-        # also erases the Duo. Evidence: Atlas's terminate audit. Refs #654. -Fry
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          log="$RUNNER_TEMP/duo-ui-warmup.log"
-          erase=no
-          if [[ -f $log ]] && grep -Eq 'kAXErrorServerNotFound|Unable to monitor event loop' "$log"; then
-            echo "::warning::Duo UI warm-up logged an accessibility-server error; erasing the Duo before the counted run."
-            erase=yes
-          fi
-          rm -f "$log"
-          xcrun simctl shutdown "$DUO_UDID" 2>/dev/null || true
-          if [[ $erase == yes ]]; then
-            xcrun simctl erase "$DUO_UDID"
-          fi
-          xcrun simctl boot "$DUO_UDID"
-          xcrun simctl bootstatus "$DUO_UDID" -b
       - name: Run AeroDJStudioUI on iPhone Duo
         # One pass of the existing UI suite. Per-test allowance matches the Studio UI job
         # (10 min). testRecordedWalkthrough skips unless STUDIO_WALKTHROUGH=1, which this

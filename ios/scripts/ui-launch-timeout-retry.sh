@@ -121,7 +121,11 @@ while IFS= read -r id; do
   [[ -n $id ]] || continue
   if [[ -z $warning ]]; then warning=$id; else warning="$warning, $id"; fi
 done <<< "$ids"
-echo "::warning::Retrying UI tests after a simulator launch timeout: ${warning}"
+cause="launch timeout"
+if grep -qF "$NO_PID" "$log"; then
+  if grep -qF "$LAUNCH_TIMEOUT" "$log"; then cause="launch timeout or missing process ID"; else cause="missing process ID"; fi
+fi
+echo "::warning::Retrying UI tests after a simulator ${cause}: ${warning}"
 
 if [[ -n $udid ]]; then
   # A plain boot is a no-op on an already-booted simulator and keeps a sick
