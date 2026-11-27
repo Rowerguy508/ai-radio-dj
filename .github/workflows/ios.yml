@@ -164,6 +164,8 @@ jobs:
     runs-on: macos-latest
     env:
       XCODEGEN_VERSION: 2.46.0
+      # sha256 of XcodeGen 2.46.0 xcodegen.zip (matches the release asset digest).
+      XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
       DERIVED_DATA: ios/build/DerivedData
     steps:
       - uses: actions/checkout@v4
@@ -171,6 +173,7 @@ jobs:
         run: |
           curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
             "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Generate Xcode project
@@ -319,6 +322,8 @@ jobs:
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     env:
       XCODEGEN_VERSION: 2.46.0
+      # sha256 of XcodeGen 2.46.0 xcodegen.zip (matches the release asset digest).
+      XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
       DERIVED_DATA: ios/build/DerivedData-device
     steps:
       - uses: actions/checkout@v4
@@ -367,6 +372,7 @@ jobs:
         run: |
           curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
             "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Generate Xcode project
@@ -589,6 +595,8 @@ jobs:
     timeout-minutes: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 360 }}
     env:
       XCODEGEN_VERSION: 2.46.0
+      # sha256 of XcodeGen 2.46.0 xcodegen.zip (matches the release asset digest).
+      XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
       DERIVED_DATA: ios/build/DerivedData-runtime
     steps:
       - uses: actions/checkout@v4
@@ -638,6 +646,7 @@ jobs:
         run: |
           curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
             "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Generate Xcode project
@@ -715,6 +724,8 @@ jobs:
     timeout-minutes: ${{ ((vars.AERODJ_SELF_HOSTED == '1' || vars.AERODJ_MINI_STUDIO == '1') && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 150 }}
     env:
       XCODEGEN_VERSION: 2.46.0
+      # sha256 of XcodeGen 2.46.0 xcodegen.zip (matches the release asset digest).
+      XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
       DERIVED_DATA: ios/build/DerivedData-ui
       SHOTS: ${{ github.workspace }}/studio-screenshots
     steps:
@@ -774,6 +785,7 @@ jobs:
         run: |
           curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
             "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Generate Xcode project
