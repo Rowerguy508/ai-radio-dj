@@ -96,6 +96,11 @@ public final class DJBreakSession {
     /// Empty when that opener gave the time. A station change within 30 minutes of the last
     /// time check records `.spacing` here; the line itself is not planned.
     private var openerTimeOmissions: [Int: DJOpenerTimeCheckOmission] = [:]
+    /// Planning-time ordinary-break cap report for the current queue, shifted to queue indices (#329).
+    private var plannedCapReport = OrdinaryBreakCapReport()
+    /// Render-time outcomes taken at `naturalBoundary`, merged via `DJSessionPlan.capReport(afterBreaks:)` (#329).
+    /// Only what that report reads (Sentinel's B1 on #603): never the prepared break, its cue text or its audio.
+    private var breakOutcomes: [Int: DJBreakCapOutcome] = [:]
     /// Show opener on a new station (-Fry, #358, for Echo's #359): the `StationQueueKey` of the station
     /// the last queue was started for (outer nil: no queue yet). This is the value the feed records
     /// for every queue start (`StationQueueKey(committedDisplayed)`), and `queueStarted` reopens the
@@ -442,6 +447,8 @@ public final class DJBreakSession {
         playing = nil
         breaks = [:]
         preparedDayParts = [:]
+        plannedCapReport = OrdinaryBreakCapReport()
+        breakOutcomes = [:]
         // Same key the feed gives a new queue (`queueStarted(for: committedDisplayed)`). A save
         // since the reservation makes it uncertain, which fails closed (intros dropped).
         let committed = StationQueueKey(station.committedDisplayed)
@@ -702,7 +709,10 @@ public final class DJBreakSession {
             }
         }
         let taken = await preparer.takeBreak(afterTrack: k)
-        if case .skipped(let reason) = taken { lastNoBreak = (reason, cadencePlanned) }
+        if case .skipped(let reason) = taken {
+            breakOutcomes[k] = DJBreakCapOutcome(.skipped(reason))
+            lastNoBreak = (reason, cadencePlanned)
+        }
         guard case .ready(let ready) = taken else { return nil }
         // #445 (-Atlas): prepared for another time of day (paused in the morning, resumed in the
         // afternoon): not handed out, music plays at once. The break is forgotten (it never aired,
@@ -778,12 +788,17 @@ public final class DJBreakSession {
             afterTrack: k, cues: cues, clips: ready.clips.filter { kept.contains($0.cueID) },
             attributions: ready.attributions.filter { kept.contains($0.key) },
             // Kept only if the closing cue survived; the hooks recompute from the kept clips.
-            talkOverCueID: ready.talkOverCueID.flatMap { kept.contains($0) ? $0 : nil })
-        if prepared != ready, let check = ready.timeCheck, kept.contains(check.cueID) {
-            // The time-check line survived: keep what a resume re-checks it with (#379 N1).
-            prepared.timeCheck = check
-            prepared.timeCheckAirTime = ready.timeCheckAirTime
+            talkOverCueID: ready.talkOverCueID.flatMap { kept.contains($0) ? $0 : nil },
+            trimmedCueIDs: ready.trimmedCueIDs)
+        if prepared != ready {
+            prepared.droppedTimeCheck = ready.droppedTimeCheck
+            if let check = ready.timeCheck, kept.contains(check.cueID) {
+                // The time-check line survived: keep what a resume re-checks it with (#379 N1).
+                prepared.timeCheck = check
+                prepared.timeCheckAirTime = ready.timeCheckAirTime
+            }
         }
+        breakOutcomes[k] = DJBreakCapOutcome(.ready(prepared))
         deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
         // The writer's id is the planned break's first cue, even if a later filter dropped it.
         if let id = breaks[k]?.cues.first?.id { handedBreak = (k, id) }
@@ -792,6 +807,17 @@ public final class DJBreakSession {
         handedOutPersonal = personal.isEmpty ? nil : (k, personal, false)
         onAir = (k, Set(prepared.cues.compactMap(\.sourceItemID)), ready.includesBriefing)
         return prepared
+    }
+
+    /// Planning- and render-time ordinary-break cap report for the current queue (#329).
+    /// Merges `plannedCapReport` with render-time trims, `.overBreakBudget` skips, and dropped
+    /// time checks via `DJSessionPlan.capReport(afterBreaks:)`.
+    public var ordinaryCapReport: OrdinaryBreakCapReport {
+        var plan = DJSessionPlan(
+            breaks: breaks.values.sorted { $0.afterTrack < $1.afterTrack },
+            briefingReport: NarrationScheduleReport(entries: []))
+        plan.ordinaryCapReport = plannedCapReport
+        return plan.capReport(afterBreaks: breakOutcomes)
     }
 
     /// DJ talk-over (-Fry): whether boundary `k`'s break is rendered, without taking it. The
@@ -900,6 +926,8 @@ public final class DJBreakSession {
         breaks = [:]
         breakDayParts = [:]
         preparedDayParts = [:]
+        plannedCapReport = OrdinaryBreakCapReport()
+        breakOutcomes = [:]
         playing = nil
         onAir = nil
         handedOutPersonal = nil
@@ -928,6 +956,12 @@ public final class DJBreakSession {
             briefing = NarrationHandoff(cues: b.cues.filter { !mentions($0) },
                                         maxSpokenSeconds: b.maxSpokenSeconds, experienceSeconds: b.experienceSeconds)
         }
+        // Sentinel's B1 on #603: a handed-out break's personal lines for these items are not kept
+        // for the ledger either. (`breakOutcomes` holds no cue text or audio by construction.)
+        if var aired = handedOutPersonal {
+            aired.cues.removeAll(where: mentions)
+            handedOutPersonal = aired.cues.isEmpty ? nil : aired
+        }
         guard let first = breaks.filter({ $0.value.cues.contains(where: mentions) }).keys.min() else { return }
         replan(from: first, keepingThrough: first - 1)
     }
@@ -940,6 +974,7 @@ public final class DJBreakSession {
         if let live = onAir, !live.sources.isEmpty {
             ids.formUnion(live.sources)
         }
+        ids.formUnion(handedOutPersonal?.cues.compactMap(\.sourceItemID) ?? [])
         purge(sourceItemIDs: ids)
         return ids
     }
@@ -1084,8 +1119,13 @@ public final class DJBreakSession {
         writer.forgetPlannedBreaks(breaks.filter { $0.key > kept }.map(\.value))
         breaks = breaks.filter { $0.key <= kept }
         breakDayParts = breakDayParts.filter { $0.key <= kept }
-        // Omissions belong to the plan just written. Breaks we are about to replace drop theirs.
+        // Omissions and cap reports belong to the plan just written. Breaks we are about to replace drop theirs.
         openerTimeOmissions = openerTimeOmissions.filter { $0.key <= kept }
+        plannedCapReport.trimmedOptionalLines = plannedCapReport.trimmedOptionalLines.filter { $0.key <= kept }
+        plannedCapReport.skippedOverCap.removeAll { $0 > kept }
+        plannedCapReport.droppedTimeChecks = plannedCapReport.droppedTimeChecks.filter { $0.key <= kept }
+        plannedCapReport.omittedOpenerTimeChecks = plannedCapReport.omittedOpenerTimeChecks.filter { $0.key <= kept }
+        breakOutcomes = breakOutcomes.filter { $0.key <= kept }
         guard first < tracks.count - 1 else { return }
         let lastBreak = breaks.keys.max()
         let spokenBriefing = deliveredBriefing.union(breaks.values.flatMap(\.briefingCueIDs))
@@ -1116,10 +1156,25 @@ public final class DJBreakSession {
             shifted.catalogFactCues = b.catalogFactCues   // #199 provenance
             breaks[k] = shifted
             breakDayParts[k] = dayPart
+            if let count = plan.ordinaryCapReport.trimmedOptionalLines[b.afterTrack] {
+                plannedCapReport.trimmedOptionalLines[k] = count
+            }
+            if let drop = plan.ordinaryCapReport.droppedTimeChecks[b.afterTrack] {
+                plannedCapReport.droppedTimeChecks[k] = drop
+            }
             if let reason = plan.ordinaryCapReport.omittedOpenerTimeChecks[b.afterTrack] {
                 openerTimeOmissions[k] = reason
+                plannedCapReport.omittedOpenerTimeChecks[k] = reason
             }
         }
+        for skipped in plan.ordinaryCapReport.skippedOverCap {
+            let k = skipped + offset
+            if let lastBreak, k - lastBreak <= cadence.minSongsBetweenBreaks { continue }
+            if !plannedCapReport.skippedOverCap.contains(k) {
+                plannedCapReport.skippedOverCap.append(k)
+            }
+        }
+        plannedCapReport.skippedOverCap.sort()
     }
 
     /// Test hook: the `remaining` the last non-held `songStarted` prepared with.
@@ -1128,6 +1183,10 @@ public final class DJBreakSession {
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
     /// Test hook: the planned breaks by boundary (what `replan` wrote).
     var testPlannedBreaks: [Int: DJBreak] { breaks }
+    /// Test hook (Sentinel's B1 on #603): what the session keeps per taken break for the cap report.
+    var testBreakOutcomes: [Int: DJBreakCapOutcome] { breakOutcomes }
+    /// Test hook (Sentinel's B1 on #603): personal cue ids still held for the aired-line ledger.
+    var testHandedOutPersonalCueIDs: [UUID] { handedOutPersonal?.cues.map(\.id) ?? [] }
     /// Test hook (#358): why a planned opener left the time out, by boundary.
     var testOpenerTimeOmissions: [Int: DJOpenerTimeCheckOmission] { openerTimeOmissions }
     /// Test hook: the phrase bank the session's writer plans with.

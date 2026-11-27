@@ -9,8 +9,8 @@ import { isVerifiedTransaction, type VerifiedTransaction } from './storekit-veri
  *
  * The proxy cannot see a break: the app renders each cloud cue of a break as its own
  * `/api/tts` request (VoiceRenderer renders a handoff cue by cue). So the server counts
- * RENDERS (accepted `/api/tts` requests, each still under the 600-character cap) and
- * sizes the allowance so a Pro user never gets fewer than 40 full breaks:
+ * RENDERS (accepted `/api/tts` requests, each still under the 600-character cap). The
+ * render allowance below is a CEILING sized from 40 breaks, not a promise of 40 breaks:
  *
  *   max cloud renders in one break = 4 (DJScriptWriter.plan, DJNarration.swift):
  *     transition break: opener (greeting | artist focus | back-announce) + color
@@ -20,7 +20,16 @@ import { isVerifiedTransaction, type VerifiedTransaction } from './storekit-veri
  *                       VoiceRenderer.mayLeaveDevice, so they never reach the proxy)
  *   allowance = 40 breaks x 4 renders = 160 renders per Pro user per UTC day.
  *
- * Cache hits never reach the proxy, so a typical day gets more than 40 breaks; never fewer.
+ * Cache hits never reach the proxy, so they spend neither renders nor chars.
+ *
+ * Capacity (#284, open for the owner): the subscriber's char cap binds before this render
+ * ceiling. The effective Pro char cap is `AERODJ_TTS_PRO_DAILY_CHARS` (default 12,000)
+ * clamped to the shared global ceiling (default 9,000), so 9,000 at defaults, and the
+ * global ceiling is shared by every caller. 40 breaks fit only if they average at most
+ * 9,000 / 40 = 225 billed chars per break; a 300-char four-render break gives 30 breaks,
+ * and four full 600-char renders (2,400 chars) give 3. Past either limit the request
+ * gets 429 `daily_allowance` (own cap) or `global_daily` (shared ceiling) and the app
+ * uses the on-device voice. Do not advertise "40 breaks a day" until the owner decides.
  *
  * Identity (Sentinel's B2): a `ProSubject` is minted only by `proSubjectFromVerified`, and
  * only from the frozen, branded `VerifiedTransaction` that `verifySignedTransaction`

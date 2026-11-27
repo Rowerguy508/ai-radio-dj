@@ -838,32 +838,63 @@ final class MusicKitService: ObservableObject {
         P0EventTraceHost.shared.startNextTrack(.indexOK(queue.indices.contains(next)), after: index, queueCount: queue.count, gates: p0Gates)
         #endif
         guard queue.indices.contains(next) else { return }
-        let attempt = beginAttempt(userChangedQueue: false)
-        do {
-            try await startTrack(at: next, autoplay: true, attempt: attempt)
-            if fellBackToOldQueue, attempts.isCurrent(attempt) {
-                // The old queue plays on: the failed hand-off's banner no longer applies. A held
-                // (deferred) load leaves `.preparing` honestly, like a refused start.
-                if isPlaying {
-                    lastError = nil
-                    send(.errorCleared)
-                } else {
-                    send(.playbackStartRefused)
+        var target = next
+        var retriesUsed = 0
+        let generation = attempts.queueGeneration
+        while queue.indices.contains(target) {
+            let attempt = beginAttempt(userChangedQueue: false)
+            do {
+                try await startTrack(at: target, autoplay: true, attempt: attempt)
+                if fellBackToOldQueue, attempts.isCurrent(attempt) {
+                    // The old queue plays on: the failed hand-off's banner no longer applies. A held
+                    // (deferred) load leaves `.preparing` honestly, like a refused start.
+                    if isPlaying {
+                        lastError = nil
+                        send(.errorCleared)
+                    } else {
+                        send(.playbackStartRefused)
+                    }
+                }
+                return
+            } catch MusicKitError.superseded {
+                #if AERODJ_P0_DIAG
+                P0EventTraceHost.shared.startTrack(.superseded, index: target, queueCount: queue.count, userInitiated: false, gates: p0Gates)
+                #endif
+                return
+            } catch {
+                let code = PlaybackErrorCode(error)
+                #if AERODJ_P0_DIAG
+                P0EventTraceHost.shared.startTrack(.error(code), index: target, queueCount: queue.count, userInitiated: false, gates: p0Gates)
+                #endif
+                switch NextSongStartFailure.decide(
+                    code: code,
+                    attempt: attempt.number,
+                    attemptIsCurrent: attempts.ownsLoad(attempt: attempt, generation: generation),
+                    failedIndex: target,
+                    queueCount: queue.count,
+                    retriesUsed: retriesUsed
+                ) {
+                case .ignore:
+                    return
+                case .retry(let retryIndex):
+                    // #302 (-Atlas): advance once to k+2 without a new intro (at most one retry).
+                    retriesUsed += 1
+                    target = retryIndex
+                    send(.naturalBoundary(nextIndex: retryIndex))
+                case .stop(let banner):
+                    reportError(banner)
+                    return
                 }
             }
-        } catch MusicKitError.superseded {
-            #if AERODJ_P0_DIAG
-            P0EventTraceHost.shared.startTrack(.superseded, index: next, queueCount: queue.count, userInitiated: false, gates: p0Gates)
-            #endif
-            return
-        } catch {
-            #if AERODJ_P0_DIAG
-            P0EventTraceHost.shared.startTrack(.error(PlaybackErrorCode(error)), index: next, queueCount: queue.count, userInitiated: false, gates: p0Gates)
-            #endif
-            guard let banner = NextSongStartFailure.banner(code: PlaybackErrorCode(error), attempt: attempt.number,
-                                                           attemptIsCurrent: attempts.isCurrent(attempt)) else { return }
-            reportError(banner)
         }
+    }
+
+    /// #302 (-Atlas): ID of `queue[index + 1]` when it has no MusicKit `Song` and cannot play.
+    /// Used before handing out a break so the DJ never announces an unplayable next song.
+    func unplayableNextTrackID(after index: Int) -> String? {
+        let next = index + 1
+        guard queue.indices.contains(next), queue[next].song == nil else { return nil }
+        return queue[next].id
     }
 
     /// Called when a spoken interlude is ready: transition -> voice.
@@ -1209,9 +1240,13 @@ final class MusicKitService: ObservableObject {
                 }
                 return
             }
-            if snapshot.transport == .preparing, let attempt = attempts.current {
+            if let attempt = attempts.current,
+               PlaybackConfirmPolicy.pollConfirms(position: observation.position,
+                                                  transportIsPreparing: snapshot.transport == .preparing,
+                                                  reportedThisAttempt: confirmReportedAttempt == attempt) {
                 // `.preparing` belongs to the current attempt; a late `.playing` after a reported
-                // timeout confirms it and clears that error.
+                // timeout confirms it and clears that error. #587 (-Fry): the skip path's stall report
+                // leaves transport `.playing`, so a reported attempt confirms here too, once.
                 confirmStart(attempt)
             }
         }
@@ -1263,6 +1298,11 @@ final class MusicKitService: ObservableObject {
                 // and pausing it leaves the player stuck. The load cut path handles a real Next.
                 if skipCoordinator.isInFlight { return }
                 surfaceNoProgressEnd(stillPlaying: observation.isPlaying)
+            }
+            if boundaries.takeSkipStartStalled(), let attempt = attempts.current {
+                // #586 (-Fry): the capped rewind cut's target stayed at 0:00 past #109's deadline.
+                // The skip path arms no confirm watchdog, so report it here the same way.
+                reportConfirmProblem(.confirmDeadline(last: .paused), attempt: attempt)
             }
             return
         }

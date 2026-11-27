@@ -189,9 +189,12 @@ printf %s "$TOKEN" | shasum -a 256 | cut -d' ' -f1   # paste this hex into Verce
   JWS that `verifySignedTransaction` verified, never from the body or a header). Charged
   to the purchase's own buckets `pro:<VERCEL_ENV>:<sha256(originalTransactionId)>`, never
   the owner's or an install's, so the per-install 1,500 cap does not apply. One atomic
-  step, in order: global ceiling (`global_daily`), then 160 renders a day (40 breaks x 4),
-  then the Pro char cap `AERODJ_TTS_PRO_DAILY_CHARS` (default 12,000, clamped to the
-  global ceiling, so 9,000 today); either Pro limit answers 429 `daily_allowance`. Own
+  step, in order: global ceiling (`global_daily`), then 160 renders a day (40 breaks x 4, a
+  ceiling, not a promise: see below), then the Pro char cap `AERODJ_TTS_PRO_DAILY_CHARS` (default 12,000, clamped to the
+  global ceiling, so 9,000 today); either Pro limit answers 429 `daily_allowance`.
+  The char cap binds first: 40 breaks fit only at 225 billed chars per break or fewer
+  (9,000 / 40), 30 at 300, 3 at four full 600-char renders. #284 stays open for the
+  owner's capacity decision; do not advertise 40 breaks a day before it. Own
   rate bucket `AERODJ_TTS_PRO_RATE_PER_MINUTE` (default 12). Unlike the owner settings,
   an invalid Pro value or a `VERCEL_ENV` other than production/preview/development makes
   a Pro request 500 `misconfig`; the owner path is unaffected. Durable store only.
@@ -439,14 +442,15 @@ Do not flip it earlier: until submission it is what gives iOS 26 TestFlight test
    answers 403 `no_entitlement` for existing `no_category_fallback` keys and legacy tester keys
    with no `tierReason` (logged `detail: "fallback_disabled"`, enum only; the client body is the
    same as any other `no_entitlement`). Category-2 keys (`testflight_category`, iOS 27+ TestFlight)
-   keep minting. Nothing is deleted: refusal happens at each mint, and issued install tokens
-   expire within 30 minutes.
+   keep minting. Nothing is deleted: refusal happens at each mint, and `/api/tts` re-checks the
+   key record on every request (the reserve script), so install tokens minted before the flip
+   stop at once with 401 `reattest` (logged `reason: "fallback_disabled"`) and nothing is charged.
 3. After the flip, iOS 26 testers need iOS 27 for cloud voice; on iOS 26 the app uses the
    on-device voice.
 4. Rollback: unset the variable (or set exactly `true`) and redeploy. Pre-flip fallback keys mint
    again; installs that registered while it was `false` have no tier and need delete + reinstall.
 
-Pinned by the `#407 launch state` and `#407 N1` tests in `test/install-token.test.ts`.
+Pinned by the `#407 launch state`, `#407 N1` and `#407: turning off no_category_fallback stops already-minted` tests in `test/install-token.test.ts`.
 
 ## `GET /api/flags` (public app flags, #525)
 
@@ -521,7 +525,13 @@ either (`test/install-token.test.ts`); refusals log enum reasons only.
 2. In Vercel, create a **new, separate project** named `aerodj-tts` from this
    repo with **Root Directory = `services/aerodj-tts`**, Framework preset: Other.
    This deploys only `api/tts.ts`, never the legacy root app. `vercel.json` sets
-   an ignore command so the project only builds when this directory changes.
+   an ignore command (`scripts/vercel-ignore-build.sh`) so **Preview and
+   Development** only build when this directory changes. **Production always
+   builds (#292)**: the step can't tell which environment Vercel's previous SHA
+   came from, so an app-only commit deployed to Production now rebuilds the
+   proxy too. That costs build minutes only; the proxy code is unchanged, so
+   don't treat such a build as a proxy change, and don't expect a
+   Production deploy to show "SKIP" in the build log.
    Confirm the production domain is exactly `aerodj-tts.vercel.app` (Vercel adds
    a suffix if the name is taken; the app pin must match it exactly).
 3. Add the Upstash Redis integration (Vercel Marketplace, free tier) to that
