@@ -257,7 +257,7 @@ final class StationsLayoutTests: XCTestCase {
             app.launchArguments += ["-AeroDJForcePhoneIdiom", "YES"]
         }
         XCUIDevice.shared.orientation = orientation
-        app.launchUntilAccessible(readyIdentifier: "capture.stationsLayoutContainer", in: self)
+        app.launchUntilAccessible(readyIdentifiers: ["capture.stationsLayoutContainer", "capture.failed"], in: self)
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10), "no window\n\(app.debugDescription)")
         let fits = window.frame.width >= size.width && window.frame.height >= size.height
@@ -269,6 +269,8 @@ final class StationsLayoutTests: XCTestCase {
         let loading = app.descendants(matching: .any)["capture.loading"]
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: loading)
         XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 20), .completed, "capture still loading")
+        let failed = app.descendants(matching: .any)["capture.failed"]
+        if failed.exists { XCTFail(failed.label) }
         let container = app.descendants(matching: .any)["capture.stationsLayoutContainer"]
         XCTAssertTrue(container.waitForExistence(timeout: 10), "container missing\n\(app.debugDescription)")
         // Clip to the window before comparing size, as in RailDLayoutTests.settledContainer

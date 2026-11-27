@@ -69,6 +69,10 @@ final class StudioScreenTests: XCTestCase {
         XCUIDevice.shared.orientation = orientation
         let scenarioName = scenario ?? "playing"
         app.launchUntilAccessible(readyIdentifiers: Self.accessibleIdentifiers(for: scenarioName), in: self)
+        // Fail by name before the loading/shell waits, so a capture.failed ready-hit
+        // is not reported as a 20 s missing-shell or still-loading timeout.
+        let failed = app.descendants(matching: .any)["capture.failed"]
+        if failed.exists { XCTFail(failed.label) }
         // The capture view loads the station before rendering. Never screenshot on a timer:
         // wait for loading to end, and fail by name if the capture could not set up.
         if scenarioName == "shell" {
@@ -83,37 +87,42 @@ final class StudioScreenTests: XCTestCase {
             XCTAssertEqual(XCTWaiter().wait(for: [done], timeout: 20), .completed,
                            "Studio capture still loading after 20 s (scenario \(scenarioName))\n\(visibleIdentifiers(app))\n\(app.debugDescription)")
         }
-        let failed = app.descendants(matching: .any)["capture.failed"]
-        if failed.exists { XCTFail(failed.label) }
         return app
     }
 
     /// Identifiers #655's launch helper can wait for after this scenario has loaded.
     /// PlayingScreen is `layout.compact`, `layout.studio`, or `layout.studioStacked` depending
     /// on the window and Dynamic Type, so those three are tried as an any-of.
+    /// Every list includes `capture.failed` so a failed capture is ready immediately and
+    /// the existing `capture.failed` check can fail by name, instead of a 30 s probe timeout.
     private static func accessibleIdentifiers(for scenario: String) -> [String] {
+        let ready: [String]
         switch scenario {
         case "shell", "stationTap":
-            return ["capture.shell"]
+            ready = ["capture.shell"]
         case "stationTapDuo", "duoWideReady", "duoWideEmpty", "duoWideSpeaking",
              "duoWideOnAir", "duoArrangement":
-            return ["capture.duoContainer"]
+            ready = ["capture.duoContainer"]
         case "duoLandscape", "duoLandscapeTune", "duoSidebar":
-            return ["capture.duoOpenContainer"]
+            ready = ["capture.duoOpenContainer"]
         case "duoTent":
-            return ["capture.tentContainer"]
+            ready = ["capture.tentContainer"]
         case "duoContinuity":
-            return ["continuity.container"]
+            ready = ["continuity.container"]
         case "stations":
-            return ["split.sidebar"]
+            ready = ["split.sidebar"]
         case "splitView":
-            return ["split.container"]
+            ready = ["split.container"]
         case "resize", "resizeTune":
-            return ["layout.compact"]
+            ready = ["layout.compact"]
         default:
-            if scenario.hasPrefix("railD") { return ["capture.railDContainer"] }
-            return ["layout.compact", "layout.studio", "layout.studioStacked"]
+            if scenario.hasPrefix("railD") {
+                ready = ["capture.railDContainer"]
+            } else {
+                ready = ["layout.compact", "layout.studio", "layout.studioStacked"]
+            }
         }
+        return ready + ["capture.failed"]
     }
 
     /// Which layout this simulator's window gets, read from the app itself rather than the
