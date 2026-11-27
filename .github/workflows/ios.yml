@@ -7,14 +7,22 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual only: the system vertical bars capture (#652, #465 item 1). A dispatch runs that
+  # one job and nothing else (`changes` skips, so every job that needs it skips). -Fry
+  workflow_dispatch:
+    inputs:
+      capture_system_bars:
+        description: "Capture the iOS 27 system vertical bars shots on an iPad iOS 27.2 simulator (#652)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
   pull-requests: read # paths-filter lists PR files via the API
 
 # A new push to a PR branch cancels that branch's stale run. Pushes to main
-# are not cancelled mid-run. workflow_dispatch and schedule (none here) would
-# keep their own group via github.ref and would not be cancelled.
+# are not cancelled mid-run. workflow_dispatch (the system bars capture) and schedule
+# (none here) keep their own group via github.ref and are not cancelled.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -30,11 +38,13 @@ concurrency:
 # SKTestSession Code=3 is fixed (#383 / #384). -Orion
 jobs:
   changes:
+    # Not on a dispatch: it would diff the dispatched ref against the default branch and
+    # start every macOS job. The capture job does not need it. -Fry
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       ios: ${{ steps.filter.outputs.ios }}
       core: ${{ steps.filter.outputs.core }}
-      systembars: ${{ steps.filter.outputs.systembars }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -58,30 +68,6 @@ jobs:
               - 'docs/site/HOLD-pro.md'
               - 'docs/site/DRAFT-privacy-tester-voice.md'
               - 'docs/PRIVACY_MATRIX.md'
-            # #683: the Xcode 27.2 iPad system-vertical-bar owner shots. A skipped
-            # job reports success, so this can stay a required check without
-            # spending a hosted Mac when none of these paths changed. -Nova
-            systembars:
-              - 'ios/AeroDJCore/Sources/AeroDJCore/Studio/**'
-              - 'ios/AeroDJUITests/**'
-              - 'ios/scripts/**'
-              - 'ios/project.yml'
-              - '.github/workflows/ios.yml'
-              - 'ios/AeroDJCore/Tests/AeroDJCoreTests/SystemVerticalBarsCaptureTests.swift'
-              - 'ios/AeroDJ/PlayingScreen.swift'
-              - 'ios/AeroDJ/FoldedPlayer.swift'
-              - 'ios/AeroDJ/DuoVerticalRail.swift'
-              - 'ios/AeroDJ/StationListView.swift'
-              - 'ios/AeroDJ/StudioCapture.swift'
-              - 'ios/AeroDJ/SystemVerticalBarsCapture.swift'
-              - 'ios/AeroDJ/RailDCapture.swift'
-              - 'ios/AeroDJ/AppWideCapture.swift'
-              - 'ios/AeroDJ/ArrangementCapture.swift'
-              - 'ios/AeroDJ/StationsLayoutCapture.swift'
-              - 'ios/AeroDJ/StudioLayout.swift'
-              - 'ios/AeroDJ/AppWideLayout+App.swift'
-              - 'ios/AeroDJ/DuoStationsScreen.swift'
-              - 'ios/AeroDJ/RailDComponents.swift'
 
   core-tests:
     name: AeroDJCore tests
@@ -1362,25 +1348,26 @@ jobs:
           retention-days: 5
           if-no-files-found: ignore
 
-  # #652 / #465 item 1 (-Nova): owner shots of the iOS 27.1 system vertical bar, on a
-  # simulator whose window fits 820 x 640. The Studio UI job is pinned to Xcode 26.6,
-  # which compiles the toolbar out, and the Duo UI job's 466 x 678 window skips these
-  # tests (that skip is unchanged). This job uses the same hosted xcode-27 image as
-  # Duo UI, an iOS 27.2 iPad, and requires the four PNGs the same way Studio shots
-  # are required (ls / grep on the shot prefix). Gated on changes.outputs.systembars;
-  # a skipped job reports success, like the other iOS jobs. App code is not changed.
-  # Fry owns ios.yml.
-  system-vertical-bars-ipad:
-    name: System vertical bar captures (Xcode 27.2, iPad)
-    needs: changes
-    if: needs.changes.outputs.systembars == 'true'
+  # #652 (#465 item 1, -Nova): DEBUG-only shots of the open-Duo frames with the iOS 27 system
+  # vertical bar in place of Rail D, for the owner's decision. Neither existing lane can take
+  # them: duo-ui-xcode-27's iPhone Duo window (466 x 678) is smaller than the 640 x 820 and
+  # 820 x 640 frames, and the Studio UI job builds with Xcode 26.6, which compiles the toolbar
+  # out. So this job runs only AeroDJUITests/SystemVerticalBarsCaptureTests on an iPad on
+  # iOS 27.2, built with Xcode 27.2, and uploads the shots.
+  # Manual only (workflow_dispatch with capture_system_bars true), so it adds nothing to a PR
+  # run while the hosted macOS queue is backed up. Not a required check. GitHub-hosted
+  # xcode-27 only; it never reads AERODJ_SELF_HOSTED. Dispatch it on a ref that has both this
+  # job and the test class: without the class, 0 tests run and the count guard fails. -Fry
+  system-bars-capture:
+    name: System vertical bars capture (Xcode 27.2, iPad iOS 27.2)
+    if: github.event_name == 'workflow_dispatch' && inputs.capture_system_bars == true
     runs-on: xcode-27
-    timeout-minutes: 80
+    timeout-minutes: 90
     env:
       XCODEGEN_VERSION: 2.46.0
       XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
-      DERIVED_DATA: ios/build/DerivedData-svb-ipad
-      SHOTS: ${{ github.workspace }}/system-vertical-bars-screenshots
+      DERIVED_DATA: ios/build/DerivedData-system-bars
+      SHOTS: ${{ github.workspace }}/system-bars-screenshots
     steps:
       - name: Require a GitHub-hosted runner
         env:
@@ -1389,7 +1376,7 @@ jobs:
           set -euo pipefail
           echo "runner.environment=${RUNNER_ENV:-unset}"
           if [ "${RUNNER_ENV:-}" != "github-hosted" ]; then
-            echo "::error::System vertical bar captures require a GitHub-hosted runner (runner.environment=${RUNNER_ENV:-unset})."
+            echo "::error::The system bars capture requires a GitHub-hosted runner (runner.environment=${RUNNER_ENV:-unset})."
             exit 1
           fi
       - uses: actions/checkout@v4
@@ -1435,6 +1422,13 @@ jobs:
             echo "::error::Need iOS SDK $REQUIRED_SDK for iphoneos and iphonesimulator (got iphoneos=$DEVICE_SDK iphonesimulator=$SIM_SDK)"
             exit 1
           fi
+          {
+            echo "### System bars capture toolchain"
+            echo "- Runner: GitHub-hosted \`xcode-27\`"
+            echo "- Xcode: \`$XCODE_PATH\` ($(printf '%s' "$xcode_out" | tr '\n' ' '))"
+            echo "- iphoneos: \`$DEVICE_SDK\`"
+            echo "- iphonesimulator: \`$SIM_SDK\`"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Ensure Metal toolchain
         run: |
           set -euo pipefail
@@ -1452,12 +1446,11 @@ jobs:
         run: xcodegen generate
         working-directory: ios
       - name: Pick an iPad simulator on iOS 27.2
-        # Same 27.2 runtime rule as the Duo UI job: no fallback OS. Among available
-        # iPads on those runtimes, take the last (as the Studio UI job's pick does).
-        # Zero matches fails. This is a CI destination pick, not a device check in the app.
+        # Any iPad on an available iOS 27.2 runtime: every full-screen iPad window is at least
+        # 640 x 820 upright and 820 x 640 sideways, which is all the test needs. The first by
+        # name, so reruns on the same image pick the same one. No other OS. -Fry
         run: |
           set -euo pipefail
-          DEVICES_JSON="$(xcrun simctl list devices available -j)"
           RUNTIMES_JSON="$(xcrun simctl list runtimes -j)"
           RUNTIME_IDS="$(printf '%s' "$RUNTIMES_JSON" | jq -c '
             [.runtimes[]
@@ -1468,71 +1461,33 @@ jobs:
               | .identifier]')"
           if [ "$(printf '%s' "$RUNTIME_IDS" | jq 'length')" -eq 0 ]; then
             echo "::error::No available iOS 27.2 runtime. Not substituting another runtime."
-            echo "Runtimes:"
             xcrun simctl list runtimes
             exit 1
           fi
-          MATCHES="$(printf '%s' "$DEVICES_JSON" | jq -c --argjson rts "$RUNTIME_IDS" '
+          PICK="$(xcrun simctl list devices available -j | jq -r --argjson rts "$RUNTIME_IDS" '
             [.devices | to_entries[]
               | select(.key as $k | $rts | index($k))
               | .key as $rt
               | .value[]
               | select(.name | startswith("iPad"))
               | select(.isAvailable != false)
-              | {udid, name, deviceType: (.deviceTypeIdentifier // ""), runtime: $rt}]')"
-          COUNT="$(printf '%s' "$MATCHES" | jq 'length')"
-          if [ "$COUNT" -lt 1 ]; then
-            echo "::error::Need an available iPad on an iOS 27.2 runtime (found $COUNT). Not substituting another simulator."
-            echo "Available devices:"
+              | {udid, name, runtime: $rt}]
+            | sort_by(.name) | first // empty | "\(.udid)\t\(.name)\t\(.runtime)"')"
+          if [ -z "$PICK" ]; then
+            echo "::error::No available iPad on an iOS 27.2 runtime. Not substituting another simulator."
             xcrun simctl list devices available
             exit 1
           fi
-          RUNTIME="$(printf '%s' "$MATCHES" | jq -r '.[-1].runtime')"
-          VERSION="$(printf '%s' "$RUNTIMES_JSON" | jq -r --arg rt "$RUNTIME" '.runtimes[] | select(.identifier == $rt) | .version')"
-          case "$VERSION" in
-            27.2|27.2.*) ;;
-            *) echo "::error::Picked runtime $RUNTIME is version ${VERSION:-missing}, not 27.2."; exit 1 ;;
-          esac
-          PICK="$(printf '%s' "$MATCHES" | jq -r '.[-1] | "\(.udid)\t\(.name)\t\(.deviceType)"')"
-          IFS=$'\t' read -r UDID PICKED_NAME DEVICE_TYPE <<<"$PICK"
-          case "$PICKED_NAME" in
-            iPad*) ;;
-            *)
-              echo "::error::Picker returned name='$PICKED_NAME' udid='$UDID'; expected an iPad."
-              exit 1
-              ;;
-          esac
-          if [ -z "$UDID" ]; then
-            echo "::error::Picker returned an empty UDID for $PICKED_NAME."
-            exit 1
-          fi
-          echo "Picked simulator: name=$PICKED_NAME udid=$UDID runtime=$RUNTIME version=$VERSION deviceType=${DEVICE_TYPE:-unknown}"
-          echo "PAD_UDID=$UDID" >> "$GITHUB_ENV"
-          echo "PAD_NAME=$PICKED_NAME" >> "$GITHUB_ENV"
+          IFS=$'\t' read -r UDID NAME RUNTIME <<<"$PICK"
+          echo "Picked simulator: name=$NAME udid=$UDID runtime=$RUNTIME"
           {
-            echo "### System vertical bar iPad"
-            echo "- Name: \`$PICKED_NAME\`"
-            echo "- Runtime: \`$RUNTIME\` ($VERSION)"
+            echo "### System bars capture simulator"
+            echo "- Name: \`$NAME\`"
+            echo "- Runtime: \`$RUNTIME\`"
             echo "- UDID: \`$UDID\`"
-            echo "- Device type: \`${DEVICE_TYPE:-unknown}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Xcode must list that iPad destination
-        run: |
-          set -euo pipefail
-          dests="$(xcodebuild -project ios/AeroDJ.xcodeproj -scheme AeroDJStudioUI -showdestinations 2>&1)" || {
-            echo "::error::xcodebuild -showdestinations failed"
-            printf '%s\n' "$dests"
-            exit 1
-          }
-          printf '%s\n' "$dests"
-          printf '%s\n' "$dests" | awk -v id="$PAD_UDID" '
-            $0 ~ ("id:" id) && $0 ~ /OS:27\.2([^0-9]|$)/ { found=1 }
-            END { exit found ? 0 : 1 }
-          ' || {
-            echo "::error::AeroDJStudioUI destinations do not include id:$PAD_UDID OS:27.2. Not substituting another destination."
-            exit 1
-          }
-      - name: Build SystemVerticalBars UI tests
+          echo "PAD_UDID=$UDID" >> "$GITHUB_ENV"
+      - name: Build the capture test
         timeout-minutes: 40
         run: |
           xcodebuild build-for-testing \
@@ -1542,6 +1497,7 @@ jobs:
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO
       - name: Boot the iPad simulator
+        # Clean, freshly booted, as in duo-ui-xcode-27 (run 45352651807). -Fry
         timeout-minutes: 15
         run: |
           set -euo pipefail
@@ -1549,13 +1505,11 @@ jobs:
           xcrun simctl erase "$PAD_UDID"
           xcrun simctl boot "$PAD_UDID"
           xcrun simctl bootstatus "$PAD_UDID" -b
-      - name: Run SystemVerticalBarsCaptureTests on iPad
-        timeout-minutes: 25
+      - name: Run SystemVerticalBarsCaptureTests
+        timeout-minutes: 30
         run: |
           set -euo pipefail
           mkdir -p "$SHOTS"
-          xcrun simctl boot "$PAD_UDID" 2>/dev/null || true
-          xcrun simctl bootstatus "$PAD_UDID" -b
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PAD_UDID" -- \
             env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
@@ -1564,37 +1518,28 @@ jobs:
             -only-testing:AeroDJUITests/SystemVerticalBarsCaptureTests \
             -destination "id=$PAD_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
-            -resultBundlePath "$RUNNER_TEMP/svb-ipad.xcresult" \
+            -resultBundlePath "$RUNNER_TEMP/system-bars.xcresult" \
             CODE_SIGNING_ALLOWED=NO \
-            2>&1 | tee "$RUNNER_TEMP/svb-ipad.log"
-      - name: AeroDJUITests actually ran (at least 2 executed, skips excluded)
+            2>&1 | tee "$RUNNER_TEMP/system-bars.log"
+      - name: The capture actually ran (at least 1 executed, skips excluded)
+        # The test skips, never fails, when the window is too small or the binary has no system
+        # bar. A dispatch exists to make shots, so all-skipped fails here. -Fry
         run: |
-          ios/scripts/check-xcresult-test-count.sh --bundle AeroDJUITests --min 2 \
-            --xcresult "$RUNNER_TEMP/svb-ipad.xcresult" --log "$RUNNER_TEMP/svb-ipad.log"
-      - name: Require screenshots
-        run: |
-          ls -la "$SHOTS"
-          # The four owner shots, named from the capture frame the test sets and reads.
-          # Same grep style as the Studio UI job. -Nova
-          for shot in system-vertical-bars-640x820-open-portrait \
-                      system-vertical-bars-640x820-open-portrait-collapsed \
-                      system-vertical-bars-820x640-open-landscape \
-                      system-vertical-bars-820x640-open-landscape-collapsed; do
-            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
-          done
-      - name: Upload system vertical bar screenshots
+          ios/scripts/check-xcresult-test-count.sh --bundle AeroDJUITests --min 1 \
+            --xcresult "$RUNNER_TEMP/system-bars.xcresult" --log "$RUNNER_TEMP/system-bars.log"
+      - name: Upload system bars shots
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: system-vertical-bars-screenshots
-          path: system-vertical-bars-screenshots/
+          name: system-bars-screenshots
+          path: system-bars-screenshots/
           if-no-files-found: ignore
-          retention-days: 7
-      - name: Upload system vertical bar result
-        if: failure() || cancelled()
+          retention-days: 14
+      - name: Upload system bars result
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: system-vertical-bars-ipad-xcresult
-          path: ${{ runner.temp }}/svb-ipad.xcresult
-          retention-days: 5
+          name: system-bars-xcresult
+          path: ${{ runner.temp }}/system-bars.xcresult
+          retention-days: 7
           if-no-files-found: ignore
