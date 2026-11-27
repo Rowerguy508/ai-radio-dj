@@ -363,6 +363,200 @@ jobs:
     name: Glob paths job
 """, "Glob paths job", head_branch="atlas/foo")
 
+    def test_push_branches_items_indented_8_spaces_with_tags_fails_closed(self):
+        """Sentinel B1: 8-space `- feat` under branches: is unread; with tags: this was N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    tags: [v1]
+    branches:
+        - feat
+jobs:
+  only:
+    name: Eight space branches job
+""", "Eight space branches job", head_branch="feat")
+
+    def test_push_branches_items_indented_7_spaces_with_tags_fails_closed(self):
+        """Sentinel B1: 7-space `- feat` under branches: is unread; with tags: this was N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    tags: [v1]
+    branches:
+       - feat
+jobs:
+  only:
+    name: Seven space branches job
+""", "Seven space branches job", head_branch="feat")
+
+    def test_push_empty_branches_then_tags_fails_closed(self):
+        """Sentinel B1: `branches:` with no items, then `tags: [v1]`, must not go N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches:
+    tags: [v1]
+jobs:
+  only:
+    name: Empty branches then tags job
+""", "Empty branches then tags job", head_branch="feat")
+
+    def test_push_mixed_indent_branches_with_tags_fails_closed(self):
+        """A 6-space item plus a deeper unread item must not keep only the readable names."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    tags: [v1]
+    branches:
+      - main
+        - feat
+jobs:
+  only:
+    name: Mixed indent branches job
+""", "Mixed indent branches job", head_branch="feat")
+
+    def test_push_flow_style_multi_branch_list_is_evaluated(self):
+        """Control: `branches: [a, b]` is already fully parsed and can match or miss."""
+        text = """
+name: Manual
+on:
+  push:
+    branches: [feat, release]
+jobs:
+  only:
+    name: Flow list job
+"""
+        self._assert_on_stays_required(text, "Flow list job", head_branch="feat")
+        self._assert_on_is_na(text, "Flow list job", head_branch="atlas/foo")
+
+    def test_plus_and_backslash_branch_patterns_fail_closed(self):
+        """Echo: + and \\ in GitHub branch filters are globs, not literals."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: ['fea+t/x']
+jobs:
+  only:
+    name: Plus glob job
+""", "Plus glob job", head_branch="feaat/x")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: a+
+jobs:
+  only:
+    name: Plus scalar job
+""", "Plus scalar job", head_branch="aaa")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: ['feat\\x']
+jobs:
+  only:
+    name: Backslash pattern job
+""", "Backslash pattern job", head_branch="featx")
+
+    def test_trailing_yaml_comments_on_push_branches_are_stripped(self):
+        """Echo: trailing unquoted comments must not be kept in the branch value."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches:
+      - main # default
+jobs:
+  only:
+    name: Dash comment job
+""", "Dash comment job", head_branch="main")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches:
+      - 'main' # default
+jobs:
+  only:
+    name: Quoted dash comment job
+""", "Quoted dash comment job", head_branch="main")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: main # default
+jobs:
+  only:
+    name: Scalar comment job
+""", "Scalar comment job", head_branch="main")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: # note
+      - main
+jobs:
+  only:
+    name: Key comment job
+""", "Key comment job", head_branch="main")
+        # After stripping, a fully understood non-matching name stays N/A.
+        self._assert_on_is_na("""
+name: Manual
+on:
+  push:
+    branches: develop # default
+jobs:
+  only:
+    name: Other comment job
+""", "Other comment job", head_branch="main")
+
+    def test_glob_only_push_branches_fail_closed(self):
+        """Echo: a glob without paths must stay required so a glob→N/A mutation dies."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: ['atlas/*']
+jobs:
+  only:
+    name: Star glob job
+""", "Star glob job", head_branch="atlas/foo")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: ['!main']
+jobs:
+  only:
+    name: Negation glob job
+""", "Negation glob job", head_branch="feat")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: ['fea+t/x']
+jobs:
+  only:
+    name: Plus glob only job
+""", "Plus glob only job", head_branch="feaat/x")
+
+    def test_empty_flow_branches_list_fails_closed(self):
+        """Echo nit: branches: [] must fail closed, not N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: []
+jobs:
+  only:
+    name: Empty flow list job
+""", "Empty flow list job", head_branch="feat")
+
 
 class Signs(NoNetwork):
     def test_sha8_and_sha40_with_no_blockers(self):

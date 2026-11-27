@@ -17,8 +17,9 @@ Prints, at the PR's exact head sha:
       `release`, and other documented events a pull request cannot trigger). An unfiltered
       `push` (or a `branches` filter that matches the PR head branch) runs on same-repo PR
       branches and stays required. A tags-only `push` is N/A. A `push` filter that cannot
-      be evaluated (`branches-ignore`, `paths`, unevaluable globs, or a missing head branch)
-      fails closed. Anything else — `!`, `!=`, `||`, chained `==`, parentheses, an empty or
+      be evaluated (`branches-ignore`, `paths`, unevaluable globs, a missing head branch,
+      an unread or empty pending `branches`/`tags` list, `branches: []`, glob characters including `+` and `\\`, or any deeper unknown line under
+      `push`) fails closed. Only a fully understood `push` block can be N/A or a branch match. Anything else — `!`, `!=`, `||`, chained `==`, parentheses, an empty or
       unparsed `on:`, or an unknown `on:` key — fails closed and is a missing required check
       if it has no run.
       N/A jobs are listed, not hidden.
@@ -202,18 +203,54 @@ _ON_INLINE_ONE = re.compile(r"^on:\s*([A-Za-z_][\w-]*)\s*$")
 _ON_MAPPING_KEY = re.compile(r"^  ([A-Za-z_][\w-]*)\s*:(.*)$")
 _ON_FILTER_KEY = re.compile(r"^    ([A-Za-z_][\w-]*)\s*:(.*)$")
 _ON_DASH_ITEM = re.compile(r"^      -\s+(.+?)\s*$")
-_GLOB_CHARS = frozenset("*?[]!")
+_GLOB_CHARS = frozenset("*?[]!+\\")
+
+
+def _strip_unquoted_comment(value: str) -> str:
+    """Drop a YAML comment that starts at an unquoted `#` at the start or after space."""
+    in_single = in_double = False
+    i = 0
+    while i < len(value):
+        c = value[i]
+        if in_single:
+            if c == "'" and i + 1 < len(value) and value[i + 1] == "'":
+                i += 2
+                continue
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            if c == "\\" and i + 1 < len(value):
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+            i += 1
+            continue
+        if c == "'":
+            in_single = True
+            i += 1
+            continue
+        if c == '"':
+            in_double = True
+            i += 1
+            continue
+        if c == "#" and (i == 0 or value[i - 1].isspace()):
+            return value[:i].rstrip()
+        i += 1
+    return value.rstrip()
 
 
 def _unquote_scalar(value: str) -> str:
-    value = value.strip()
+    value = _strip_unquoted_comment(value).strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
         return value[1:-1]
     return value
 
 
 def _parse_flow_list(value: str) -> list[str] | None:
-    value = value.strip()
+    value = _strip_unquoted_comment(value).strip()
     if not (value.startswith("[") and value.endswith("]")):
         return None
     inner = value[1:-1].strip()
@@ -239,6 +276,8 @@ def _push_fires_on_same_repo_pr(info: dict, head_branch: str | None) -> bool:
     tags = info.get("tags")
     if branches is None:
         return tags is None  # unfiltered: yes; tags-only: no
+    if not branches:
+        return True  # branches: [] is unevaluable; fail closed
     if any(_GLOB_CHARS & set(pat) for pat in branches):
         return True
     if not head_branch:
@@ -258,11 +297,20 @@ def _parse_on_triggers(yaml_text: str) -> dict[str, dict] | None:
     triggers: dict[str, dict] = {}
     current: str | None = None
     pending_list: str | None = None
+    pending_got_item = False
+
+    def close_pending() -> None:
+        """A pending push list with no items read is unevaluable, not tags-only / unfiltered."""
+        nonlocal pending_list, pending_got_item
+        if current == "push" and pending_list and not pending_got_item:
+            triggers[current]["unevaluable"] = True
+        pending_list = None
+        pending_got_item = False
 
     def start_event(name: str) -> None:
-        nonlocal current, pending_list
+        nonlocal current
+        close_pending()
         current = name
-        pending_list = None
         triggers.setdefault(name, {})
 
     def store_filter(event: str, key: str, values: list[str] | None) -> None:
@@ -283,10 +331,12 @@ def _parse_on_triggers(yaml_text: str) -> dict[str, dict] | None:
             info["unevaluable"] = True
 
     def take_inline_or_pending(event: str, key: str, rest: str) -> None:
-        nonlocal pending_list
-        rest = rest.strip()
+        nonlocal pending_list, pending_got_item
+        close_pending()
+        rest = _strip_unquoted_comment(rest).strip()
         if not rest:
             pending_list = key
+            pending_got_item = False
             return
         values = _parse_flow_list(rest) if rest.startswith("[") else None
         if rest.startswith("[") and values is None:
@@ -310,6 +360,7 @@ def _parse_on_triggers(yaml_text: str) -> dict[str, dict] | None:
             continue
         if not line.startswith(" "):
             if in_on:
+                close_pending()
                 return triggers or None
             if re.match(r"^on:\s*$", line):
                 in_on = True
@@ -347,8 +398,10 @@ def _parse_on_triggers(yaml_text: str) -> dict[str, dict] | None:
             if not value:
                 triggers[current]["unevaluable"] = True
                 pending_list = None
+                pending_got_item = False
                 continue
             key = pending_list
+            pending_got_item = True
             if key in ("branches", "tags"):
                 triggers[current].setdefault(key, []).append(value)
             elif key in ("branches-ignore", "paths", "paths-ignore"):
@@ -358,9 +411,9 @@ def _parse_on_triggers(yaml_text: str) -> dict[str, dict] | None:
             continue
         # Event-level dashed list, e.g. `schedule: \n    - cron: '0 0 * * *'`.
         if re.match(r"^    -\s+", line):
-            pending_list = None
             if current == "push":
                 triggers[current]["unevaluable"] = True
+            close_pending()
             continue
         filt = _ON_FILTER_KEY.match(line)
         if filt and line.startswith("    ") and not line.startswith("     "):
@@ -368,10 +421,15 @@ def _parse_on_triggers(yaml_text: str) -> dict[str, dict] | None:
             continue
         if line.startswith("      "):
             # Nested mapping under a 4-space key (e.g. workflow_dispatch inputs).
-            pending_list = None
+            # Under push, only a 6-space dash item is understood; anything deeper
+            # (7- or 8-space list items, extra keys) is unevaluable.
+            if current == "push":
+                triggers[current]["unevaluable"] = True
+            close_pending()
             continue
         return None
     if in_on:
+        close_pending()
         return triggers or None
     return None
 
