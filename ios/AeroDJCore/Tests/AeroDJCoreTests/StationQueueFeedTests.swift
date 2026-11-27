@@ -1774,6 +1774,22 @@ final class StationSkipFillTests: XCTestCase {
         XCTAssertNil(skip(feed, from: grown.count - 4, in: grown), "three left to load: still nothing to append")
         await until({ feed.stagedKey == StationQueueKey(refillStation) }, "but the build for the next fill starts")
     }
+
+    /// When every staged song is already in the playing queue, the Skip takes nothing (`nil`, not
+    /// an empty list) and starts the next build, so a later Skip can still continue the station.
+    func testWhenEveryStagedSongIsAlreadyQueuedTheSkipTakesNothingAndStartsTheNextBuild() async throws {
+        let recorder = QueueEventRecorder()
+        let twin = await refillFeed()
+        let built = try XCTUnwrap(skip(twin, from: 1, in: queue), "a complete staged fill, from a twin")
+        XCTAssertFalse(built.isEmpty)
+        let playing = queue + built
+        let feed = await refillFeed(recorder: recorder)
+        XCTAssertNil(skip(feed, from: playing.count - 1, in: playing),
+                     "nothing left to append: nil keeps today's path, not an empty hand-off")
+        XCTAssertEqual(recorder.events.last, .keptCurrentQueue(.skipFill, .notReady))
+        await until({ feed.stagedKey == StationQueueKey(refillStation) },
+                    "the next build starts so a later Skip can continue")
+    }
 }
 
 /// Counts a starter's poll sleeps (CreatedStationStartTests).

@@ -83,7 +83,7 @@ final class CacheLaunchPurgeGateTests: XCTestCase {
         let (started, startedC) = AsyncStream<Void>.makeStream()
         let (launched, launchedC) = AsyncStream<String?>.makeStream()
         let held = HeldLaunchPurgeCache(base: cache, barrier: barrier, started: startedC)
-        let task = AudioCacheSweeper(cache: held).start(every: .seconds(3600), purgingPersonalFirst: true,
+        let task = AudioCacheSweeper.startPurgingPersonalFirst(held, every: .seconds(3600),
                                                         onLaunchSweep: { launchedC.yield($0) })
         return (cache, barrier, started, launched, task, { startedC.finish(); launchedC.finish() })
     }
@@ -168,7 +168,7 @@ final class CacheLaunchPurgeGateTests: XCTestCase {
 
         let noPurge = FileAudioCache(directory: dir)
         let (launched, launchedC) = AsyncStream<String?>.makeStream()
-        let task = AudioCacheSweeper(cache: noPurge).start(every: .seconds(3600), purgingPersonalFirst: false,
+        let task = AudioCacheSweeper(cache: noPurge).start(every: .seconds(3600),
                                                            onLaunchSweep: { launchedC.yield($0) })
         let immediate = await noPurge.audio(for: "personal")
         XCTAssertEqual(immediate?.data, Data([1]), "no personal purge asked for: no gate")
