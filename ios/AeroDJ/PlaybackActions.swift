@@ -158,7 +158,9 @@ struct MusicSearch {
                             reservation, djTracks, briefing: briefingForQueue, sources: sources,
                             stationName: station.name, stationID: station.id)
                     },
-                    release: { djSession.releaseQueueSetup($0) })
+                    release: { djSession.releaseQueueSetup($0) },
+                    // #145: a tap during a hold loads the new queue and defers; its breaks apply.
+                    loadedButDeferred: MusicKitError.isLoadedButDeferred)
             })
     }
 

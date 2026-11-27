@@ -361,7 +361,9 @@ final class StationQueuePlayer {
                                                        briefing: offer.briefing, sources: offer.sources,
                                                        stationName: stationRef?.name, stationID: stationID)
             },
-            release: { djSession.releaseQueueSetup($0) })
+            release: { djSession.releaseQueueSetup($0) },
+            // #145: a held start keeps the new queue's DJ breaks (the catch below counts it as started).
+            loadedButDeferred: MusicKitError.isLoadedButDeferred)
             lastStartedStationKey = StationQueueKey(committed)
             return .started
         } catch MusicKitError.superseded {
