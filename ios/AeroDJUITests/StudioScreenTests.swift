@@ -67,10 +67,10 @@ final class StudioScreenTests: XCTestCase {
             app.launchArguments += ["-AeroDJSplitPre499Guard", "YES"]
         }
         XCUIDevice.shared.orientation = orientation
-        app.launchAfterLeftoverExits()
+        let scenarioName = scenario ?? "playing"
+        app.launchUntilAccessible(readyIdentifiers: Self.accessibleIdentifiers(for: scenarioName), in: self)
         // The capture view loads the station before rendering. Never screenshot on a timer:
         // wait for loading to end, and fail by name if the capture could not set up.
-        let scenarioName = scenario ?? "playing"
         if scenarioName == "shell" {
             // Shell replaces capture.loading with capture.shell once auth is settled.
             // Waiting on the positive ready marker avoids a stale ProgressView match on iPad.
@@ -86,6 +86,34 @@ final class StudioScreenTests: XCTestCase {
         let failed = app.descendants(matching: .any)["capture.failed"]
         if failed.exists { XCTFail(failed.label) }
         return app
+    }
+
+    /// Identifiers #655's launch helper can wait for after this scenario has loaded.
+    /// PlayingScreen is `layout.compact`, `layout.studio`, or `layout.studioStacked` depending
+    /// on the window and Dynamic Type, so those three are tried as an any-of.
+    private static func accessibleIdentifiers(for scenario: String) -> [String] {
+        switch scenario {
+        case "shell", "stationTap":
+            return ["capture.shell"]
+        case "stationTapDuo", "duoWideReady", "duoWideEmpty", "duoWideSpeaking",
+             "duoWideOnAir", "duoArrangement":
+            return ["capture.duoContainer"]
+        case "duoLandscape", "duoLandscapeTune", "duoSidebar":
+            return ["capture.duoOpenContainer"]
+        case "duoTent":
+            return ["capture.tentContainer"]
+        case "duoContinuity":
+            return ["continuity.container"]
+        case "stations":
+            return ["split.sidebar"]
+        case "splitView":
+            return ["split.container"]
+        case "resize", "resizeTune":
+            return ["layout.compact"]
+        default:
+            if scenario.hasPrefix("railD") { return ["capture.railDContainer"] }
+            return ["layout.compact", "layout.studio", "layout.studioStacked"]
+        }
     }
 
     /// Which layout this simulator's window gets, read from the app itself rather than the

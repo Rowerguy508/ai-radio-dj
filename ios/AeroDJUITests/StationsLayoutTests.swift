@@ -257,7 +257,7 @@ final class StationsLayoutTests: XCTestCase {
             app.launchArguments += ["-AeroDJForcePhoneIdiom", "YES"]
         }
         XCUIDevice.shared.orientation = orientation
-        app.launchAfterLeftoverExits()
+        app.launchUntilAccessible(readyIdentifier: "capture.stationsLayoutContainer", in: self)
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10), "no window\n\(app.debugDescription)")
         let fits = window.frame.width >= size.width && window.frame.height >= size.height

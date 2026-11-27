@@ -566,7 +566,7 @@ final class RailDLayoutTests: XCTestCase {
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
                                "-AeroDJStudioCaptureScenario", scenario] + extra
         XCUIDevice.shared.orientation = orientation
-        app.launchAfterLeftoverExits()
+        app.launchUntilAccessible(readyIdentifier: "capture.railDContainer", in: self)
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10), "no window\n\(app.debugDescription)")
         if let container {
