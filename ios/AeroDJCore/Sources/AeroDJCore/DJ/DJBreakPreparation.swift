@@ -127,6 +127,32 @@ public enum DJBreakOutcome: Equatable, Sendable {
     case skipped(DJBreakSkipReason)
 }
 
+/// What `DJSessionPlan.capReport(afterBreaks:)` reads from one boundary's outcome, and nothing
+/// else (Sentinel's B1 on #603): the render-time dropped time check (cue id and reason only), how
+/// many optional lines the measured cap trimmed, and whether the break was skipped over the
+/// ordinary budget. No cue text, no clip audio, no `PreparedDJBreak`, so a session can keep one
+/// per aired break without holding personal content past a purge.
+public struct DJBreakCapOutcome: Equatable, Sendable {
+    public var droppedTimeCheck: DJTimeCheckDrop?
+    public var trimmedCount: Int
+    public var overBreakBudget: Bool
+
+    public init(droppedTimeCheck: DJTimeCheckDrop? = nil, trimmedCount: Int = 0, overBreakBudget: Bool = false) {
+        self.droppedTimeCheck = droppedTimeCheck
+        self.trimmedCount = trimmedCount
+        self.overBreakBudget = overBreakBudget
+    }
+
+    public init(_ outcome: DJBreakOutcome) {
+        switch outcome {
+        case .ready(let prepared):
+            self.init(droppedTimeCheck: prepared.droppedTimeCheck, trimmedCount: prepared.trimmedCueIDs.count)
+        case .skipped(let reason):
+            self.init(overBreakBudget: reason == .overBreakBudget)
+        }
+    }
+}
+
 /// Renders planned breaks ahead of time and hands them out at boundaries without blocking.
 public actor DJBreakPreparer {
     private let renderer: VoiceRenderer
@@ -914,12 +940,15 @@ public actor DJBreakPreparer {
 
     static func render(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
                        cap: BreakCap, bundled: BundledClipResolver? = nil) async -> DJBreakOutcome {
-        let first: Pass
-        switch await renderCues(djBreak, renderer: renderer, userID: userID, stationID: stationID, bundled: bundled) {
+        let first: (cues: [NarrationCue], clips: [RenderedClip], complete: Bool)
+        switch await renderCues(djBreak, renderer: renderer, userID: userID, stationID: stationID, bundled: bundled,
+                                stopWhenDiscarded: cap) {
         case .success(let pass): first = pass
         case .failure(let skip): return .skipped(skip.reason)
         }
-        if let fitted = cap.fitting(first) { return ready(djBreak, fitted) }
+        // A pass stopped early is already over the main cap on required clips and is never played.
+        // A complete pass may still drop optional lines to fit (`BreakCap.fitting`).
+        if first.complete, let fitted = cap.fitting((first.cues, first.clips)) { return ready(djBreak, fitted) }
         // Build 20: each cue can fit its own cap in a slower Enhanced or Premium voice while the
         // whole break runs past the cadence cap. Re-render the whole break once on the last route
         // (the standard on-device voice, $0), so every cue is in one voice, before skipping it.
@@ -928,9 +957,10 @@ public actor DJBreakPreparer {
             return .skipped(.overBreakBudget)
         }
         // The fallback's first route is on-device, so the bundle never resolves on this retry.
-        switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID, bundled: bundled) {
+        switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID, bundled: bundled,
+                                stopWhenDiscarded: nil) {
         case .success(let retry):
-            return cap.fitting(retry).map { ready(djBreak, $0) } ?? .skipped(.overBreakBudget)
+            return cap.fitting((retry.cues, retry.clips)).map { ready(djBreak, $0) } ?? .skipped(.overBreakBudget)
         case .failure(let skip): return .skipped(skip.reason)  // the retry's own reason (Fry, #158)
         }
     }
@@ -1034,9 +1064,20 @@ public actor DJBreakPreparer {
         return djBreak.cues.filter { included.contains($0.id) }
     }
 
+    /// Renders every cue in order. With `stopWhenDiscarded` (the first pass), it stops making
+    /// requests once the required clips already cannot fit, and returns `complete == false`, so
+    /// later cues are not charged for a pass that will be thrown away and retried on the last
+    /// on-device route (the remaining #293 / #646 spend fix):
+    /// - the required clips other than the closing line already exceed the main cap;
+    /// - or, when `cap.whole` is set, the required clips (opener and closing as rendered, still
+    ///   excluding optionals) already exceed that whole-break cap, gap included.
+    /// `BreakCap.fitting` can only drop optional lines from there, since clips only add seconds.
+    /// Optional lines do not trigger the stop: they can still be trimmed and the pass kept.
+    /// The retry runs with `stopWhenDiscarded: nil`.
     private static func renderCues(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
-                                   bundled: BundledClipResolver?) async
-        -> Result<(cues: [NarrationCue], clips: [RenderedClip]), Skip> {
+                                   bundled: BundledClipResolver?,
+                                   stopWhenDiscarded cap: BreakCap?) async
+        -> Result<(cues: [NarrationCue], clips: [RenderedClip], complete: Bool), Skip> {
         var cues: [NarrationCue] = []
         var clips: [RenderedClip] = []
         for var cue in djBreak.cues {
@@ -1067,13 +1108,27 @@ public actor DJBreakPreparer {
                 cue.audioCacheKey = clip.cacheKey
                 cues.append(cue)
                 clips.append(clip)
+                // Optional lines may still be trimmed by `BreakCap.fitting`, so they do not
+                // count toward either early stop.
+                if let cap {
+                    if measured(clips.filter { $0.cueID != cap.closingCueID && !cap.optional.contains($0.cueID) }) > cap.main {
+                        return .success((cues, clips, false))
+                    }
+                    // The whole-break cap includes the closing line and the pause before it.
+                    if let whole = cap.whole {
+                        let required = clips.filter { !cap.optional.contains($0.cueID) }
+                        if BreakCap.spokenSeconds(required, closingCueID: cap.closingCueID) > whole {
+                            return .success((cues, clips, false))
+                        }
+                    }
+                }
             case .failure(let failure):
                 // A render cut short by the deadline is a timeout, whichever side of the race
                 // (worker or timer) reports first.
                 return .failure(Skip(reason: Task.isCancelled ? .timedOut : skipReason(failure)))
             }
         }
-        return .success((cues, clips))
+        return .success((cues, clips, true))
     }
 
     static func skipReason(_ failure: VoiceRenderer.Failure) -> DJBreakSkipReason {
@@ -1088,19 +1143,23 @@ extension DJSessionPlan {
     /// `ordinaryCapReport` plus what the measured-audio cap left out: optional lines trimmed at
     /// render time, and ordinary breaks skipped as `.overBreakBudget` (music-only boundary).
     public func capReport(afterBreaks outcomes: [Int: DJBreakOutcome]) -> OrdinaryBreakCapReport {
+        capReport(afterBreaks: outcomes.mapValues(DJBreakCapOutcome.init))
+    }
+
+    /// The same report from the slim per-boundary values a session keeps (Sentinel's B1 on #603).
+    public func capReport(afterBreaks outcomes: [Int: DJBreakCapOutcome]) -> OrdinaryBreakCapReport {
         var report = ordinaryCapReport
         for djBreak in breaks where !djBreak.hasBriefing {
             let k = djBreak.afterTrack
-            if case .ready(let prepared)? = outcomes[k], let drop = prepared.droppedTimeCheck {
+            guard let outcome = outcomes[k] else { continue }
+            if let drop = outcome.droppedTimeCheck {
                 report.droppedTimeChecks[k] = drop
             }
-            switch outcomes[k] {
-            case .ready(let prepared)? where !prepared.trimmedCueIDs.isEmpty:
-                report.trimmedOptionalLines[k, default: 0] += prepared.trimmedCueIDs.count
-            case .skipped(.overBreakBudget)?:
+            if outcome.overBreakBudget {
                 report.trimmedOptionalLines[k] = nil
                 if !report.skippedOverCap.contains(k) { report.skippedOverCap.append(k) }
-            default: break
+            } else if outcome.trimmedCount > 0 {
+                report.trimmedOptionalLines[k, default: 0] += outcome.trimmedCount
             }
         }
         report.skippedOverCap.sort()
