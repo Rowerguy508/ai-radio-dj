@@ -30,9 +30,18 @@ final class SystemVerticalBarsCaptureTests: XCTestCase {
         XCTAssertNil(SystemVerticalBarsCapture.Scenario.named("railDPortrait"))
         XCTAssertNil(SystemVerticalBarsCapture.Scenario.named(nil))
         XCTAssertEqual(SystemVerticalBarsCapture.Scenario.allCases.map(\.shotName),
-                       ["system-vertical-bars-duo-open-portrait", "system-vertical-bars-duo-open-landscape"])
+                       ["system-vertical-bars-640x820-open-portrait",
+                        "system-vertical-bars-820x640-open-landscape"])
         XCTAssertEqual(SystemVerticalBarsCapture.Scenario.duoOpenPortrait.collapsedShotName,
-                       "system-vertical-bars-duo-open-portrait-collapsed")
+                       "system-vertical-bars-640x820-open-portrait-collapsed")
+        XCTAssertEqual(SystemVerticalBarsCapture.Scenario.duoOpenLandscape.collapsedShotName,
+                       "system-vertical-bars-820x640-open-landscape-collapsed")
+        // The name is the size the test sets or reads, not a fixed label.
+        XCTAssertEqual(SystemVerticalBarsCapture.Scenario.shotName(width: 820, height: 640, landscape: true),
+                       "system-vertical-bars-820x640-open-landscape")
+        XCTAssertEqual(SystemVerticalBarsCapture.Scenario.shotName(width: 640.4, height: 819.6, landscape: false,
+                                                                   collapsed: true),
+                       "system-vertical-bars-640x820-open-portrait-collapsed")
     }
 
     /// `keepSystemVerticalBar` is `placement == .duoHorizontal` (PlayingScreen), so each frame has
