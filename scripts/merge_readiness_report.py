@@ -10,10 +10,13 @@ Prints, at the PR's exact head sha:
       a run that can't be mapped never counts. A skipped iOS job counts as green only when
       ios.yml's own `changes` job (the path filter) concluded success at the same sha; it is shown as
       "skipped (path filter, changes passed)". Missing, pending, cancelled, failed, or any other
-      skip is not green. A job that cannot run on a pull_request — from its `if:` (for example
-      `github.event_name == 'workflow_dispatch'`) or because the workflow's `on:` has no
-      `pull_request` — is listed as N/A, never as a missing required check. A job that does run
-      on PRs and is missing is still flagged.
+      skip is not green. A job is N/A on a PR only when that is certain: a plain positive
+      dispatch-only `if:` (`github.event_name == 'workflow_dispatch'`, optionally `&&` a
+      positive `inputs.<id>` / `inputs.<id> == true` check), or a fully parsed `on:` of one
+      or more event keys with none of them `pull_request` or `pull_request_target`. Anything
+      else — `!`, `!=`, `||`, chained `==`, parentheses, an empty or unparsed `on:`, or an
+      unrecognized condition — fails closed and is a missing required check if it has no run.
+      N/A jobs are listed, not hidden.
   (b) signs: a comment or review whose first non-empty line is exactly `SIGN <sha8|sha40> -Name`,
       where the sha is the current head. A review in
       CHANGES_REQUESTED state never counts. The signer is the `-Name`, not the GitHub login (every
@@ -117,45 +120,98 @@ def job_check_names(yaml_text: str) -> list[str]:
     return [j["name"] or j["id"] for j in _parse_jobs(yaml_text)]
 
 
-EVENT_EQ = re.compile(r"github\.event_name\s*==\s*['\"]([^'\"]+)['\"]")
-EVENT_NE = re.compile(r"github\.event_name\s*!=\s*['\"]([^'\"]+)['\"]")
-
-
 def workflow_runs_on_pull_request(yaml_text: str) -> bool:
-    """True when `on:` includes `pull_request`. An absent or unparsed `on:` fails closed (assumes yes)."""
+    """True unless `on:` was parsed as one or more event keys and none is a PR event.
+
+    `pull_request` and `pull_request_target` are PR events, in the string, list, and map
+    forms. Return false only when at least one event key was parsed and none of them is a
+    PR event. An empty or unrecognized `on:` (including keys indented other than 2 spaces)
+    fails closed and is treated as running on a PR, so its jobs stay required.
+    """
+    events = _parse_on_events(yaml_text)
+    if not events:
+        return True
+    return any(e in _PR_ON_EVENTS for e in events)
+
+
+_PR_ON_EVENTS = frozenset({"pull_request", "pull_request_target"})
+_ON_EVENT = re.compile(r"^[A-Za-z_][\w-]*$")
+_ON_INLINE_LIST = re.compile(r"^on:\s*\[([^]]*)\]\s*$")
+_ON_INLINE_ONE = re.compile(r"^on:\s*([A-Za-z_][\w-]*)\s*$")
+_ON_MAPPING_KEY = re.compile(r"^  ([A-Za-z_][\w-]*)\s*:")
+
+
+def _parse_on_events(yaml_text: str) -> set[str] | None:
+    """Event names in `on:`, or None if the block is absent or not fully understood."""
     in_on = False
+    collected: set[str] = set()
     for raw in yaml_text.splitlines():
         line = raw.rstrip()
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if not line.startswith(" "):
             if in_on:
-                return False
+                return collected or None
             if re.match(r"^on:\s*$", line):
                 in_on = True
                 continue
             if line.startswith("on:"):
-                return "pull_request" in line
+                m = _ON_INLINE_LIST.match(line)
+                if m:
+                    items = [i.strip() for i in m.group(1).split(",") if i.strip()]
+                    if items and all(_ON_EVENT.fullmatch(i) for i in items):
+                        return set(items)
+                    return None
+                m = _ON_INLINE_ONE.match(line)
+                if m:
+                    return {m.group(1)}
+                return None
             if line == "jobs:":
                 break
             continue
         if in_on:
-            m = re.match(r"^  ([A-Za-z_][\w-]*)\s*:", line)
-            if m and m.group(1) == "pull_request":
-                return True
-    return not in_on
+            if line.startswith("    "):
+                continue
+            m = _ON_MAPPING_KEY.match(line)
+            if not m or not line.startswith("  ") or line.startswith("   "):
+                return None
+            collected.add(m.group(1))
+    if in_on:
+        return collected or None
+    return None
 
 
-def _and_cannot_run_on_pr(expr: str) -> bool:
-    """True when a conjunct forces event_name off pull_request."""
-    for c in re.split(r"&&", expr):
-        for ev in EVENT_EQ.findall(c):
-            if ev != "pull_request":
-                return True
-        for ev in EVENT_NE.findall(c):
-            if ev == "pull_request":
-                return True
-    return False
+_DISPATCH_EVENT = re.compile(r"^github\.event_name\s*==\s*['\"]workflow_dispatch['\"]$")
+_POSITIVE_INPUT = re.compile(r"^inputs\.[A-Za-z_][\w-]*(\s*==\s*true)?$")
+
+
+def _plain_dispatch_only(if_expr: str) -> bool:
+    """True only for an allowlisted positive dispatch-only `if:`.
+
+    Allowed: `github.event_name == 'workflow_dispatch'` and optional `inputs.<id>` or
+    `inputs.<id> == true`, joined only by `&&`. No `||`, `!`, `!=`, parentheses,
+    chained `==`, or any term the parser does not fully understand.
+    """
+    expr = if_expr.strip()
+    if expr.startswith("${{") and expr.endswith("}}"):
+        expr = expr[3:-2].strip()
+    if "${{" in expr or "}}" in expr:
+        return False
+    expr = re.sub(r"\s+", " ", expr)
+    if not expr or "||" in expr:
+        return False
+    terms = [t.strip() for t in expr.split("&&")]
+    if not terms or any(not t for t in terms):
+        return False
+    saw_dispatch = False
+    for t in terms:
+        if _DISPATCH_EVENT.fullmatch(t):
+            saw_dispatch = True
+        elif _POSITIVE_INPUT.fullmatch(t):
+            continue
+        else:
+            return False
+    return saw_dispatch
 
 
 def na_on_pull_request_reason(if_expr: str | None, workflow_has_pr: bool) -> str | None:
@@ -164,16 +220,9 @@ def na_on_pull_request_reason(if_expr: str | None, workflow_has_pr: bool) -> str
         return "N/A (workflow does not run on pull_request)"
     if not if_expr:
         return None
-    expr = if_expr.strip()
-    if expr.startswith("${{") and expr.endswith("}}"):
-        expr = expr[3:-2].strip()
-    expr = re.sub(r"\s+", " ", expr)
-    parts = [p.strip() for p in re.split(r"\|\|", expr)]
-    if not all(_and_cannot_run_on_pr(p) for p in parts):
-        return None
-    if any(ev == "workflow_dispatch" for p in parts for ev in EVENT_EQ.findall(p)):
+    if _plain_dispatch_only(if_expr):
         return "N/A (dispatch-only; cannot run on a pull_request)"
-    return "N/A (cannot run on a pull_request)"
+    return None
 
 
 def job_na_reasons(workflows: list[dict]) -> dict[tuple[str, str], str]:

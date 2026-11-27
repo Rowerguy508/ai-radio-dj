@@ -138,6 +138,95 @@ jobs:
         self.assertTrue(any("Dispatch job" in n and s.startswith("N/A") for n, s in r["checks"]["rows"]))
         self.assertFalse(r["checks"]["bad"])
 
+    def _assert_stays_required(self, if_expr, job_name):
+        text = f"""
+name: iOS
+on:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  j:
+    name: {job_name}
+    if: {if_expr}
+"""
+        r = self._report([{"path": IOS, "text": text}], check_runs=[])
+        self.assertTrue(any(f"{job_name}: missing" in b for b in r["checks"]["bad"]),
+                        (if_expr, r["checks"]["bad"], r["checks"]["rows"]))
+        self.assertFalse(any(s.startswith("N/A") for _, s in r["checks"]["rows"]),
+                         (if_expr, r["checks"]["rows"]))
+
+    def test_negated_dispatch_comparisons_stay_required(self):
+        """Sentinel B1: these run on every PR; a missing run must not be hidden as N/A."""
+        self._assert_stays_required("${{ !(github.event_name == 'workflow_dispatch') }}",
+                                    "Negated dispatch")
+        self._assert_stays_required("github.event_name == 'workflow_dispatch' == false",
+                                    "Chained false")
+
+    def test_inequality_and_unparseable_if_stay_required(self):
+        self._assert_stays_required("github.event_name != 'pull_request'", "Not equal pull_request")
+        self._assert_stays_required(
+            "github.event_name == 'workflow_dispatch' && (always())", "Unparseable parens")
+
+    def _assert_on_stays_required(self, workflow, job_name):
+        r = self._report([{"path": IOS, "text": workflow}], check_runs=[])
+        self.assertTrue(any(f"{job_name}: missing" in b for b in r["checks"]["bad"]),
+                        (workflow, r["checks"]))
+        self.assertFalse(any(s.startswith("N/A") for _, s in r["checks"]["rows"]),
+                         (workflow, r["checks"]["rows"]))
+
+    def test_pull_request_target_on_stays_required(self):
+        """Echo: map, string, and list forms of pull_request_target must stay required."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  pull_request_target:
+jobs:
+  only:
+    name: Target job
+""", "Target job")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+jobs:
+  only:
+    name: Target types job
+""", "Target types job")
+        self._assert_on_stays_required("""
+name: Manual
+on: pull_request_target
+jobs:
+  only:
+    name: Target string job
+""", "Target string job")
+        self._assert_on_stays_required("""
+name: Manual
+on: [pull_request_target]
+jobs:
+  only:
+    name: Target list job
+""", "Target list job")
+
+    def test_empty_or_unrecognized_on_stays_required(self):
+        """Echo: an empty or unparsed `on:` must fail closed, not mark every job N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+
+jobs:
+  only:
+    name: Empty on job
+""", "Empty on job")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+    pull_request:
+jobs:
+  only:
+    name: Four space job
+""", "Four space job")
+
 
 class Signs(NoNetwork):
     def test_sha8_and_sha40_with_no_blockers(self):
