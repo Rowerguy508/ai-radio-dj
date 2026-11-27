@@ -92,6 +92,162 @@ public enum DisplayContinuity {
     public static let artAnchor = "player.art"
     public static let titleAnchor = "player.title"
 
+    /// A `scrollPosition` write: keep the incoming id, or ignore it so a
+    /// rebuilt scroller cannot jump the stored spot to the top.
+    public enum ScrollAnchorWrite: Equatable, Sendable {
+        case ignore
+        case accept
+    }
+
+    /// Deterministic guard for a stored scroll id when a scroller is rebuilt
+    /// (opening the phone). Never uses a clock or a main-queue turn.
+    ///
+    /// Phases: `idle` → `armed` (a stored id and a new scroller) → `adopted`
+    /// (the scroller reported the held id) → `released`, or `userScrolled`
+    /// (a scroll phase or drag) → `released`.
+    ///
+    /// - Armed: only the held id is kept. The first-layout art or title, nil and
+    ///   any other id are ignored, so the art cannot replace the stored spot.
+    /// - Adopted: the held id echo is kept. The scroller's settle ids (the art
+    ///   and the scroller's first id) are ignored, so a write of the top while the
+    ///   0.45s animation settles is not stored. Any other id is a real scroll
+    ///   (VoiceOver, trackpad, mouse, `scrollTo`, a pan): release and keep it.
+    /// - A user scroll phase (iOS 18+) or a drag (iOS 17) releases from either
+    ///   state, so a scroll back to the art is kept too.
+    /// - The scroller's ids (`noteScrollerIDs`): if the held id is not among
+    ///   them, the scroller can never adopt it, so the guard releases at once.
+    public struct ScrollAnchorMachine: Equatable, Sendable {
+        public enum Phase: Equatable, Sendable {
+            case idle
+            case armed
+            case adopted
+            case userScrolled
+            case released
+        }
+
+        public private(set) var phase: Phase = .idle
+        public private(set) var held: String = ""
+        /// Identity of the scroller this cycle is tracking. Empty means none.
+        public private(set) var layout: String = ""
+        /// Ids a rebuilt scroller writes on its own while it settles: the art and
+        /// the scroller's first id. Never a release after adoption.
+        public private(set) var settleIDs: Set<String> = [DisplayContinuity.artAnchor]
+
+        public init() {}
+
+        /// Short name for the DEBUG phase readout. No user content.
+        public var phaseName: String {
+            switch phase {
+            case .idle: "idle"
+            case .armed: "armed"
+            case .adopted: "adopted"
+            case .userScrolled: "userScrolled"
+            case .released: "released"
+            }
+        }
+
+        /// Arm for a (re)built scroller. A new `layout` always starts a cycle:
+        /// a non-empty stored id arms, an empty one is idle. Calls for the same
+        /// layout while idle, after adoption, a user scroll, or release are
+        /// no-ops: an idle scroller's own writes must never arm on the id it
+        /// just stored, and a later user scroll back to the art is not re-armed away.
+        public mutating func arm(held stored: String, layout: String) {
+            if !layout.isEmpty, layout == self.layout {
+                switch phase {
+                case .idle, .adopted, .userScrolled, .released:
+                    return
+                case .armed:
+                    break
+                }
+            }
+            if layout != self.layout { settleIDs = [DisplayContinuity.artAnchor] }
+            self.layout = layout
+            if stored.isEmpty {
+                held = ""
+                phase = .idle
+            } else {
+                held = stored
+                phase = .armed
+            }
+        }
+
+        /// A scrollPosition write. Passing `layout` arms first when this is a
+        /// new scroller, so an art write that lands before a separate `arm`
+        /// call cannot overwrite the stored id.
+        public mutating func write(_ incoming: String?, stored: String = "",
+                                   layout: String? = nil) -> ScrollAnchorWrite {
+            if let layout, !layout.isEmpty {
+                let seed = stored.isEmpty ? held : stored
+                arm(held: seed, layout: layout)
+            }
+            retarget(stored: stored)
+            let next = incoming ?? ""
+            switch phase {
+            case .idle, .released:
+                return .accept
+            case .userScrolled:
+                phase = .released
+                return .accept
+            case .armed:
+                if !held.isEmpty, next == held {
+                    phase = .adopted
+                    return .accept
+                }
+                return .ignore
+            case .adopted:
+                if next == held { return .accept }
+                // Nil, or the scroller's own top/art while it settles: not a scroll.
+                if next.isEmpty || settleIDs.contains(next) { return .ignore }
+                phase = .released
+                return .accept
+            }
+        }
+
+        /// The user is scrolling: a user scroll phase (iOS 18+) or a drag (iOS 17).
+        /// Later writes, including the art, are kept.
+        public mutating func noteUserScrolled() {
+            switch phase {
+            case .armed, .adopted:
+                phase = .userScrolled
+            case .idle, .released, .userScrolled:
+                break
+            }
+        }
+
+        /// The anchor ids this scroller lays out, top first. An empty list is a
+        /// scroller with nothing laid out yet and changes nothing. Otherwise the
+        /// first id joins the settle ids, and a held id that is not in the list
+        /// releases: the scroller can never adopt it, so it must not stay armed.
+        public mutating func noteScrollerIDs(_ ids: [String], stored: String = "", layout: String? = nil) {
+            if let layout, !layout.isEmpty {
+                let seed = stored.isEmpty ? held : stored
+                arm(held: seed, layout: layout)
+            }
+            retarget(stored: stored)
+            guard let first = ids.first else { return }
+            settleIDs = [DisplayContinuity.artAnchor, first]
+            switch phase {
+            case .armed, .adopted:
+                if !ids.contains(held) { phase = .released }
+            case .idle, .userScrolled, .released:
+                break
+            }
+        }
+
+        /// The stored id was changed outside the scroller (a programmatic jump
+        /// that sets the stored id). Hold the new id and wait for its adoption.
+        private mutating func retarget(stored: String) {
+            guard !stored.isEmpty, stored != held else { return }
+            switch phase {
+            case .armed, .adopted:
+                held = stored
+                phase = .armed
+            case .idle, .userScrolled, .released:
+                break
+            }
+        }
+    }
+
     /// `playing|track-id`. Empty track id when nothing is loaded. A fold must
     /// leave this string alone.
     public static func playbackToken(transport: TransportState, trackID: String?) -> String {

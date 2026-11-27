@@ -585,6 +585,9 @@ final class StudioScreenTests: XCTestCase {
     /// container (compact) and unfolds to the 640×820 Duo (regular), which since #542 is the
     /// 2.0 rail layout. Playback, the selected station, the stored scroll anchor and the load
     /// count stay. Row 4 on screen is checked while folded; unfolded, row 4 must exist.
+    /// The stored-anchor readout is a predicate wait, not a delay: `ScrollAnchorMachine`
+    /// holds the id until the new scroller adopts it or the user scrolls, with no
+    /// main-queue turn. Unfold in this capture also disables the 0.45s animation.
     @MainActor
     func testOpeningThePhoneKeepsPlaybackScrollAndStation() throws {
         try XCTSkipUnless(isOpenLayout, "The unfolded 640 × 820 pt container needs an iPad-size simulator window")
@@ -660,6 +663,11 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(any["continuity.scroller"].waitForExistence(timeout: 5),
                       "the rail layout has no continuity scroller\n\(app.debugDescription)")
         XCTAssertTrue(row.waitForExistence(timeout: 5), "row 4 is missing from the rail layout")
+        // #578 (-Nova): the stored id surviving is not enough. The unfolded shot on run
+        // 45339925855 showed rows 0-1 under the hero, so the rail column must scroll row 4 on.
+        let rowBack = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: row)
+        XCTAssertEqual(XCTWaiter().wait(for: [rowBack], timeout: 5), .completed,
+                       "row 4 is not on screen after unfolding: \(row.frame)\n\(app.debugDescription)")
         XCTAssertEqual(readout(app, "continuity.station"), "morning-calm")
         XCTAssertTrue(any["station.title"].label.contains("Morning Calm"))
         XCTAssertEqual(readout(app, "continuity.playback"), playback)
@@ -667,6 +675,66 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertEqual(readout(app, "continuity.loads"), loads, "opening the phone reloaded")
         assertCallsStayZero(app, "opening the phone must not search or play")
         save(app, "duo-continuity-unfolded")
+    }
+
+    /// Atlas on 42a53bc6: once the rebuilt scroller holds the stored id, a real swipe must
+    /// release the guard and be stored, whether or not a drag gesture fires. iOS 18+ reads
+    /// `onScrollPhaseChange`, iOS 17 the drag, and a move to another id releases on any OS.
+    /// Unfold with row 4 stored, wait until the guard holds it (adopted, or armed if the
+    /// scroller has not echoed it yet), swipe the rail's scroller, and the stored-anchor
+    /// readout must leave row 4. Predicate waits only, no delay.
+    @MainActor
+    func testASwipeAfterUnfoldingReleasesTheHeldScrollAnchor() throws {
+        try XCTSkipUnless(isOpenLayout, "The unfolded 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoContinuity")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        let unfold = app.buttons["continuity.unfold"]
+        let scrollTo = app.buttons["continuity.scrollToRow"]
+        XCTAssertTrue(unfold.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(scrollTo.waitForExistence(timeout: 5))
+        scrollTo.tap()
+        let anchor = any["continuity.anchor"]
+        let phase = any["continuity.anchorPhase"]
+        XCTAssertTrue(phase.waitForExistence(timeout: 5), "anchor phase readout missing\n\(app.debugDescription)")
+        let stored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "continuity.row.4"),
+                                               object: anchor)
+        XCTAssertEqual(XCTWaiter().wait(for: [stored], timeout: 5), .completed,
+                       "row 4 was not stored: \(anchor.label)")
+
+        unfold.tap()
+        XCTAssertTrue(any["folded.trackColumn"].waitForExistence(timeout: 10),
+                      "the unfolded Duo is the rail layout\n\(app.debugDescription)")
+        // The id lands on the ScrollView and on a wrapping Other, so `any` matches twice
+        // and a swipe needs one element: query the scroll view itself.
+        let scroller = app.scrollViews["continuity.scroller"].firstMatch
+        XCTAssertTrue(scroller.waitForExistence(timeout: 5),
+                      "the rail layout has no continuity scroller\n\(app.debugDescription)")
+        // The fold arms the guard for the new scroller; adoption is the scroller echoing row 4.
+        let holding = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label IN %@", ["armed", "adopted"]),
+                                                object: phase)
+        XCTAssertEqual(XCTWaiter().wait(for: [holding], timeout: 5), .completed,
+                       "the guard is not holding row 4 after the fold: \(phase.label)")
+        let adopted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "adopted"), object: phase)
+        let adoptedResult = XCTWaiter().wait(for: [adopted], timeout: 5)
+        XCTContext.runActivity(named: "guard phase before the swipe: \(phase.label) (\(adoptedResult.rawValue))") { _ in }
+        XCTAssertEqual(anchor.label, "continuity.row.4", "the fold lost the stored anchor")
+
+        // Row 4 sits near the end of the rail column, so swipe toward the top: that
+        // always moves the top id, whatever the clamp at the bottom.
+        // At the top edge the scroll position can report no id, so the swipe may store
+        // none: that is the user's scroll kept, not dropped. Dropped means row 4 stays.
+        scroller.swipeDown()
+        let moved = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label != %@", "continuity.row.4"),
+            object: anchor)
+        XCTAssertEqual(XCTWaiter().wait(for: [moved], timeout: 5), .completed,
+                       "a swipe after the fold was dropped; anchor \(anchor.label), phase \(phase.label)")
+        let released = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "released"),
+                                                 object: phase)
+        XCTAssertEqual(XCTWaiter().wait(for: [released], timeout: 5), .completed,
+                       "the guard did not release after the swipe: \(phase.label)")
+        assertCallsStayZero(app, "scrolling the player must not search or play")
     }
 
     @MainActor

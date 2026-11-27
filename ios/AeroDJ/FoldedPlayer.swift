@@ -131,8 +131,11 @@ struct FoldedPlayer: View {
     /// readers never see a split measurement.
     var splitHost: SplitMeasure? = nil
     /// Owned by `PlayingScreen`, above the layout switch. A placement change
-    /// rebuilds the scroll view and reads this same anchor back.
-    var scrollAnchor: Binding<String?> = .constant(Optional<String>.none)
+    /// rebuilds the scroll view; the handle arms on that scroller's first write.
+    var scrollHandle = PlayerScrollAnchorHandle(
+        stored: .constant(Optional<String>.none),
+        machine: .constant(DisplayContinuity.ScrollAnchorMachine())
+    )
 
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -382,7 +385,7 @@ struct FoldedPlayer: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
-        .scrollPosition(id: scrollAnchor)
+        .playerScrollPosition(scrollHandle, scrollerID: "compactUpper")
         .modifier(ContinuityScrollerID(enabled: continuityProbe))
     }
 
@@ -423,7 +426,7 @@ struct FoldedPlayer: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
-        .scrollPosition(id: scrollAnchor)
+        .playerScrollPosition(scrollHandle, scrollerID: "centredColumn")
         .frame(width: size.width, height: size.height)
     }
 
@@ -535,22 +538,26 @@ struct FoldedPlayer: View {
                         if spread, let track = heroTrack {
                             spreadArtColumn(track: track, leftWidth: layout.leftWidth, height: size.height,
                                             isOnAir: orb.card == .talking)
+                                .scrollTargetLayout()
                         } else {
-                            VStack(alignment: .leading, spacing: 0) {
-                                RailDStationHeader(name: heading.header.name)
-                                upper(artSide: CGFloat(min(layout.artSide, layout.leftWidth)), centered: false,
-                                      includesStatus: true, keepArtVisible: orb.card != .talking,
-                                      includesSearch: false,
-                                      titleSize: openTitleSize(column: layout.leftWidth), compactStatus: true)
-                            }
+                            // #578 (-Nova): `upper` is the scroll target layout, with the station
+                            // header inside it. A wrapper VStack around header and `upper` hid the
+                            // art, title and continuity row ids from `scrollPosition`: after
+                            // unfolding the guard stayed armed and the column stayed at the top
+                            // (iPad Studio job, run 45647330548, row 4 at y 1422).
+                            upper(artSide: CGFloat(min(layout.artSide, layout.leftWidth)), centered: false,
+                                  includesStatus: true, keepArtVisible: orb.card != .talking,
+                                  includesSearch: false,
+                                  titleSize: openTitleSize(column: layout.leftWidth), compactStatus: true,
+                                  stationHeader: heading.header.name)
+                                .scrollTargetLayout()
                         }
                     }
                     .frame(width: CGFloat(layout.leftWidth), alignment: .leading)
-                    .scrollTargetLayout()
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollContentBackground(.hidden)
-                .scrollPosition(id: scrollAnchor)
+                .playerScrollPosition(scrollHandle, scrollerID: "openHalves")
                 .modifier(ContinuityScrollerID(enabled: continuityProbe))
                 .frame(width: CGFloat(layout.leftWidth), height: size.height, alignment: .topLeading)
                 .background { if showsWash { dayWash.accessibilityHidden(true) } }
@@ -610,7 +617,7 @@ struct FoldedPlayer: View {
             FoldedArtCard(track: track, station: station, isOnAir: isOnAir,
                           side: side, namespace: artworkNamespace, speechLevel: speechLevel)
                 .frame(maxWidth: .infinity)
-                .id(DisplayContinuity.artAnchor)
+                .playerScrollAnchor(DisplayContinuity.artAnchor)
             Spacer(minLength: CGFloat(RailDLayout.spreadArtVerticalInset))
         }
         .frame(minHeight: height)
@@ -748,11 +755,11 @@ struct FoldedPlayer: View {
                                 }
                                 .animation(.easeInOut(duration: FoldedArtCardLayers.crossfadeSeconds),
                                            value: gapOrb != nil)
-                                .id(DisplayContinuity.artAnchor)
+                                .playerScrollAnchor(DisplayContinuity.artAnchor)
                             FoldedTitleBlock(track: track, isTestStation: isTestStation, centered: true,
                                              displaySize: CGFloat(RailDLayout.openTitlePointSize))
                                 .padding(.top, CGFloat(FoldedColumnLayout.Spacing.artToTitle))
-                                .id(DisplayContinuity.titleAnchor)
+                                .playerScrollAnchor(DisplayContinuity.titleAnchor)
                         }
                     }
                     .frame(width: CGFloat(playerWidth))
@@ -783,7 +790,7 @@ struct FoldedPlayer: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollContentBackground(.hidden)
-            .scrollPosition(id: scrollAnchor)
+            .playerScrollPosition(scrollHandle, scrollerID: "openCentred")
             .frame(width: CGFloat(playerWidth), height: size.height, alignment: .top)
             .background { if showsWash { dayWash.accessibilityHidden(true) } }
 
@@ -885,17 +892,18 @@ struct FoldedPlayer: View {
         return HStack(alignment: .top, spacing: gutter) {
             VStack(spacing: 0) {
                 ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        RailDStationHeader(name: heading.header.name)
-                        upper(artSide: art, centered: false,
-                              titleSize: openTitleSize(column: Double(column)), compactStatus: true,
-                              statusWithoutTrack: true)
-                    }
-                    .frame(width: column)
+                    // #578 (-Nova): the header is inside `upper`, which is the scroll target
+                    // layout, so the stored art, title and row ids are found after a fold. A
+                    // wrapper VStack around both hid them from `scrollPosition`.
+                    upper(artSide: art, centered: false,
+                          titleSize: openTitleSize(column: Double(column)), compactStatus: true,
+                          statusWithoutTrack: true, stationHeader: heading.header.name)
+                        .frame(width: column)
+                        .scrollTargetLayout()
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollContentBackground(.hidden)
-                .scrollPosition(id: scrollAnchor)
+                .playerScrollPosition(scrollHandle, scrollerID: "railColumn")
                 .modifier(ContinuityScrollerID(enabled: continuityProbe))
                 PlaybackErrorBanner(error: snapshot.error, actions: actions)
                     .padding(.vertical, 12)
@@ -992,7 +1000,7 @@ struct FoldedPlayer: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollContentBackground(.hidden)
-            .scrollPosition(id: scrollAnchor)
+            .playerScrollPosition(scrollHandle, scrollerID: "centredPinned")
             controls(contentInset: 0, toolbarInset: 0,
                      spacing: CGFloat(Gap.betweenControls), balancesTransport: true)
                 .padding(.top, 8)
@@ -1028,7 +1036,7 @@ struct FoldedPlayer: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollContentBackground(.hidden)
-                .scrollPosition(id: scrollAnchor)
+                .playerScrollPosition(scrollHandle, scrollerID: "bookRailColumn")
                 PlaybackErrorBanner(error: snapshot.error, actions: actions)
                     .padding(.vertical, 12)
             }
@@ -1174,8 +1182,15 @@ struct FoldedPlayer: View {
     private func upper(artSide: CGFloat, centered: Bool, includesStatus: Bool = true,
                        includesArt: Bool = true, keepArtVisible: Bool = false,
                        includesSearch: Bool = true, titleSize: CGFloat? = nil,
-                       compactStatus: Bool = false, statusWithoutTrack: Bool = false) -> some View {
+                       compactStatus: Bool = false, statusWithoutTrack: Bool = false,
+                       stationHeader: String? = nil) -> some View {
         VStack(alignment: centered ? .center : .leading, spacing: 0) {
+            // #578 (-Nova): the rail header is a child of this VStack, not of a wrapper around
+            // it. A wrapper VStack made `upper` one opaque child of the scroll target layout, so
+            // `scrollPosition` could not find the art, title or continuity row ids inside it.
+            if let stationHeader {
+                RailDStationHeader(name: stationHeader)
+            }
             switch content {
             case .track(let track):
                 if includesArt {
@@ -1183,13 +1198,13 @@ struct FoldedPlayer: View {
                                   isOnAir: keepArtVisible ? false : dj.state.isOnAir,
                                   side: artSide, namespace: artworkNamespace, speechLevel: speechLevel)
                         .frame(maxWidth: .infinity)
-                        .id(DisplayContinuity.artAnchor)
+                        .playerScrollAnchor(DisplayContinuity.artAnchor)
                 }
                 FoldedTitleBlock(track: track, isTestStation: isTestStation, centered: centered,
                                  displaySize: titleSize)
                     .padding(.top, includesArt
                              ? (centered ? CGFloat(FoldedColumnLayout.Spacing.artToTitle) : 24) : 0)
-                    .id(DisplayContinuity.titleAnchor)
+                    .playerScrollAnchor(DisplayContinuity.titleAnchor)
                 if includesStatus {
                     FoldedDJStatus(dj: dj, fitsOneLine: compactStatus)
                         .padding(.top, centered ? CGFloat(FoldedColumnLayout.Spacing.titleToStatus) : 16)
@@ -1469,7 +1484,7 @@ extension FoldedPlayer {
             Text("Continuity row \(index)")
                 .font(.body)
                 .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
-                .id(DisplayContinuity.rowAnchor(index))
+                .playerScrollAnchor(DisplayContinuity.rowAnchor(index))
                 .accessibilityIdentifier(DisplayContinuity.rowAnchor(index))
         }
     }
@@ -1488,7 +1503,7 @@ extension FoldedPlayer {
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
-        .scrollPosition(id: scrollAnchor)
+        .playerScrollPosition(scrollHandle, scrollerID: "outerUpper")
         .modifier(ContinuityScrollerID(enabled: continuityProbe))
     }
 

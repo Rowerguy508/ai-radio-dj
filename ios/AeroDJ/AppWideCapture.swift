@@ -10,6 +10,10 @@ import SwiftUI
 enum AppWideCaptureScenario: String, CaseIterable {
     case duoWideLibrary
     case duoWideStations
+    /// Wide Stations grid, then fold to the 390×844 carousel. Extra fixture
+    /// cards make the grid scrollable so a UI test can check the stored focus
+    /// survives the fold (#492). Not a required screenshot.
+    case duoWideStationsFold
     case duoWideSettings
     case splitNarrowLibrary
     case splitNarrowStations
@@ -27,7 +31,7 @@ enum AppWideCaptureScenario: String, CaseIterable {
     var screen: AppWideLayout.Screen {
         switch self {
         case .duoWideLibrary, .splitNarrowLibrary, .duoLandscapeLibrary: .library
-        case .duoWideStations, .splitNarrowStations: .stations
+        case .duoWideStations, .duoWideStationsFold, .splitNarrowStations: .stations
         case .duoWideSettings, .splitNarrowSettings: .settings
         case .duoWideLocalArea: .onboarding
         }
@@ -35,7 +39,7 @@ enum AppWideCaptureScenario: String, CaseIterable {
 
     var input: AppWideLayout.Input {
         switch self {
-        case .duoWideLibrary, .duoWideStations, .duoWideSettings, .duoWideLocalArea: AppWideLayout.duoWide
+        case .duoWideLibrary, .duoWideStations, .duoWideStationsFold, .duoWideSettings, .duoWideLocalArea: AppWideLayout.duoWide
         case .duoLandscapeLibrary: AppWideLayout.Input(hasRegularWidth: false, containerWidth: 820, containerHeight: 640, hasRegularHeight: true)
         case .splitNarrowLibrary, .splitNarrowStations, .splitNarrowSettings: AppWideLayout.splitNarrow
         }
@@ -54,6 +58,10 @@ struct AppWideCaptureView: View {
     @State private var failure: String?
     @State private var localAreaStore = LocalAreaStore.inMemory()
     @State private var localAreaLocation = CoarseDeviceLocation()
+    /// Only `duoWideStationsFold`: the inner-display grid, then the phone carousel.
+    @State private var stationsFolded = false
+    @SceneStorage("aerodj.stations.scrollAnchor") private var stationsAnchor = ""
+    @State private var didResetStationsAnchor = false
 
     var body: some View {
         Group {
@@ -67,6 +75,13 @@ struct AppWideCaptureView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .preferredColorScheme(UserDefaults.standard.bool(forKey: StudioCapture.darkKey) ? .dark : nil)
+        .onAppear {
+            // One launch, once: a previous test's scene storage must not pre-seed the focus.
+            if scenario == .duoWideStationsFold, !didResetStationsAnchor {
+                stationsAnchor = ""
+                didResetStationsAnchor = true
+            }
+        }
         .task {
             guard scenario.screen == .library else { return }
             let studio = dependencies.studio
@@ -85,9 +100,9 @@ struct AppWideCaptureView: View {
 
     /// The same backdrop, clip and outline as `DuoWideCaptureContainer`, at this scenario's size.
     private var container: some View {
-        let size = scenario.containerSize
+        let size = currentContainerSize
         let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
-        let decision = AppWideLayout.decide(scenario.input, for: scenario.screen)
+        let decision = AppWideLayout.decide(currentInput, for: scenario.screen)
         return ZStack {
             Color(white: 0.14).ignoresSafeArea().accessibilityHidden(true)
             screen
@@ -105,7 +120,51 @@ struct AppWideCaptureView: View {
                         .accessibilityLabel(decision.decisionText)
                         .allowsHitTesting(false)
                 }
+                .overlay(alignment: .topTrailing) {
+                    if scenario == .duoWideStationsFold { stationsFoldChrome }
+                }
         }
+    }
+
+    private var currentInput: AppWideLayout.Input {
+        if scenario == .duoWideStationsFold, stationsFolded {
+            return AppWideLayout.Input(hasRegularWidth: false, containerWidth: 390, containerHeight: 844)
+        }
+        return scenario.input
+    }
+
+    private var currentContainerSize: CGSize {
+        if scenario == .duoWideStationsFold, stationsFolded {
+            return CGSize(width: 390, height: 844)
+        }
+        return scenario.containerSize
+    }
+
+    /// Fold control and the stored Stations focus, so a UI test can fold the
+    /// grid back to the carousel and check the scrolled card is still held.
+    private var stationsFoldChrome: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            Button {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { stationsFolded.toggle() }
+            } label: {
+                Text(stationsFolded ? "Unfold" : "Fold")
+                    .font(.caption.weight(.semibold))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .padding(.horizontal, 8)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("stations.fold")
+            Text(stationsAnchor.isEmpty ? "none" : stationsAnchor)
+                .font(.system(size: 1))
+                .accessibilityIdentifier("stations.scrollAnchor")
+                .accessibilityLabel(stationsAnchor.isEmpty ? "none" : stationsAnchor)
+                .allowsHitTesting(false)
+        }
+        .padding(.top, 8)
+        .padding(.trailing, 8)
     }
 
     @ViewBuilder
@@ -121,7 +180,7 @@ struct AppWideCaptureView: View {
         case .stations:
             // The sidebar column as the split root draws it in compact width, without the
             // split's stored station id, so no restore can push a player over it.
-            AppWideStationsCapture()
+            AppWideStationsCapture(scrollable: scenario == .duoWideStationsFold)
                 .appWideScreen(.stations)
         case .settings:
             SettingsView(isPresented: .constant(true), isTestStation: true)
@@ -143,24 +202,36 @@ struct AppWideCaptureView: View {
 /// `StationSplitRoot`'s compact sidebar: the grid when `AppWideLayout` gives columns,
 /// otherwise the carousel. Selection is local and starts nothing.
 private struct AppWideStationsCapture: View {
+    var scrollable = false
     @Environment(\.appWideLayout) private var appWide
     @State private var selected: Station.ID?
+
+    /// Built-ins plus fictional cards so the wide grid has to scroll (#492).
+    private var stations: [Station] {
+        guard scrollable else { return Station.defaultStations }
+        return Station.defaultStations + Self.fixtureCards
+    }
 
     var body: some View {
         NavigationStack {
             Group {
                 if let appWide, appWide.columns > 1 {
-                    StationGrid(stations: Station.defaultStations, selectedID: selected, layout: appWide) {
+                    StationGrid(stations: stations, selectedID: selected, layout: appWide) {
                         selected = $0
                     }
                 } else {
-                    StationCarousel(stations: Station.defaultStations, selectedID: selected) { selected = $0 }
+                    StationCarousel(stations: stations, selectedID: selected) { selected = $0 }
                 }
             }
             .navigationTitle(AppName.display)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("split.sidebar")
         }
+    }
+
+    private static let fixtureCards: [Station] = (1...10).map { index in
+        let id = UUID(uuidString: String(format: "B0B00000-0000-4000-8000-0000000000%02d", index))!
+        return Station(id: id, name: "Fixture \(index)", description: "Fictional")
     }
 }
 
