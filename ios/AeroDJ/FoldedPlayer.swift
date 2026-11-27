@@ -140,6 +140,10 @@ struct FoldedPlayer: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var moreOpen = false
+    /// #589 AX title (-Nova): how far down the open ⋯ panel reaches, from the top of the player
+    /// (its top gap plus its measured height). Read only while the panel is open at an
+    /// accessibility text size, so nothing else depends on it.
+    @State private var morePanelReach: CGFloat = 0
     /// Book pose only. Empty on this SDK, so `wideBody` keeps the centred gutter.
     @State private var foldHinge: FoldAwareness.HingeSample?
     @State private var foldDivisions: [FoldAwareness.Division] = []
@@ -668,11 +672,21 @@ struct FoldedPlayer: View {
     /// when it fits (as `spreadContent`), in a vertical scroll view at least the page tall: a
     /// taller stack (accessibility text) scrolls instead of clipping at the window's bottom edge.
     /// The page keeps `RailDLayout.openSpreadRailGutter` (16) clear before the rail.
+    /// #589 AX title (-Nova): with the ⋯ panel open at an accessibility text size the panel wraps
+    /// to several tall rows and, floating over the page, covered the song title. The page now
+    /// starts below the panel (its measured reach plus `betweenControls`) and scrolls from there,
+    /// so the title is never under it. 0 when the panel is closed or the text is not an
+    /// accessibility size, so every other size lays out as before (`max` with the header height).
+    private var morePanelClearance: CGFloat {
+        guard moreOpen, typeSize.isAccessibilitySize else { return 0 }
+        return morePanelReach + CGFloat(FoldedColumnLayout.Spacing.betweenControls)
+    }
+
     private func openDuoSpreadContent(gap: CGFloat, height: CGFloat, showsOrb: Bool) -> some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
                 Color.clear
-                    .frame(height: CGFloat(RailDLayout.openHeaderHeight))
+                    .frame(height: max(CGFloat(RailDLayout.openHeaderHeight), morePanelClearance))
                     .accessibilityHidden(true)
                 Spacer(minLength: 0)
                 VStack(alignment: .leading, spacing: 0) {
@@ -837,6 +851,9 @@ struct FoldedPlayer: View {
                              onTune: onTune,
                              dismiss: { moreOpen = false })
                 .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    morePanelReach = height + CGFloat(menu.topGap)
+                }
                 .padding(.top, CGFloat(menu.topGap))
                 .padding(.trailing, CGFloat(menu.trailingGap))
         }

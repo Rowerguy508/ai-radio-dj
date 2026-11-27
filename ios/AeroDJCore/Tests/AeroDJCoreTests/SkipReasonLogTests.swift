@@ -29,7 +29,9 @@ final class SkipReasonLogTests: XCTestCase {
             .deletingLastPathComponent().appendingPathComponent("AeroDJ/PlayerView.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
         XCTAssertFalse(source.contains("logBreakSkipped(after: finishedIndex, reason: .notPlanned)"))
-        XCTAssertTrue(source.contains("PlaybackLog.noBreakReason(djSession.lastNoBreak)"))
+        XCTAssertTrue(source.contains("PlaybackLog.boundarySkipToLog(djSession.lastNoBreak)"))
+        XCTAssertTrue(source.contains("djSession.songStartedWithoutDuration(index: index)"),
+                      "the no-duration start reaches the session so its boundary is not logged twice")
         XCTAssertTrue(source.contains("PlaybackLog.handedOutReason(reason)"))
     }
 

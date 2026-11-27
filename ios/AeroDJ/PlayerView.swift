@@ -162,7 +162,10 @@ enum PlaybackSessionBinder {
                     #if AERODJ_P0_DIAG
                     P0EventTraceHost.shared.naturalBoundary(.breakPrepared, afterTrack: finishedIndex)
                     #endif
-                    switch BreakHandoffPolicy.decide(prepared: prepared) {
+                    switch BreakHandoffPolicy.decide(
+                        prepared: prepared,
+                        unplayableNextTrackID: music.unplayableNextTrackID(after: finishedIndex)
+                    ) {
                     case let .play(breakToPlay):
                         let line = breakToPlay.cues.map(\.text).joined(separator: " ")
                         let clips = breakToPlay.clips.map(\.audio.data)
@@ -191,8 +194,10 @@ enum PlaybackSessionBinder {
                     #endif
                     // No prepared break. Same close-out: the hand-out is over.
                     interlude.abandonHandOut()
-                    music.logBreakSkipped(after: finishedIndex,
-                                          reason: PlaybackLog.noBreakReason(djSession.lastNoBreak))
+                    // #304: a no-duration song's skip was logged once at song start.
+                    if let reason = PlaybackLog.boundarySkipToLog(djSession.lastNoBreak) {
+                        music.logBreakSkipped(after: finishedIndex, reason: reason)
+                    }
                     music.skipInterlude()
                 }
                 await music.startNextTrack(after: finishedIndex)
@@ -205,6 +210,7 @@ enum PlaybackSessionBinder {
             talkover.songStarted(index: index, duration: duration)
             if let skip = PlaybackLog.songStartSkipReason(duration: duration) {
                 music?.logBreakSkipped(after: index, reason: skip)
+                Task { await djSession.songStartedWithoutDuration(index: index) }
                 return
             }
             guard let duration else { return }
