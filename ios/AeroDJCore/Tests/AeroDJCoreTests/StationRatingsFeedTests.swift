@@ -12,6 +12,8 @@ private actor RatingCalls {
 
 private struct RatingFeedCatalog: StationSeedCatalog {
     var calls: RatingCalls? = nil
+    /// A slow catalog (#692): the background rebuild then outlasts any fixed yield count.
+    var delay: Duration? = nil
     private func songs(_ seed: StationSeed, _ tier: String) -> [StationCandidate] {
         (0..<6).map { StationCandidate(track: TrackInfo(id: "\(seed.catalogID)-\(tier)-\($0)", title: "Title \(tier) \($0)",
                                                          artistName: "\(seed.catalogID)-\(tier)-artist-\($0)"),
@@ -20,6 +22,7 @@ private struct RatingFeedCatalog: StationSeedCatalog {
     func coreSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] { songs(seed, "core") }
     func relatedSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] {
         await calls?.add(seed)
+        if let delay { try await Task.sleep(for: delay) }
         return songs(seed, "related")
     }
     func broadSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] { songs(seed, "broad") }
@@ -59,14 +62,22 @@ final class StationRatingsFeedTests: XCTestCase {
         book.bias(recipeID: nil, configuration: Self.station, today: Self.today).revision
     }
 
-    /// Waits until the staged queue carries the current ratings, or the deadline elapses.
+    /// Waits until the staged queue carries `expected()`, or the deadline elapses.
     /// The caller's existing asserts still fail by name if the rebuild did not finish.
-    private func waitUntilStaged(_ feed: StationQueueFeed<String>) async {
+    private func waitUntilStaged(_ feed: StationQueueFeed<String>,
+                                 expected: () -> StationRatingRevision) async {
         let deadline = ContinuousClock.now + .seconds(5)
-        while feed.stagedRatingRevision != current(feed), ContinuousClock.now < deadline {
+        while feed.stagedRatingRevision != expected(), ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(10))
         }
     }
+
+    private func waitUntilStaged(_ feed: StationQueueFeed<String>) async {
+        await waitUntilStaged(feed, expected: { current(feed) })
+    }
+
+    /// The catalog the two background-rebuild tests use: slow enough that a yield-count wait fails.
+    private static let slowCatalog = RatingFeedCatalog(delay: .milliseconds(50))
 
     // MARK: Revision
 
@@ -109,7 +120,7 @@ final class StationRatingsFeedTests: XCTestCase {
     }
 
     func testARefillWithStaleRatingsStillHandsOffAndRebuilds() async {
-        let f = feed()
+        let f = feed(catalog: Self.slowCatalog)
         _ = await f.prepare(Self.station)
         f.queueStarted(for: Self.station, songCount: 2)
         never("first-core-2")
@@ -127,7 +138,7 @@ final class StationRatingsFeedTests: XCTestCase {
     }
 
     func testRatingsChangedRebuildsInTheBackground() async {
-        let f = feed()
+        let f = feed(catalog: Self.slowCatalog)
         _ = await f.prepare(Self.station)
         never("first-related-0")
         f.ratingsChanged(Self.station)
@@ -247,7 +258,7 @@ final class StationRatingsFeedTests: XCTestCase {
             p.feed.ratingsChanged(p.station.committedDisplayed)
             // The rebuild runs in the background (a song's length in the app); wait for it.
             let revision = book.bias(recipeID: nil, configuration: p.station.committedDisplayed, today: 42).revision
-            for _ in 0..<500 where p.feed.stagedRatingRevision != revision { await Task.yield() }
+            await waitUntilStaged(p.feed, expected: { revision })
             XCTAssertEqual(p.feed.stagedRatingRevision, revision, "\(label): rebuilt with the ratings")
 
             let keyAfter = StationQueueKey(p.station.committedDisplayed)
@@ -622,7 +633,7 @@ final class StationRatingsFeedTests: XCTestCase {
     }
 
     private func settle(_ ratings: StationRatingsModel, _ p: Player) async {
-        for _ in 0..<400 where p.feed.stagedRatingRevision != revision(ratings, p) { await Task.yield() }
+        await waitUntilStaged(p.feed, expected: { revision(ratings, p) })
     }
 
     func testAPurgeAllClearsTheExcludedSongsAndRebuildsTheStagedQueue() async {
