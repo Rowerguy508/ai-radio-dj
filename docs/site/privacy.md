@@ -30,7 +30,7 @@ Some TestFlight testers can try a cloud voice for the DJ. This voice is made onl
 
 What's sent: the text of every DJ line. That includes your personal items (calendar events, your shared email digest and other shared items, and notes), lines about songs from your music library, the station names you type, and the news and weather lines. Catalog song titles and artists can also be in those lines. OnAirly sends every line the DJ says to our voice server and on to ElevenLabs, which turns it into audio.
 
-What's never sent: your Apple ID, your contacts, or anything you haven't approved for your briefing. Each request carries the words of one DJ line, the voice you picked and, so the audio flows smoothly, up to 300 characters of the DJ lines just before and after it. Those nearby lines follow the same consent rules.
+What's never sent: your Apple ID, your contacts, or anything you haven't approved for your briefing. Each request carries the words of one DJ line, the voice you picked and, so the audio flows smoothly, up to 300 characters of the DJ line just before it and up to 300 characters of the one just after it. Those nearby lines follow the same consent rules.
 
 Your coordinates and your location itself are never sent, but a local news line can name your city or area.
 
