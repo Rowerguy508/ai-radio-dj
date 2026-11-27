@@ -44,7 +44,15 @@ export function POST(request: NextRequest) {
 
   // #78: only an allowed origin spends rate budget, so refused origins cannot drain
   // a bucket. Best-effort, per instance; see lib/apple-music/token-access.ts.
-  if (!permitTokenRequest(clientAddress(request.headers))) {
+  // Fails closed (#78): if the limiter itself throws, refuse the request and mint
+  // nothing. The refusal is a fixed body, so no error text, key or token is echoed.
+  let permitted: boolean;
+  try {
+    permitted = permitTokenRequest(clientAddress(request.headers));
+  } catch {
+    return reply({ error: 'Service unavailable' }, 503);
+  }
+  if (!permitted) {
     return reply({ error: 'Too many requests' }, 429);
   }
 
