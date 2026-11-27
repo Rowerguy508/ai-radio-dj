@@ -227,6 +227,42 @@ jobs:
     name: Four space job
 """, "Four space job")
 
+    def test_unknown_on_keys_stay_required(self):
+        """An `on:` typo or a mix of known and unknown keys must fail closed, not go N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  pull_requets:
+jobs:
+  only:
+    name: Typo on job
+""", "Typo on job")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  workflow_dispatch:
+  pull_requets:
+jobs:
+  only:
+    name: Mixed on job
+""", "Mixed on job")
+
+    def test_pure_dispatch_and_schedule_on_stays_na(self):
+        text = """
+name: Manual
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+jobs:
+  only:
+    name: Scheduled job
+"""
+        r = self._report([{"path": IOS, "text": text}], check_runs=[])
+        self.assertTrue(any("Scheduled job" in n and s.startswith("N/A") for n, s in r["checks"]["rows"]),
+                        r["checks"]["rows"])
+        self.assertFalse(r["checks"]["bad"], r["checks"]["bad"])
+
 
 class Signs(NoNetwork):
     def test_sha8_and_sha40_with_no_blockers(self):

@@ -12,10 +12,11 @@ Prints, at the PR's exact head sha:
       "skipped (path filter, changes passed)". Missing, pending, cancelled, failed, or any other
       skip is not green. A job is N/A on a PR only when that is certain: a plain positive
       dispatch-only `if:` (`github.event_name == 'workflow_dispatch'`, optionally `&&` a
-      positive `inputs.<id>` / `inputs.<id> == true` check), or a fully parsed `on:` of one
-      or more event keys with none of them `pull_request` or `pull_request_target`. Anything
-      else — `!`, `!=`, `||`, chained `==`, parentheses, an empty or unparsed `on:`, or an
-      unrecognized condition — fails closed and is a missing required check if it has no run.
+      positive `inputs.<id>` / `inputs.<id> == true` check), or a fully parsed `on:` whose every key is a known non-PR event (allowlist:
+      `workflow_dispatch`, `schedule`, `push`, `release`, and other documented events that
+      a pull request cannot trigger). Anything else — `!`, `!=`, `||`, chained `==`,
+      parentheses, an empty or unparsed `on:`, or an unknown `on:` key — fails closed and
+      is a missing required check if it has no run.
       N/A jobs are listed, not hidden.
   (b) signs: a comment or review whose first non-empty line is exactly `SIGN <sha8|sha40> -Name`,
       where the sha is the current head. A review in
@@ -121,20 +122,62 @@ def job_check_names(yaml_text: str) -> list[str]:
 
 
 def workflow_runs_on_pull_request(yaml_text: str) -> bool:
-    """True unless `on:` was parsed as one or more event keys and none is a PR event.
+    """True unless every parsed `on:` key is a known non-PR event.
 
-    `pull_request` and `pull_request_target` are PR events, in the string, list, and map
-    forms. Return false only when at least one event key was parsed and none of them is a
-    PR event. An empty or unrecognized `on:` (including keys indented other than 2 spaces)
-    fails closed and is treated as running on a PR, so its jobs stay required.
+    A workflow is N/A on a PR only when at least one event key was parsed and every
+    key is in `_NON_PR_ON_EVENTS`. Any unknown key (a typo such as `pull_requets`),
+    any PR event, or an empty / unparsed `on:` fails closed and is treated as running
+    on a PR, so its jobs stay required.
     """
     events = _parse_on_events(yaml_text)
     if not events:
         return True
-    return any(e in _PR_ON_EVENTS for e in events)
+    return any(e not in _NON_PR_ON_EVENTS for e in events)
 
 
-_PR_ON_EVENTS = frozenset({"pull_request", "pull_request_target"})
+# Documented GitHub Actions events that are not triggered by pull-request activity.
+# PR events (`pull_request`, `pull_request_target`, reviews, merge_group) and events
+# that also fire on PRs (`issue_comment`, check runs) are omitted: an unknown key
+# fails closed.
+_NON_PR_ON_EVENTS = frozenset({
+    "branch_protection_rule",
+    "create",
+    "delete",
+    "deployment",
+    "deployment_protection_rule",
+    "deployment_review",
+    "deployment_status",
+    "discussion",
+    "discussion_comment",
+    "fork",
+    "gollum",
+    "issues",
+    "label",
+    "milestone",
+    "page_build",
+    "public",
+    "push",
+    "registry_package",
+    "release",
+    "repository_advisory",
+    "repository_dispatch",
+    "schedule",
+    "status",
+    "watch",
+    "workflow_call",
+    "workflow_dispatch",
+    "workflow_run",
+    "member",
+    "membership",
+    "organization",
+    "team",
+    "team_add",
+    "project",
+    "project_card",
+    "project_column",
+    "projects_v2",
+    "projects_v2_item",
+})
 _ON_EVENT = re.compile(r"^[A-Za-z_][\w-]*$")
 _ON_INLINE_LIST = re.compile(r"^on:\s*\[([^]]*)\]\s*$")
 _ON_INLINE_ONE = re.compile(r"^on:\s*([A-Za-z_][\w-]*)\s*$")
