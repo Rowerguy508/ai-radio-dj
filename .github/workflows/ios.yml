@@ -62,17 +62,26 @@ jobs:
             # job reports success, so this can stay a required check without
             # spending a hosted Mac when none of these paths changed. -Nova
             systembars:
-              - 'ios/AeroDJUITests/SystemVerticalBarsCaptureTests.swift'
-              - 'ios/AeroDJCore/Sources/AeroDJCore/Studio/SystemVerticalBarsCapture.swift'
+              - 'ios/AeroDJCore/Sources/AeroDJCore/Studio/**'
+              - 'ios/AeroDJUITests/**'
+              - 'ios/scripts/**'
+              - 'ios/project.yml'
+              - '.github/workflows/ios.yml'
               - 'ios/AeroDJCore/Tests/AeroDJCoreTests/SystemVerticalBarsCaptureTests.swift'
-              - 'ios/AeroDJ/SystemVerticalBarsCapture.swift'
-              - 'ios/AeroDJ/DuoVerticalRail.swift'
               - 'ios/AeroDJ/PlayingScreen.swift'
               - 'ios/AeroDJ/FoldedPlayer.swift'
-              - 'ios/AeroDJ/StudioCapture.swift'
-              - 'ios/AeroDJ/RailDCapture.swift'
+              - 'ios/AeroDJ/DuoVerticalRail.swift'
               - 'ios/AeroDJ/StationListView.swift'
-              - '.github/workflows/ios.yml'
+              - 'ios/AeroDJ/StudioCapture.swift'
+              - 'ios/AeroDJ/SystemVerticalBarsCapture.swift'
+              - 'ios/AeroDJ/RailDCapture.swift'
+              - 'ios/AeroDJ/AppWideCapture.swift'
+              - 'ios/AeroDJ/ArrangementCapture.swift'
+              - 'ios/AeroDJ/StationsLayoutCapture.swift'
+              - 'ios/AeroDJ/StudioLayout.swift'
+              - 'ios/AeroDJ/AppWideLayout+App.swift'
+              - 'ios/AeroDJ/DuoStationsScreen.swift'
+              - 'ios/AeroDJ/RailDComponents.swift'
 
   core-tests:
     name: AeroDJCore tests
