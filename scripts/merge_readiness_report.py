@@ -10,7 +10,13 @@ Prints, at the PR's exact head sha:
       a run that can't be mapped never counts. A skipped iOS job counts as green only when
       ios.yml's own `changes` job (the path filter) concluded success at the same sha; it is shown as
       "skipped (path filter, changes passed)". Missing, pending, cancelled, failed, or any other
-      skip is not green.
+      skip is not green. A job is N/A on a PR only when that is certain: a plain positive
+      dispatch-only `if:` (`github.event_name == 'workflow_dispatch'`, optionally `&&` a
+      positive `inputs.<id>` / `inputs.<id> == true` check), or a fully parsed `on:` of one
+      or more event keys with none of them `pull_request` or `pull_request_target`. Anything
+      else — `!`, `!=`, `||`, chained `==`, parentheses, an empty or unparsed `on:`, or an
+      unrecognized condition — fails closed and is a missing required check if it has no run.
+      N/A jobs are listed, not hidden.
   (b) signs: a comment or review whose first non-empty line is exactly `SIGN <sha8|sha40> -Name`,
       where the sha is the current head. A review in
       CHANGES_REQUESTED state never counts. The signer is the `-Name`, not the GitHub login (every
@@ -71,17 +77,24 @@ CO_AUTHOR = re.compile(r"^Co-authored-by:\s*(.+?)\s*<[^>]*>\s*$", re.IGNORECASE 
 
 # ---------- pure logic (tested offline) ----------
 
-def job_check_names(yaml_text: str) -> list[str]:
-    """Check-run names for a workflow's jobs: the job's `name:`, or its id when it has none.
-    A tiny line parser for this repo's layout (jobs at 2 spaces, job keys at 4)."""
-    names: list[str] = []
+def _unquote(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def _parse_jobs(yaml_text: str) -> list[dict]:
+    """Jobs as {id, name, if} for this repo's layout (jobs at 2 spaces, keys at 4)."""
+    jobs: list[dict] = []
     in_jobs = False
-    current_id = None
-    current_name = None
+    current = None
 
     def flush():
-        if current_id is not None:
-            names.append(current_name or current_id)
+        nonlocal current
+        if current is not None:
+            jobs.append(current)
+            current = None
 
     for raw in yaml_text.splitlines():
         line = raw.rstrip()
@@ -90,7 +103,6 @@ def job_check_names(yaml_text: str) -> list[str]:
         if not line.startswith(" "):
             if in_jobs:
                 flush()
-                current_id = None
             in_jobs = line == "jobs:"
             continue
         if not in_jobs:
@@ -98,17 +110,143 @@ def job_check_names(yaml_text: str) -> list[str]:
         m = re.match(r"^  ([A-Za-z_][\w-]*):\s*$", line)
         if m:
             flush()
-            current_id, current_name = m.group(1), None
+            current = {"id": m.group(1), "name": None, "if": None}
+            continue
+        if current is None:
             continue
         m = re.match(r"^    name:\s*(.+?)\s*$", line)
-        if m and current_id is not None and current_name is None:
-            value = m.group(1)
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-                value = value[1:-1]
-            current_name = value
+        if m and current["name"] is None:
+            current["name"] = _unquote(m.group(1))
+            continue
+        m = re.match(r"^    if:\s*(.+?)\s*$", line)
+        if m and current["if"] is None:
+            current["if"] = m.group(1).strip()
     if in_jobs:
         flush()
-    return names
+    return jobs
+
+
+def job_check_names(yaml_text: str) -> list[str]:
+    """Check-run names for a workflow's jobs: the job's `name:`, or its id when it has none.
+    A tiny line parser for this repo's layout (jobs at 2 spaces, job keys at 4)."""
+    return [j["name"] or j["id"] for j in _parse_jobs(yaml_text)]
+
+
+def workflow_runs_on_pull_request(yaml_text: str) -> bool:
+    """True unless `on:` was parsed as one or more event keys and none is a PR event.
+
+    `pull_request` and `pull_request_target` are PR events, in the string, list, and map
+    forms. Return false only when at least one event key was parsed and none of them is a
+    PR event. An empty or unrecognized `on:` (including keys indented other than 2 spaces)
+    fails closed and is treated as running on a PR, so its jobs stay required.
+    """
+    events = _parse_on_events(yaml_text)
+    if not events:
+        return True
+    return any(e in _PR_ON_EVENTS for e in events)
+
+
+_PR_ON_EVENTS = frozenset({"pull_request", "pull_request_target"})
+_ON_EVENT = re.compile(r"^[A-Za-z_][\w-]*$")
+_ON_INLINE_LIST = re.compile(r"^on:\s*\[([^]]*)\]\s*$")
+_ON_INLINE_ONE = re.compile(r"^on:\s*([A-Za-z_][\w-]*)\s*$")
+_ON_MAPPING_KEY = re.compile(r"^  ([A-Za-z_][\w-]*)\s*:")
+
+
+def _parse_on_events(yaml_text: str) -> set[str] | None:
+    """Event names in `on:`, or None if the block is absent or not fully understood."""
+    in_on = False
+    collected: set[str] = set()
+    for raw in yaml_text.splitlines():
+        line = raw.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" "):
+            if in_on:
+                return collected or None
+            if re.match(r"^on:\s*$", line):
+                in_on = True
+                continue
+            if line.startswith("on:"):
+                m = _ON_INLINE_LIST.match(line)
+                if m:
+                    items = [i.strip() for i in m.group(1).split(",") if i.strip()]
+                    if items and all(_ON_EVENT.fullmatch(i) for i in items):
+                        return set(items)
+                    return None
+                m = _ON_INLINE_ONE.match(line)
+                if m:
+                    return {m.group(1)}
+                return None
+            if line == "jobs:":
+                break
+            continue
+        if in_on:
+            if line.startswith("    "):
+                continue
+            m = _ON_MAPPING_KEY.match(line)
+            if not m or not line.startswith("  ") or line.startswith("   "):
+                return None
+            collected.add(m.group(1))
+    if in_on:
+        return collected or None
+    return None
+
+
+_DISPATCH_EVENT = re.compile(r"^github\.event_name\s*==\s*['\"]workflow_dispatch['\"]$")
+_POSITIVE_INPUT = re.compile(r"^inputs\.[A-Za-z_][\w-]*(\s*==\s*true)?$")
+
+
+def _plain_dispatch_only(if_expr: str) -> bool:
+    """True only for an allowlisted positive dispatch-only `if:`.
+
+    Allowed: `github.event_name == 'workflow_dispatch'` and optional `inputs.<id>` or
+    `inputs.<id> == true`, joined only by `&&`. No `||`, `!`, `!=`, parentheses,
+    chained `==`, or any term the parser does not fully understand.
+    """
+    expr = if_expr.strip()
+    if expr.startswith("${{") and expr.endswith("}}"):
+        expr = expr[3:-2].strip()
+    if "${{" in expr or "}}" in expr:
+        return False
+    expr = re.sub(r"\s+", " ", expr)
+    if not expr or "||" in expr:
+        return False
+    terms = [t.strip() for t in expr.split("&&")]
+    if not terms or any(not t for t in terms):
+        return False
+    saw_dispatch = False
+    for t in terms:
+        if _DISPATCH_EVENT.fullmatch(t):
+            saw_dispatch = True
+        elif _POSITIVE_INPUT.fullmatch(t):
+            continue
+        else:
+            return False
+    return saw_dispatch
+
+
+def na_on_pull_request_reason(if_expr: str | None, workflow_has_pr: bool) -> str | None:
+    """Why this job cannot run on a pull_request, or None if it can (or we cannot tell)."""
+    if not workflow_has_pr:
+        return "N/A (workflow does not run on pull_request)"
+    if not if_expr:
+        return None
+    if _plain_dispatch_only(if_expr):
+        return "N/A (dispatch-only; cannot run on a pull_request)"
+    return None
+
+
+def job_na_reasons(workflows: list[dict]) -> dict[tuple[str, str], str]:
+    """(workflow path, job name) -> N/A reason for jobs that cannot run on a pull_request."""
+    out: dict[tuple[str, str], str] = {}
+    for wf in workflows:
+        has_pr = workflow_runs_on_pull_request(wf["text"])
+        for j in _parse_jobs(wf["text"]):
+            reason = na_on_pull_request_reason(j["if"], has_pr)
+            if reason:
+                out[(wf["path"], j["name"] or j["id"])] = reason
+    return out
 
 
 def workflow_display_name(path: str, yaml_text: str) -> str:
@@ -329,17 +467,24 @@ def latest_runs(check_runs: list[dict], head_sha: str | None = None,
 
 
 def assess_checks(check_runs: list[dict], required: list[tuple[str, str]], head_sha: str | None = None,
-                  workflow_runs: list[dict] | None = None, labels: dict[str, str] | None = None) -> dict:
+                  workflow_runs: list[dict] | None = None, labels: dict[str, str] | None = None,
+                  na_reasons: dict[tuple[str, str], str] | None = None) -> dict:
     """Required jobs are keyed by (workflow path, job name), so the same job name in two workflows
     never collides (Sentinel). A skipped iOS job counts as green only when ios.yml's own `changes`
     job concluded success at the same head sha. Any other skip, a skip with that `changes` missing,
-    pending or not successful, or a run that can't be mapped to its workflow, is not green."""
+    pending or not successful, or a run that can't be mapped to its workflow, is not green.
+    A job that cannot run on a pull_request is N/A (listed, not hidden, not a missing check)."""
     runs = latest_runs(check_runs, head_sha, suite_to_workflow(workflow_runs or []))
     labels = labels or {}
+    na_reasons = na_reasons or {}
     ch = runs.get((IOS_WORKFLOW, CHANGES_JOB))
     changes_passed = bool(ch and ch.get("status") == "completed" and ch.get("conclusion") == "success")
     rows, bad = [], []
     for wf, name in required:
+        label = f"{labels.get(wf, wf)} / {name}"
+        if (wf, name) in na_reasons:
+            rows.append((label, na_reasons[(wf, name)]))
+            continue
         r = runs.get((wf, name))
         if r is None:
             state = UNMAPPED if (None, name) in runs else "missing"
@@ -352,7 +497,6 @@ def assess_checks(check_runs: list[dict], required: list[tuple[str, str]], head_
                     state = "skipped (not an iOS path-filter job)"
                 else:
                     state = SKIP_GREEN if changes_passed else "skipped (changes did not pass at this head)"
-        label = f"{labels.get(wf, wf)} / {name}"
         rows.append((label, state))
         if state not in ("success", SKIP_GREEN):
             bad.append(f"{label}: {state}")
@@ -390,8 +534,17 @@ def render(report: dict) -> str:
     out = [f"Merge readiness for #{pr['number']} at {pr['head_sha']} (report-only)",
            f"Base {pr['base']} at {report['base_head'][:8]}, merge-base {report['merge_base'][:8]}",
            f"Commit authors on the PR: {', '.join(report['author_display']) or '(none)'}",
-           "", f"Checks ({len(checks['rows']) - len(checks['bad'])}/{len(checks['rows'])} green):"]
-    out += [f"  {'ok ' if s in ('success', SKIP_GREEN) else 'NO '} {n}: {s}" for n, s in checks["rows"]]
+           ""]
+    n_na = sum(1 for _, s in checks["rows"] if s.startswith("N/A"))
+    n_req = len(checks["rows"]) - n_na
+    n_green = n_req - len(checks["bad"])
+    head = f"Checks ({n_green}/{n_req} green"
+    out.append(head + (f", {n_na} N/A):" if n_na else "):"))
+    marks = []
+    for n, s in checks["rows"]:
+        mark = "n/a" if s.startswith("N/A") else ("ok " if s in ("success", SKIP_GREEN) else "NO ")
+        marks.append(f"  {mark} {n}: {s}")
+    out += marks
     display, _ = assess_device_line(pr.get("device_line"), pr.get("head_sha"))
     out += ["", f"Device line: {display}"]
     out += ["", f"Signs ({len(signs['valid'])}/{REQUIRED_SIGNS} non-author at {pr['head_sha'][:8]}):"]
@@ -423,7 +576,8 @@ def build_report(*, pr: dict, base_head: str, merge_base: str, workflows: list[d
         # Report-only (Atlas): never a reason, never changes READY or NOT READY.
         warnings.append(f"ROSTER: commit author(s) outside the bot roster ({', '.join(ROSTER)}): "
                         f"{', '.join(outside)}. Report-only; does not change the verdict")
-    checks = assess_checks(check_runs, required, pr["head_sha"], workflow_runs or [], labels)
+    checks = assess_checks(check_runs, required, pr["head_sha"], workflow_runs or [], labels,
+                           job_na_reasons(workflows))
     signs = collect_signs(postings, pr["head_sha"], authors)
     ov = overlap(pr_files, base_files)
     ready, reasons = verdict(pr=pr, checks=checks, signs=signs, overlap_files=ov, warnings=warnings)

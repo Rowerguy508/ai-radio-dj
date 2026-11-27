@@ -34,18 +34,198 @@ class JobNames(NoNetwork):
                          ["changes", "AeroDJCore tests", "Release archive (Xcode 27.2, unsigned)"])
         self.assertEqual(m.job_check_names(f["workflows"][1]["text"]), ["checks"])
 
-    def test_repo_workflows_give_9_ios_jobs_and_2_ci_jobs(self):
+    def test_repo_workflows_give_10_ios_jobs_and_2_ci_jobs(self):
         with open(os.path.join(ROOT, ".github/workflows/ios.yml")) as f:
             ios = m.job_check_names(f.read())
         with open(os.path.join(ROOT, ".github/workflows/ci.yml")) as f:
             ci = m.job_check_names(f.read())
-        # 9 since #596 added the hosted Duo UI job (it is continue-on-error in the workflow, but this
-        # report requires every job in ios.yml, the same 9/9 rule the sign watchers use).
-        self.assertEqual(len(ios), 9, ios)
+        # 10 since #653 added the dispatch-only system bars capture. job_check_names lists every
+        # job (it is not hidden). The capture job is N/A on PR runs; see DispatchOnlyNA.
+        self.assertEqual(len(ios), 10, ios)
         self.assertIn("Duo UI tests (Xcode 27.2, iOS 27.2)", ios)
         self.assertIn("Release archive (Xcode 27.2, unsigned)", ios)
         self.assertIn("changes", ios)
+        self.assertIn("System vertical bars capture (Xcode 27.2, iPad iOS 27.2)", ios)
         self.assertEqual(ci, ["checks", "tts-proxy"])
+
+
+IOS = ".github/workflows/ios.yml"
+CI = ".github/workflows/ci.yml"
+BARS = "System vertical bars capture (Xcode 27.2, iPad iOS 27.2)"
+
+DISPATCH_AND_PR = """
+name: iOS
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      capture_system_bars:
+        type: boolean
+jobs:
+  changes:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+  core-tests:
+    name: AeroDJCore tests
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+  capture:
+    name: Capture shot
+    if: github.event_name == 'workflow_dispatch' && inputs.capture_system_bars == true
+"""
+
+# A job that normally runs on PRs, plus one that never can.
+class DispatchOnlyNA(NoNetwork):
+    """Dispatch-only jobs are N/A on PR runs, never a missing required check (#653 / #556)."""
+
+    def _report(self, workflows, check_runs=None):
+        f = fixture()
+        f["workflows"] = workflows
+        f["check_runs"] = check_runs if check_runs is not None else f["check_runs"]
+        return m.build_report(**f)
+
+    def test_a_dispatch_only_job_is_na_on_a_pr_and_a_missing_pr_job_is_still_flagged(self):
+        # Fail-first: before the fix, Capture shot is a missing required check.
+        wf = [{"path": IOS, "text": DISPATCH_AND_PR}, fixture()["workflows"][1]]
+        r = self._report(wf, check_runs=[])
+        rendered = m.render(r)
+        self.assertIn("Capture shot: N/A", rendered)
+        self.assertIn("N/A (dispatch-only", rendered)
+        bad = r["checks"]["bad"]
+        self.assertFalse(any("Capture shot" in b for b in bad), bad)
+        self.assertTrue(any("changes: missing" in b or "AeroDJCore tests: missing" in b for b in bad), bad)
+        self.assertIn("required check(s) not green", " ".join(r["reasons"]))
+        # The N/A job is listed, not hidden.
+        self.assertTrue(any("Capture shot" in n and s.startswith("N/A") for n, s in r["checks"]["rows"]))
+
+    def test_repo_system_bars_job_is_na_on_a_pr_and_is_not_hidden(self):
+        with open(os.path.join(ROOT, ".github/workflows/ios.yml")) as f:
+            ios = f.read()
+        names = m.job_check_names(ios)
+        self.assertIn(BARS, names)
+        wf = [{"path": IOS, "text": ios}, fixture()["workflows"][1]]
+        r = self._report(wf, check_runs=[])
+        self.assertTrue(any(BARS in n and s.startswith("N/A") for n, s in r["checks"]["rows"]), r["checks"]["rows"])
+        self.assertFalse(any(BARS in b for b in r["checks"]["bad"]), r["checks"]["bad"])
+        # A job that normally runs on PRs is still flagged when missing.
+        self.assertTrue(any("Duo UI tests" in b and "missing" in b for b in r["checks"]["bad"]), r["checks"]["bad"])
+
+    def test_or_with_pull_request_is_still_required(self):
+        text = """
+name: iOS
+on:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  both:
+    name: PR or dispatch
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+"""
+        r = self._report([{"path": IOS, "text": text}], check_runs=[])
+        self.assertTrue(any("PR or dispatch: missing" in b for b in r["checks"]["bad"]), r["checks"]["bad"])
+        self.assertFalse(any(s.startswith("N/A") for _, s in r["checks"]["rows"]))
+
+    def test_workflow_without_pull_request_is_na(self):
+        text = """
+name: Manual
+on:
+  workflow_dispatch:
+jobs:
+  only:
+    name: Dispatch job
+"""
+        r = self._report([{"path": IOS, "text": text}], check_runs=[])
+        self.assertTrue(any("Dispatch job" in n and s.startswith("N/A") for n, s in r["checks"]["rows"]))
+        self.assertFalse(r["checks"]["bad"])
+
+    def _assert_stays_required(self, if_expr, job_name):
+        text = f"""
+name: iOS
+on:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  j:
+    name: {job_name}
+    if: {if_expr}
+"""
+        r = self._report([{"path": IOS, "text": text}], check_runs=[])
+        self.assertTrue(any(f"{job_name}: missing" in b for b in r["checks"]["bad"]),
+                        (if_expr, r["checks"]["bad"], r["checks"]["rows"]))
+        self.assertFalse(any(s.startswith("N/A") for _, s in r["checks"]["rows"]),
+                         (if_expr, r["checks"]["rows"]))
+
+    def test_negated_dispatch_comparisons_stay_required(self):
+        """Sentinel B1: these run on every PR; a missing run must not be hidden as N/A."""
+        self._assert_stays_required("${{ !(github.event_name == 'workflow_dispatch') }}",
+                                    "Negated dispatch")
+        self._assert_stays_required("github.event_name == 'workflow_dispatch' == false",
+                                    "Chained false")
+
+    def test_inequality_and_unparseable_if_stay_required(self):
+        self._assert_stays_required("github.event_name != 'pull_request'", "Not equal pull_request")
+        self._assert_stays_required(
+            "github.event_name == 'workflow_dispatch' && (always())", "Unparseable parens")
+
+    def _assert_on_stays_required(self, workflow, job_name):
+        r = self._report([{"path": IOS, "text": workflow}], check_runs=[])
+        self.assertTrue(any(f"{job_name}: missing" in b for b in r["checks"]["bad"]),
+                        (workflow, r["checks"]))
+        self.assertFalse(any(s.startswith("N/A") for _, s in r["checks"]["rows"]),
+                         (workflow, r["checks"]["rows"]))
+
+    def test_pull_request_target_on_stays_required(self):
+        """Echo: map, string, and list forms of pull_request_target must stay required."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  pull_request_target:
+jobs:
+  only:
+    name: Target job
+""", "Target job")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+jobs:
+  only:
+    name: Target types job
+""", "Target types job")
+        self._assert_on_stays_required("""
+name: Manual
+on: pull_request_target
+jobs:
+  only:
+    name: Target string job
+""", "Target string job")
+        self._assert_on_stays_required("""
+name: Manual
+on: [pull_request_target]
+jobs:
+  only:
+    name: Target list job
+""", "Target list job")
+
+    def test_empty_or_unrecognized_on_stays_required(self):
+        """Echo: an empty or unparsed `on:` must fail closed, not mark every job N/A."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+
+jobs:
+  only:
+    name: Empty on job
+""", "Empty on job")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+    pull_request:
+jobs:
+  only:
+    name: Four space job
+""", "Four space job")
 
 
 class Signs(NoNetwork):
