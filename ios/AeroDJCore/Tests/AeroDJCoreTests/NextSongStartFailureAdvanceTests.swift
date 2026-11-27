@@ -91,6 +91,25 @@ final class NextSongStartFailureAdvanceTests: XCTestCase {
         )
     }
 
+    /// A prepared break with spoken text but no clips must not be handed to the player.
+    /// `BreakHandoffPolicy.decide` continues music in that case (the same empty-clips guard
+    /// PlayerView and TalkoverCoordinator also refuse).
+    func testABreakWithTextButNoClipsContinuesMusic() {
+        let line = cue("Up next, Song 1.")
+        let prepared = PreparedDJBreak(
+            afterTrack: 0,
+            cues: [line],
+            clips: [],
+            attributions: [line.id: .trackMetadata(trackIDs: ["t1"])],
+            talkOverCueID: line.id
+        )
+        XCTAssertEqual(
+            BreakHandoffPolicy.decide(prepared: prepared),
+            .continueMusic,
+            "a line with no clips must not be handed to the player"
+        )
+    }
+
     // MARK: - NextSongStartFailure recovery policy
 
     func testFirstFailureAdvancesOnceToKPlus2() {

@@ -212,6 +212,15 @@ public enum VoiceBetaDefaults {
 public enum AudioCacheRetention {
     public static let maximum: TimeInterval = 7 * 24 * 3600
     static func clamp(_ age: TimeInterval) -> TimeInterval { min(max(0, age), maximum) }
+
+    /// #82 F2: a clip may be served only while `0 <= age <= maxAge`. A clip stamped later than
+    /// `now` (stored while the clock ran ahead, or the clock was set back since) is untrusted and
+    /// goes, like an expired one. Re-stamping it to `now` instead would restart its 7 days on every
+    /// clock rollback, so a personal clip could outlive the limit indefinitely.
+    static func isWithin(_ clip: CachedAudio, maxAge: TimeInterval, now: Date) -> Bool {
+        let age = now.timeIntervalSince(clip.createdAt)
+        return age >= 0 && age <= maxAge
+    }
 }
 
 public protocol AudioCache: Sendable {
@@ -256,21 +265,33 @@ public struct AudioCacheSweeper: Sendable {
 
     public init(cache: any AudioCache) { self.cache = cache }
 
-    /// Production entry point. With `purgingPersonalFirst`, personal clips left by an earlier
-    /// launch are removed before the first sweep (live consent is not persisted).
+    /// Production entry point. Personal clips left by an earlier launch are removed before the
+    /// first sweep (live consent is not persisted), then the 7-day cap is swept every `interval`.
+    ///
+    /// #637 follow-up (-Sentinel, Nova's nit): only a `LaunchPurgeGated` cache compiles here, so
+    /// reads are gated before the purge task exists in every build, Release included (this was a
+    /// Debug-only `assert`). Gate an `any AudioCache` with `LaunchPurgeGatedCache(base:)` and read
+    /// through that wrapper. The cache reopens when its `purgePersonalItems` completes.
     @discardableResult
-    public func start(every interval: Duration = Self.defaultInterval, purgingPersonalFirst: Bool,
+    public static func startPurgingPersonalFirst(_ cache: some LaunchPurgeGated,
+                                                 every interval: Duration = Self.defaultInterval,
+                                                 onLaunchSweep: @escaping @Sendable (String?) -> Void = { _ in }) -> Task<Void, Never> {
+        cache.beginLaunchPurge()
+        return AudioCacheSweeper(cache: cache).launch(every: interval, purgingPersonalFirst: true, onLaunchSweep: onLaunchSweep)
+    }
+
+    /// Sweeps with no launch purge: expired and unattributable clips at launch, then every
+    /// `interval`. Personal clips from an earlier launch stay (use `startPurgingPersonalFirst`).
+    @discardableResult
+    public func start(every interval: Duration = Self.defaultInterval,
                       onLaunchSweep: @escaping @Sendable (String?) -> Void = { _ in }) -> Task<Void, Never> {
+        launch(every: interval, purgingPersonalFirst: false, onLaunchSweep: onLaunchSweep)
+    }
+
+    private func launch(every interval: Duration, purgingPersonalFirst: Bool,
+                        onLaunchSweep: @escaping @Sendable (String?) -> Void) -> Task<Void, Never> {
         let cache = cache
         let ticks = Self.ticks(every: interval)
-        // #82 F3: gate reads before the purge task exists, so no read can beat it to a personal
-        // clip from an earlier launch. The cache reopens when `purgePersonalItems` completes.
-        if purgingPersonalFirst {
-            // #637 follow-up: a production cache that is not gated would serve earlier-launch
-            // personal clips until its purge completes. Debug builds stop here.
-            assert(cache is any LaunchPurgeGated, "start(purgingPersonalFirst: true) needs a LaunchPurgeGated cache")
-            (cache as? any LaunchPurgeGated)?.beginLaunchPurge()
-        }
         return Task.detached(priority: .utility) {
             let line = await AudioCacheSweeper(cache: cache).prepareForLaunch(purgingPersonalFirst: purgingPersonalFirst)
             onLaunchSweep(line)
@@ -286,8 +307,12 @@ public struct AudioCacheSweeper: Sendable {
     /// is left is logged. Returns the log line (nil if the cache can't count). Cloud clips of
     /// library songs and typed station names (`allLinesClipTag` only) are kept (owner, Nov 9
     /// 2026); "Delete my DJ data" removes them.
+    ///
+    /// #656 nit (-Sentinel): internal (tests reach it with `@testable`). It opens no read gate, so
+    /// it is only safe when awaited before any read; the app starts the launch purge only through
+    /// `startPurgingPersonalFirst`, which gates reads first.
     @discardableResult
-    public func prepareForLaunch(purgingPersonalFirst: Bool) async -> String? {
+    func prepareForLaunch(purgingPersonalFirst: Bool) async -> String? {
         if purgingPersonalFirst { await cache.purgePersonalItems() }
         await cache.purgeExpired()
         return await AudioCacheFileLog.record(cache, after: .launch)
@@ -330,7 +355,7 @@ public actor InMemoryAudioCache: AudioCache {
     }
     public func audio(for key: String) -> CachedAudio? {
         guard let clip = clips[key] else { return nil }
-        guard now().timeIntervalSince(clip.createdAt) <= maxAge else { clips[key] = nil; return nil }
+        guard AudioCacheRetention.isWithin(clip, maxAge: maxAge, now: now()) else { clips[key] = nil; return nil }
         return clip
     }
     /// Stamps `createdAt` with the cache's clock, so retention is measured from when it was stored.
@@ -340,12 +365,11 @@ public actor InMemoryAudioCache: AudioCache {
     public func purge(sourceItemIDs: Set<UUID>) {
         clips = clips.filter { sourceItemIDs.isDisjoint(with: $0.value.sourceItemIDs) }
     }
-    /// A clip stamped later than now (stored while the clock ran ahead) is first re-stamped to
-    /// now, so its 7 days run from no later than the first sweep after the clock is corrected.
+    /// #82 F2: a clip stamped later than now is deleted, never re-stamped (see
+    /// `AudioCacheRetention.isWithin`).
     public func purgeExpired() {
         let t = now()
-        for (key, clip) in clips where clip.createdAt > t { clips[key]?.createdAt = t }
-        clips = clips.filter { t.timeIntervalSince($0.value.createdAt) <= maxAge }
+        clips = clips.filter { AudioCacheRetention.isWithin($0.value, maxAge: maxAge, now: t) }
     }
     public func purgeAllPersonal() { clips = clips.filter { $0.value.sourceItemIDs.isEmpty } }
     /// `async`, matching the protocol requirement exactly (see `purgeClips`).
@@ -450,9 +474,9 @@ public struct FileAudioCache: AudioCache {
         // #82 F3: decided before the read, so a clip from an earlier launch is never served
         // while the launch purge may still delete it. Not deleted here; the purge does that.
         let withholdPersonal = launchGate.withholdsPersonal(key)
-        guard let raw = read(url(key)), !(withholdPersonal && raw.hasPersonalItem) else { return nil }
-        let clip = clampingFutureStamp(raw, key: key)
-        guard now().timeIntervalSince(clip.createdAt) <= maxAge else {
+        guard let clip = read(url(key)), !(withholdPersonal && clip.hasPersonalItem) else { return nil }
+        // #82 F2 (#649): served only while 0 <= age <= maxAge; a future stamp is deleted, never re-stamped.
+        guard AudioCacheRetention.isWithin(clip, maxAge: maxAge, now: now()) else {
             remove(group: key)
             return nil
         }
@@ -472,18 +496,6 @@ public struct FileAudioCache: AudioCache {
     private func groups() -> [(key: String, files: [URL], clip: CachedAudio?)] {
         Dictionary(grouping: allFiles(), by: { $0.deletingPathExtension().lastPathComponent })
             .map { key, files in (key, files, files.contains { $0.pathExtension == "json" } ? read(url(key)) : nil) }
-    }
-
-    /// Clock skew: a clip stamped later than now (stored while the clock ran ahead) is re-stamped
-    /// to now and saved, so its 7 days run from no later than the first sweep or read after the
-    /// clock is corrected, and it cannot outlive the cap by the size of the skew.
-    private func clampingFutureStamp(_ clip: CachedAudio, key: String) -> CachedAudio {
-        let t = now()
-        guard clip.createdAt > t else { return clip }
-        var clamped = clip
-        clamped.createdAt = t
-        if !diskGate.isClosed, let data = try? JSONEncoder().encode(clamped) { try? ProtectedFile.write(data, to: url(key)) }
-        return clamped
     }
 
     /// Deletes a key's metadata together with its audio, whatever the audio's extension.
@@ -511,8 +523,8 @@ public struct FileAudioCache: AudioCache {
         await memoryFallback.purgeExpired()
         let t = now()
         for group in groups() {
-            let clip = group.clip.map { clampingFutureStamp($0, key: group.key) }
-            guard clip.map({ t.timeIntervalSince($0.createdAt) > maxAge }) ?? true else { continue }
+            // #82 F2: expired and future-stamped clips go alike; unreadable groups go too.
+            guard group.clip.map({ !AudioCacheRetention.isWithin($0, maxAge: maxAge, now: t) }) ?? true else { continue }
             for file in group.files { try? FileManager.default.removeItem(at: file) }
         }
     }

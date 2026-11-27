@@ -59,7 +59,7 @@ final class CacheLaunchPurgeFailClosedTests: XCTestCase {
     /// The production start path, waiting for the launch sweep (purge, then expiry sweep).
     private func launch(_ cache: FileAudioCache) async {
         let (launched, c) = AsyncStream<String?>.makeStream()
-        let task = AudioCacheSweeper(cache: cache).start(every: .seconds(3600), purgingPersonalFirst: true,
+        let task = AudioCacheSweeper.startPurgingPersonalFirst(cache, every: .seconds(3600),
                                                          onLaunchSweep: { c.yield($0) })
         var it = launched.makeAsyncIterator()
         _ = await it.next()
@@ -181,7 +181,7 @@ final class CacheLaunchPurgeFailClosedTests: XCTestCase {
         }
         let body = String(source[start.upperBound...].prefix(1200))
         XCTAssertTrue(body.contains("let cache = FileAudioCache(directory:"), "the launch cache is a FileAudioCache")
-        XCTAssertTrue(body.contains("AudioCacheSweeper(cache: cache).start(purgingPersonalFirst: true)"),
+        XCTAssertTrue(body.contains("AudioCacheSweeper.startPurgingPersonalFirst(cache)"),
                       "and the sweeper starts the gated launch purge on that same cache")
         XCTAssertTrue(body.contains("cache: cache)"), "the renderer reads the same gated cache")
     }
