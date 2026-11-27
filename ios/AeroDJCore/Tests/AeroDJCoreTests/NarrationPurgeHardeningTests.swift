@@ -207,7 +207,7 @@ final class CacheRetentionSweepTests: XCTestCase {
     }
 
     /// Sentinel item 4 (relaunch with stale files), through the production entry point
-    /// `start(purgingPersonalFirst:)` that `OnDeviceSpeechProvider` calls at launch: personal clips
+    /// `startPurgingPersonalFirst` that `OnDeviceSpeechProvider` calls at launch: personal clips
     /// (metadata and audio), orphaned audio and expired generic clips left by an earlier run are
     /// deleted before the first tick, and the launch log line counts what is left.
     func testLaunchSweepRemovesStalePersonalAndOrphanFilesBeforeTheFirstTick() async throws {
@@ -230,7 +230,7 @@ final class CacheRetentionSweepTests: XCTestCase {
         // sweep's own signal instead of a wall clock, as the other sweeper tests here do. The
         // assertions are unchanged; a sweep that never ran still fails them (or hangs the suite).
         let (launches, launched) = AsyncStream<String?>.makeStream()
-        let task = AudioCacheSweeper(cache: relaunched).start(every: .seconds(3600), purgingPersonalFirst: true,
+        let task = AudioCacheSweeper.startPurgingPersonalFirst(relaunched, every: .seconds(3600),
                                                               onLaunchSweep: { launched.yield($0) })
         var signals = launches.makeAsyncIterator()
         let line = await signals.next()

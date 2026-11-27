@@ -414,7 +414,10 @@ final class TalkoverCoordinator {
         handedOut = nil
         guard let h = held, h.afterTrack == k else {
             interlude.abandonHandOut()
-            music.logBreakSkipped(after: k, reason: PlaybackLog.noBreakReason(djSession.lastNoBreak))
+            // #304: a no-duration song's skip was logged once at song start.
+            if let reason = PlaybackLog.boundarySkipToLog(djSession.lastNoBreak) {
+                music.logBreakSkipped(after: k, reason: reason)
+            }
             music.skipInterlude()
             return
         }
@@ -425,6 +428,9 @@ final class TalkoverCoordinator {
         guard !line.isEmpty, !clips.isEmpty else {
             interlude.abandonHandOut()
             djSession.playbackFailed(afterTrack: k)
+            // #304 (-Fry, Echo's finding): log the skip like PlayerView's handed-out path does,
+            // so an empty line or no clips is not a silent missed break.
+            music.logBreakSkipped(after: k, reason: PlaybackLog.handedOutReason(.emptyLine))
             music.skipInterlude()
             return
         }
