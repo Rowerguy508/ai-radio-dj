@@ -404,6 +404,63 @@ final class PaidVoiceBackoffTests: XCTestCase {
                        "an unknown or missing reason is treated as the daily cap")
     }
 
+    // MARK: 429 `daily_allowance` (Pro daily render allowance, proxy handler.ts; #234 follow-up)
+
+    func testDailyAllowanceIsAKnownReason() {
+        XCTAssertEqual(PaidVoiceBackoff.ProxyErrorReason.parse(Data(#"{"reason":"daily_allowance"}"#.utf8)), .dailyAllowance)
+    }
+
+    func test429DailyAllowanceIsADailyCapAndHonorsRetryAfter() async {
+        let clock = TestClock(t0)
+        let store = MemoryBackoffStore()
+        let backoff = PaidVoiceBackoff(store: store, now: { clock.now })
+        let transport = ScriptedTransport([.proxyError(429, reason: "daily_allowance", retryAfter: "7200"), .ok])
+        let r = renderer(transport, backoff)
+        let provider = await render(r, 1)
+        XCTAssertEqual(provider, "device", "falls back to the on-device voice")
+        XCTAssertEqual(backoff.suspendedUntil(), t0.addingTimeInterval(7200), "the server's Retry-After wins")
+        XCTAssertEqual(backoff.snapshot.reason, .dailyCap)
+        XCTAssertEqual(backoff.statusLine(), "Premium backoff: dailyCap until 2027-01-15T10:00:00Z")
+        XCTAssertEqual(PaidVoiceBackoff(store: store, now: { clock.now }).snapshot.reason, .dailyCap, "persisted")
+        clock.advance(7199)
+        _ = await render(r, 2)
+        XCTAssertEqual(transport.callCount, 1, "no proxy call while suspended")
+        clock.advance(1)
+        let resumed = await render(r, 3)
+        XCTAssertEqual(resumed, "elevenlabs")
+        XCTAssertEqual(transport.callCount, 2)
+    }
+
+    func test429DailyAllowanceKeepsTheClampAndMidnightDefault() {
+        XCTAssertEqual(PaidVoiceBackoff.rateLimitWait(retryAfter: nil, reason: .dailyAllowance, now: t0), 16 * 3600,
+                       "without Retry-After it waits until the next UTC midnight")
+        XCTAssertEqual(PaidVoiceBackoff.rateLimitWait(retryAfter: "5", reason: .dailyAllowance, now: t0), 60, "floored at 60 s")
+        XCTAssertEqual(PaidVoiceBackoff.rateLimitWait(retryAfter: "999999", reason: .dailyAllowance, now: t0), 86_400,
+                       "capped at 24 h")
+    }
+
+    func test429UnknownReasonStillMapsToTheSafeDefault() async {
+        for reason in ["something_new", "owner_daily_v2"] {
+            let backoff = PaidVoiceBackoff(now: { [t0] in t0 })
+            let transport = ScriptedTransport([.proxyError(429, reason: reason, retryAfter: "300")])
+            _ = await render(renderer(transport, backoff), 1)
+            XCTAssertEqual(backoff.suspendedUntil(), t0.addingTimeInterval(300), "Retry-After honored for \(reason)")
+            XCTAssertEqual(backoff.snapshot.reason, .rateLimited, "unknown reason \(reason) keeps the old label")
+        }
+        let noHeader = PaidVoiceBackoff(now: { [t0] in t0 })
+        noHeader.recordRateLimited(retryAfter: nil, reason: nil)
+        XCTAssertEqual(noHeader.suspendedUntil(), Date(timeIntervalSince1970: 1_800_057_600), "unknown without a header waits until midnight")
+        XCTAssertEqual(noHeader.snapshot.reason, .rateLimited)
+    }
+
+    func test429RateLabelAndWaitAreUnchanged() {
+        let backoff = PaidVoiceBackoff(now: { [t0] in t0 })
+        backoff.recordRateLimited(retryAfter: "90", reason: .rate)
+        XCTAssertEqual(backoff.suspendedUntil(), t0.addingTimeInterval(90))
+        XCTAssertEqual(backoff.statusLine(), "Premium backoff: rateLimited until 2027-01-15T08:01:30Z")
+        XCTAssertEqual(PaidVoiceBackoff.rateLimitWait(retryAfter: nil, reason: .rate, now: t0), 60)
+    }
+
     func test503DisabledHonorsRetryAfterAndPersists() async {
         let clock = TestClock(t0)
         let store = MemoryBackoffStore()
