@@ -27,9 +27,16 @@ Prints, at the PR's exact head sha:
       changed since the merge-base (merge-base..base head). Any overlap makes the verdict NOT
       READY ("forward-merge or confirm the hunks are disjoint"), because the PR has not been
       tested against those base changes.
-  (d) device line: the PR body has a line that starts with `Device: NOT TESTED` (or the
-      device-tested form `Device: TESTED`). `Device check: ...` and an indented or quoted line do not
-      count. Missing is NOT READY (#556 acceptance; #671 -Atlas).
+  (d) device line: the PR body has a line that starts with `Device: NOT TESTED` or
+      `Device: TESTED`. `Device check: ...` and an indented or quoted line do not count. Missing is
+      NOT READY (#556 acceptance; #671 / Echo's #678 non-blocker -Atlas).
+      `Device: NOT TESTED` is honest at any head and does not need a sha: a later push must not
+      force a body edit for a still-true statement. A sha on that line, if present, is ignored.
+      `Device: TESTED` must name the PR head sha the report already fetches: the full 40-char sha
+      or a prefix of at least 7 hex characters, case-insensitive. A different sha, no sha, a
+      prefix shorter than 7, or two incompatible sha tokens is NOT READY (stale / no sha /
+      too short / ambiguous). If the head sha is unavailable, TESTED is NOT READY (fail closed).
+      Only the parsed result is kept; the body is never stored or printed.
   (e) READY or NOT READY, with every reason.
   Also warns (report-only, never a reason) when a commit author is outside ROSTER.
 
@@ -60,6 +67,11 @@ MAX_COMPARE_FILES = 300  # GitHub's compare file limit.
 
 SIGN_LINE = re.compile(r"^SIGN ([0-9a-fA-F]{8}|[0-9a-fA-F]{40}) -([A-Za-z][A-Za-z0-9]*)$")
 DEVICE_LINE = re.compile(r"^Device: (NOT TESTED|TESTED)(?![A-Za-z0-9])")
+# Hex runs on a TESTED line. 7–40 is a sha claim; 4–6 is a too-short prefix (1–3 digit
+# numbers in prose such as "iPhone 17" are ignored).
+SHA_CLAIM = re.compile(r"\b([0-9a-fA-F]{7,40})\b")
+SHORT_SHA = re.compile(r"\b([0-9a-fA-F]{4,6})\b")
+HEAD_SHA = re.compile(r"^[0-9a-f]{7,40}$")
 CO_AUTHOR = re.compile(r"^Co-authored-by:\s*(.+?)\s*<[^>]*>\s*$", re.IGNORECASE | re.MULTILINE)
 
 
@@ -299,14 +311,100 @@ def commit_author_names(commits: list[dict]) -> set[str]:
     return names
 
 
-def device_line(body: str | None) -> str | None:
-    """`NOT TESTED` or `TESTED` when some body line starts exactly with `Device: NOT TESTED` or
-    `Device: TESTED`; None otherwise. `Device check: NOT TESTED` and indented lines never match."""
+def _compatible_hex(a: str, b: str) -> bool:
+    return a.startswith(b) or b.startswith(a)
+
+
+def _merge_sha_claims(tokens: list[str]) -> list[str]:
+    """Distinct sha claims: prefix-compatible tokens collapse to the longest."""
+    claims: list[str] = []
+    for t in tokens:
+        for i, c in enumerate(claims):
+            if _compatible_hex(t, c):
+                if len(t) > len(c):
+                    claims[i] = t
+                break
+        else:
+            claims.append(t)
+    return claims
+
+
+def parse_device_line(body: str | None) -> dict | None:
+    """Parsed device line only: never the body rest. None when no line starts `Device: NOT TESTED`
+    or `Device: TESTED`. `Device check:` and indented or quoted lines never match.
+
+    `NOT TESTED` is `{status: "NOT TESTED"}` (a trailing sha, if any, is ignored).
+    `TESTED` is `{status: "TESTED", named: <lowercase hex or None>, defect: ...}` where defect is
+    `missing-sha`, `too-short`, or `ambiguous` when the claim is unusable.
+    """
     for line in (body or "").replace("\r\n", "\n").split("\n"):
         found = DEVICE_LINE.match(line)
-        if found:
-            return found.group(1)
+        if not found:
+            continue
+        kind = found.group(1)
+        if kind == "NOT TESTED":
+            return {"status": "NOT TESTED"}
+        rest = line[found.end():]
+        long = [t.lower() for t in SHA_CLAIM.findall(rest)]
+        claims = _merge_sha_claims(long)
+        if len(claims) > 1:
+            return {"status": "TESTED", "named": claims, "defect": "ambiguous"}
+        if len(claims) == 1:
+            return {"status": "TESTED", "named": claims[0]}
+        short = [t.lower() for t in SHORT_SHA.findall(rest)]
+        if short:
+            named = max(short, key=len)
+            return {"status": "TESTED", "named": named, "defect": "too-short"}
+        return {"status": "TESTED", "named": None, "defect": "missing-sha"}
     return None
+
+
+def device_line(body: str | None) -> dict | None:
+    """Back-compat alias for parse_device_line."""
+    return parse_device_line(body)
+
+
+def assess_device_line(parsed: dict | str | None, head_sha: str | None) -> tuple[str, str | None]:
+    """(`display`, `reason`). `reason` is set when the device line is not satisfied.
+
+    `Device: NOT TESTED` is ok at any head (the sha is not required). `Device: TESTED` must
+    name this head (full 40 or a unique prefix of at least 7 hex characters, case-insensitive).
+    Missing or unusable `head_sha` fails a TESTED line closed.
+    """
+    if isinstance(parsed, str):
+        if parsed == "NOT TESTED":
+            parsed = {"status": "NOT TESTED"}
+        elif parsed == "TESTED":
+            parsed = {"status": "TESTED", "named": None, "defect": "missing-sha"}
+        else:
+            parsed = None
+    if not parsed:
+        return "missing", "PR body has no line starting `Device: NOT TESTED` (or `Device: TESTED`)"
+    status = parsed.get("status")
+    if status == "NOT TESTED":
+        return "Device: NOT TESTED", None
+    if status != "TESTED":
+        return "missing", "PR body has no line starting `Device: NOT TESTED` (or `Device: TESTED`)"
+    head = (head_sha or "").strip().lower()
+    if not HEAD_SHA.match(head):
+        return "Device: TESTED (head sha unavailable)", "Device line: head sha unavailable"
+    head8 = head[:8]
+    defect = parsed.get("defect")
+    named = parsed.get("named")
+    if defect == "ambiguous":
+        shown = " and ".join(named) if isinstance(named, list) else (named or "?")
+        display = f"TESTED sha ambiguous (names {shown}, head {head8})"
+        return display, f"Device line: {display}"
+    if defect == "too-short":
+        display = f"TESTED sha too short (names {named}, head {head8})"
+        return display, f"Device line: {display}"
+    if defect == "missing-sha" or not named or not isinstance(named, str):
+        display = f"TESTED with no sha (head {head8})"
+        return display, f"Device line: {display}"
+    if head.startswith(named) or (len(named) >= 7 and named.startswith(head)):
+        return f"Device: TESTED {named}", None
+    display = f"stale (names {named}, head {head8})"
+    return display, f"Device line: {display}"
 
 
 def parse_sign(body: str | None, head_sha: str) -> tuple[str | None, str | None]:
@@ -417,8 +515,9 @@ def verdict(*, pr: dict, checks: dict, signs: dict, overlap_files: list[str], wa
         reasons.append(f"base is {pr.get('base')}, not {TARGET_BASE}")
     if checks["bad"]:
         reasons.append(f"{len(checks['bad'])} required check(s) not green")
-    if not pr.get("device_line"):
-        reasons.append("PR body has no line starting `Device: NOT TESTED` (or `Device: TESTED`)")
+    _, device_reason = assess_device_line(pr.get("device_line"), pr.get("head_sha"))
+    if device_reason:
+        reasons.append(device_reason)
     n = len(signs["valid"])
     if n < REQUIRED_SIGNS:
         reasons.append(f"{n}/{REQUIRED_SIGNS} non-author signs at this head")
@@ -446,7 +545,8 @@ def render(report: dict) -> str:
         mark = "n/a" if s.startswith("N/A") else ("ok " if s in ("success", SKIP_GREEN) else "NO ")
         marks.append(f"  {mark} {n}: {s}")
     out += marks
-    out += ["", f"Device line: {('Device: ' + pr['device_line']) if pr.get('device_line') else 'missing'}"]
+    display, _ = assess_device_line(pr.get("device_line"), pr.get("head_sha"))
+    out += ["", f"Device line: {display}"]
     out += ["", f"Signs ({len(signs['valid'])}/{REQUIRED_SIGNS} non-author at {pr['head_sha'][:8]}):"]
     out += [f"  ok  {n} {u}".rstrip() for n, u in signs["valid"].items()] or ["  (none)"]
     out += [f"  --  not counted: {r}" for r in signs["rejected"]]
@@ -513,7 +613,7 @@ def fetch(repo: str, number: int) -> dict:
     head = p["head"]["sha"]
     base_ref = p["base"]["ref"]
     pr = {"number": number, "head_sha": head, "base": base_ref, "state": p["state"],
-          "merged": bool(p.get("merged_at")), "device_line": device_line(p.get("body"))}
+          "merged": bool(p.get("merged_at")), "device_line": parse_device_line(p.get("body"))}
     warnings: list[str] = []
     base_head = gh_api(f"repos/{repo}/commits/{base_ref}")["sha"]
     cmp_pr = gh_api(f"repos/{repo}/compare/{base_head}...{head}?per_page=1")
