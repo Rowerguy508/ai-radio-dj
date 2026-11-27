@@ -231,7 +231,8 @@ struct FoldedPlayer: View {
                     centredColumnBody(in: geo.size)
                 case .duoHorizontal:
                     if showsUnfoldedRail {
-                        wideBody(in: geo.size, readerMinY: geo.frame(in: .global).minY)
+                        wideBody(in: geo.size, readerMinY: geo.frame(in: .global).minY,
+                                 placementHeight: (placementSize ?? geo.size).height)
                     } else {
                         // Build 51: the collapsed rail pins the transport; the scrolling centred
                         // column left Play and Skip below the 820 × 640 window.
@@ -325,7 +326,7 @@ struct FoldedPlayer: View {
             // Same collapse rule as phoneBody (#479): a collapsed rail shows the centred column,
             // with the transport pinned (build 51).
             if showsUnfoldedRail {
-                wideBody(in: size)
+                wideBody(in: size, placementHeight: decision.height)
             } else {
                 pinnedColumnBody(in: size, foldAware: true, placementHeight: decision.height)
                     .onAppear { moreOpen = false }
@@ -445,20 +446,23 @@ struct FoldedPlayer: View {
     /// the rail. The rail's top is the Stations rail's (`openDuoWindow.railTop`, global), the
     /// thumbnail replaces the chevron, and the day-wash panel that stopped short of the rail is
     /// gone. Full-screen iPads and the split host keep the old body.
-    private func wideBody(in readerSize: CGSize, readerMinY: CGFloat? = nil) -> some View {
+    private func wideBody(in readerSize: CGSize, readerMinY: CGFloat? = nil,
+                          placementHeight: CGFloat? = nil) -> some View {
+        let foldHeight = Double(placementHeight ?? readerSize.height)
         // The phone idiom or a reported hinge (no iPad has either), at an open-Duo size.
         let openDuo = FoldedColumnLayout.usesOpenDuoRail(containerWidth: Double(readerSize.width),
-                                                         containerHeight: Double(readerSize.height))
+                                                         containerHeight: foldHeight)
             && (DeviceIdiom.isPhone || effectiveFoldHinge != nil)
         let window: OpenDuoWindowMetrics? = openDuo ? openDuoWindow : nil
         let extend: CGFloat = window.map { max(0, $0.trailingInset) } ?? 0
         let size = CGSize(width: readerSize.width + extend, height: readerSize.height)
-        let base = FoldAwareness.resolve(containerWidth: Double(size.width),
-                                         containerHeight: Double(size.height),
+        let fold = FoldAwareness.resolve(containerWidth: Double(size.width),
+                                         containerHeight: foldHeight,
                                          hinge: effectiveFoldHinge,
                                          divisions: effectiveFoldDivisions,
                                          artMin: Double(FoldedStyle.artMinSide),
-                                         artMax: Double(FoldedStyle.artMaxSide)).metrics
+                                         artMax: Double(FoldedStyle.artMaxSide))
+        let base = fold.metrics
         let layout = openDuo
             ? FoldedColumnLayout.DuoHorizontal(edgeInset: base.edgeInset, leftWidth: base.leftWidth,
                                                foldGutter: base.foldGutter,
@@ -481,7 +485,7 @@ struct FoldedPlayer: View {
         let found: RailDLayout.OpenArrangement = heroTrack == nil
             ? .portrait
             : RailDLayout.openArrangement(containerWidth: Double(size.width),
-                                          containerHeight: Double(size.height),
+                                          containerHeight: foldHeight,
                                           hinge: effectiveFoldHinge,
                                           divisions: effectiveFoldDivisions)
         // Build 54 (4), -Nova: the open Duo in landscape is always the L1 spread, art on the
@@ -507,7 +511,9 @@ struct FoldedPlayer: View {
         .padding(.trailing, -extend)
         .overlay {
             if moreOpen, !systemBar, layout.barWidth > 0 {
-                railMorePanel(in: size)
+                // #507 rest: in book pose the panel grows inward no further than the content
+                // column, so a wrapped row (large text) never reaches the fold. Nil elsewhere.
+                railMorePanel(in: size, leadingLimit: fold.isBookPose ? layout.contentMinX : nil)
             }
         }
         .modifier(SplitLeadingBar(enabled: splitBarEdge == .leading))
@@ -814,8 +820,10 @@ struct FoldedPlayer: View {
     }
 
     /// The rail's ⋯ panel over the player, inside the safe box, inward of the rail.
-    private func railMorePanel(in size: CGSize) -> some View {
-        let menu = DuoMoreMenuLayout.resolve(safeWidth: Double(size.width), safeHeight: Double(size.height))
+    /// `leadingLimit`: the book-pose content column's leading edge (#507 rest); nil keeps today's width.
+    private func railMorePanel(in size: CGSize, leadingLimit: Double? = nil) -> some View {
+        let menu = DuoMoreMenuLayout.resolve(safeWidth: Double(size.width), safeHeight: Double(size.height),
+                                             leadingLimit: leadingLimit)
         return ZStack(alignment: .topTrailing) {
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

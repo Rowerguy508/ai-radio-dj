@@ -189,6 +189,42 @@ public enum DuoStationsLayout {
         return Geometry(pose: .portrait, pages: [page], fold: nil, railMinX: railMinX, railMaxX: railMaxX)
     }
 
+    /// #507 rest (-Nova): the narrowest book page that still holds a row of 44 pt targets, two
+    /// tile columns and the gap between them (104 pt). A narrower page is left empty.
+    public static var bookPageMinWidth: Double {
+        Double(tileColumns(pose: .book)) * StudioLayoutMetrics.touchTargetMin + tileGap
+    }
+
+    /// #507 rest (-Nova): the Stations pages around the fold the system reports, through the
+    /// player's gates (`FoldAwareness.bookPoseFold`). No book-pose fold (no reading, a closed or
+    /// fully open hinge, a horizontal laptop division, a phone-sized container) is exactly
+    /// `geometry(containerWidth:containerHeight:leadingInset:)`, today's centred band. A
+    /// reported fold gives `geometry` with that band, so a centred one draws the same pages as
+    /// before. A fold that leaves a page narrower than `bookPageMinWidth` leaves that page empty:
+    /// the other page is the only one (drawn as the upright single page) and `fold` stays set, so
+    /// no tile, row or header button is laid out on the crease. A band that reaches the rail is
+    /// not a fold this screen can avoid and keeps the centred band, as `geometry` does.
+    public static func bookGeometry(containerWidth: Double, containerHeight: Double,
+                                    hinge: FoldAwareness.HingeSample?, divisions: [FoldAwareness.Division],
+                                    leadingInset: Double = 0) -> Geometry {
+        let base = geometry(containerWidth: containerWidth, containerHeight: containerHeight,
+                            leadingInset: leadingInset)
+        guard base.pose == .book,
+              let division = FoldAwareness.bookPoseFold(containerWidth: containerWidth,
+                                                        containerHeight: containerHeight,
+                                                        hinge: hinge, divisions: divisions),
+              division.maxX < base.railMinX else { return base }
+        let width = max(0, containerWidth)
+        let fold = Page(minX: max(0, division.minX), maxX: min(width, division.maxX))
+        let lead = leadingGutter + (leadingInset.isFinite ? max(0, leadingInset) : 0)
+        let leading = Page(minX: lead, maxX: max(lead, fold.minX - foldGutter))
+        let trailingMin = max(lead, fold.maxX + foldGutter)
+        let trailing = Page(minX: trailingMin, maxX: max(trailingMin, base.railMinX - bookRailGutter))
+        let holds = [leading, trailing].filter { $0.width >= bookPageMinWidth }
+        return Geometry(pose: holds.count == 2 ? .book : .portrait, pages: holds, fold: fold,
+                        railMinX: base.railMinX, railMaxX: base.railMaxX)
+    }
+
     // MARK: Content
 
     /// Tile columns per page: two per book page (four tiles to a page in the mock), three upright.
@@ -396,7 +432,8 @@ public enum DuoStationsLayout {
 
     public static func morePanelFrame(_ geometry: Geometry, containerWidth: Double) -> (width: Double, trailingGap: Double) {
         let trailingGap = max(0, containerWidth - geometry.railMinX + morePanelGap)
-        let pageMinX = geometry.pages.last?.minX ?? 0
+        // #507 rest: never leading of the fold, even when the leading page is the only one.
+        let pageMinX = max(geometry.pages.last?.minX ?? 0, geometry.fold.map { $0.maxX + foldGutter } ?? 0)
         let width = max(RailDLayout.controlSize, geometry.railMinX - morePanelGap - pageMinX)
         return (width, trailingGap)
     }

@@ -142,6 +142,41 @@ final class StationsLayoutTests: XCTestCase {
                       "Tune asks the player for its Tune segment: \(any["capture.stationsLayout.player"].label)")
     }
 
+    /// #507 rest (-Nova): the fold the system reports, margins included, is wider than the
+    /// centred band and off the centre (`StationsLayoutCaptureScenario.reportedFoldBand`, 352…416).
+    /// Both pages and every hittable control, the header buttons included, stay off that band
+    /// (`checkStations`), and each page starts and ends a 16 pt gutter from it.
+    @MainActor
+    func testLayoutABookPoseReportedFold() throws {
+        let fold: (min: CGFloat, max: CGFloat) = (352, 416)
+        let (app, box) = try checkStations("stationsLayoutABookReportedFold", style: "tiles", size: Self.book,
+                                           rowPrefix: "stations.tile.", rows: 8,
+                                           shot: "stations-layout-a-duo-open-book-reported-fold",
+                                           fold: fold)
+        let tiles = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "stations.tile."))
+        var leading = 0
+        var trailing = 0
+        for index in 0..<tiles.count {
+            let frame = tiles.element(boundBy: index).frame
+            guard !frame.isEmpty else { continue }
+            if frame.maxX <= box.minX + fold.min - 16 + 1 {
+                leading += 1
+            } else if frame.minX >= box.minX + fold.max + 16 - 1 {
+                trailing += 1
+            } else {
+                XCTFail("tile \(frame) is in the fold's gutter \(fold) of \(box)")
+            }
+        }
+        XCTAssertEqual(leading, 4, "four tiles on the leading page")
+        XCTAssertEqual(trailing, 4, "four tiles on the trailing page")
+        // The header's + sits on the trailing page, after the band.
+        let add = app.buttons.matching(identifier: "stations.duo.addStation").firstMatch
+        XCTAssertTrue(add.exists, "+ missing\n\(app.debugDescription)")
+        XCTAssertGreaterThanOrEqual(add.frame.minX, box.minX + fold.max - 1, "+ \(add.frame) stays on the trailing page")
+        assertAtLeastPoints(add.frame.width, 44, "+ \(add.frame)")
+        assertAtLeastPoints(add.frame.height, 44, "+ \(add.frame)")
+    }
+
     @MainActor
     func testLayoutAPortrait() throws {
         let (app, _) = try checkStations("stationsLayoutAPortrait", style: "tiles", size: Self.portrait,
@@ -308,12 +343,14 @@ final class StationsLayoutTests: XCTestCase {
     /// Everything every design must do: no carousel, Rail D 56 pt wide and 8 pt from the
     /// trailing edge, the thumbnail on top with its VoiceOver label, every station present, and
     /// every visible control at least 44 pt, left of the rail and clear of the fold.
+    /// `fold` (#507 rest): the band the scenario forces, in container points; nil is the centred band.
     @MainActor
     private func checkStations(_ scenario: String, style: String, size: CGSize, rowPrefix: String, rows: Int,
                                shot: String,
-                               orientation: UIDeviceOrientation = .portrait) throws -> (XCUIApplication, CGRect) {
+                               orientation: UIDeviceOrientation = .portrait,
+                               fold: (min: CGFloat, max: CGFloat)? = nil) throws -> (XCUIApplication, CGRect) {
         let (app, box) = try launch(scenario, size: size, needsPad: true, orientation: orientation)
-        let band = Self.foldBand(size)
+        let band = fold ?? Self.foldBand(size)
         let any = app.descendants(matching: .any)
         XCTAssertTrue(any["stations.duo.\(style)"].waitForExistence(timeout: 10),
                       "design \(style) missing\n\(app.debugDescription)")

@@ -25,6 +25,9 @@ enum StationsLayoutCaptureScenario: String, CaseIterable {
     case stationsLayoutARegularDeviceFold
     case stationsLayoutABookRegular
     case stationsLayoutAPortraitRegular
+    /// #507 rest (-Nova): A in the book pose with the fold the system reports, its margins
+    /// included: wider than the centred band and off the centre (352…416 at 820 × 640).
+    case stationsLayoutABookReportedFold
 
     static func requested(defaults: UserDefaults = .standard) -> StationsLayoutCaptureScenario? {
         defaults.string(forKey: StudioCapture.scenarioKey).flatMap(Self.init(rawValue:))
@@ -32,7 +35,7 @@ enum StationsLayoutCaptureScenario: String, CaseIterable {
 
     var style: StationsLayoutStyle? {
         switch self {
-        case .stationsLayoutABook, .stationsLayoutAPortrait: .tiles
+        case .stationsLayoutABook, .stationsLayoutAPortrait, .stationsLayoutABookReportedFold: .tiles
         case .stationsLayoutARegularDevice, .stationsLayoutARegularDeviceFold,
              .stationsLayoutABookRegular, .stationsLayoutAPortraitRegular: .tiles
         case .stationsLayoutBBook, .stationsLayoutBPortrait: .editorial
@@ -45,6 +48,7 @@ enum StationsLayoutCaptureScenario: String, CaseIterable {
     var isBook: Bool {
         self == .stationsLayoutABook || self == .stationsLayoutBBook || self == .stationsLayoutCBook
             || self == .stationsLayoutARegularDeviceFold || self == .stationsLayoutABookRegular
+            || self == .stationsLayoutABookReportedFold
     }
 
     /// The width class the device reports on the open Duo (build 54). The others force compact.
@@ -59,8 +63,13 @@ enum StationsLayoutCaptureScenario: String, CaseIterable {
     /// The open Duo window measured from the owner's build 54 shots (2853 × 2007 px at @3x).
     static let deviceWindowSize = CGSize(width: 951, height: 669)
 
+    /// #507 rest: the reported fold's band (`stationsLayoutABookReportedFold`), container points.
+    static let reportedFoldBand = FoldAwareness.Division(minX: 352, minY: 0, width: 64, height: 640, isActive: true)
+
     /// A centred 28 pt band for this container: 396…424 at 820 pt (`RailDCaptureContainer.foldBand`).
+    /// `stationsLayoutABookReportedFold` forces `reportedFoldBand` instead.
     var foldBand: FoldAwareness.Division {
+        if self == .stationsLayoutABookReportedFold { return Self.reportedFoldBand }
         let width = Double(size.width)
         let band = FoldedColumnLayout.duoFoldGutter
         return FoldAwareness.Division(minX: (width - band) / 2, minY: 0, width: band,

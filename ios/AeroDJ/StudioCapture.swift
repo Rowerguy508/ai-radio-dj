@@ -140,6 +140,9 @@ enum StudioCaptureScenario: String {
     case railDPortrait
     case railDPortraitSidebar
     case railDLandscapeSpread
+    /// #507 rest (-Nova): the L1 spread with the fold the system reports, margins included
+    /// (`RailDCaptureContainer.reportedFoldBand`, 352…416), instead of the centred band.
+    case railDLandscapeSpreadReportedFold
     case railDLandscapeCentred
     case railDLandscapeSidebar
     /// Echo (#558): the three landscape frames with the DJ on air (`breakReady` then
@@ -160,7 +163,8 @@ enum StudioCaptureScenario: String {
     var isRailDContainer: Bool {
         switch self {
         case .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
-             .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar: true
+             .railDLandscapeSpread, .railDLandscapeSpreadReportedFold,
+             .railDLandscapeCentred, .railDLandscapeSidebar: true
         default: isRailDOnAir || isRailDVoiceUnavailable
         }
     }
@@ -209,7 +213,8 @@ enum StudioCaptureScenario: String {
             return PlaybackFixtures.recoverableError
         case .duoWideReady, .duoWideSpeaking, .duoArrangement, .duoWideOnAir, .duoLandscape, .duoLandscapeTune, .duoSidebar,
              .railDPhone, .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
-             .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar:
+             .railDLandscapeSpread, .railDLandscapeSpreadReportedFold,
+             .railDLandscapeCentred, .railDLandscapeSidebar:
             // A playing song the listener can seek. The shared fixture leaves canSeek false,
             // which draws the scrubber as a non-interactive element.
             var playing = PlaybackFixtures.playing
@@ -379,7 +384,8 @@ struct StudioCaptureView: View {
                 studio.dj.send(.playbackFailed(afterTrack: 0))
             case .breakReady, .duoWideReady, .duoArrangement, .duoLandscape, .duoLandscapeTune, .duoSidebar,
                  .railDPhone, .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
-                 .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar:
+                 .railDLandscapeSpread, .railDLandscapeSpreadReportedFold,
+                 .railDLandscapeCentred, .railDLandscapeSidebar:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .duoWideSpeaking, .onAir, .duoWideOnAir, .railDPortraitOnAir,
                  .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir:
@@ -423,7 +429,9 @@ struct StudioCaptureView: View {
             }
             // Build 54 (5), -Nova: the open-Duo device-window player shows the rating star, so
             // the UI test can check it sits beside the title.
-            if captureRating == nil, defaults.bool(forKey: RailDCaptureContainer.deviceWindowKey) {
+            if captureRating == nil,
+               defaults.bool(forKey: RailDCaptureContainer.deviceWindowKey)
+                || chosen == .railDLandscapeSpreadReportedFold {
                 captureRating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id,
                                                                     labelSeen: true)
             }

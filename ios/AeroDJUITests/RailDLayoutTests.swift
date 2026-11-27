@@ -8,7 +8,9 @@ import UIKit
 /// saved here. Required in ios.yml: rail-d-iphone, rail-d-duo-closed, rail-d-duo-open-portrait,
 /// rail-d-duo-open-portrait-sidebar, rail-d-duo-open-landscape-spread,
 /// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar. Not required:
-/// rail-d-duo-open-landscape-book-collapsed (#548, the spread's frame with the rail collapsed).
+/// rail-d-duo-open-landscape-book-collapsed (#548, the spread's frame with the rail collapsed),
+/// rail-d-duo-open-landscape-book-reported-fold and rail-d-duo-open-landscape-book-more-ax (#507 rest,
+/// a wider off-centre fold).
 /// A frame bigger than the simulator window is skipped, as in `AppWideLayoutTests`.
 final class RailDLayoutTests: XCTestCase {
     private static let closed = CGSize(width: 390, height: 844)
@@ -151,9 +153,49 @@ final class RailDLayoutTests: XCTestCase {
     }
 
     /// The same window with the hinge and a centred fold band forced (book pose).
+    /// #507 rest: nothing hittable below the header row sits on that band (461.5…489.5).
     @MainActor
     func testDeviceWindowRegularPlayerFold() throws {
-        try assertDeviceWindowPlayer("railDLandscapeSpread", shot: "rail-d-duo-open-regular-951x669-fold")
+        try assertDeviceWindowPlayer("railDLandscapeSpread", shot: "rail-d-duo-open-regular-951x669-fold",
+                                     fold: ((951 - 28) / 2, (951 + 28) / 2))
+    }
+
+    /// #507 rest (-Nova): book pose with the fold the system reports, margins included: wider than
+    /// the centred band and off the centre (352…416 at 820 × 640, `railDLandscapeSpreadReportedFold`).
+    /// The player (art) ends before it; the title, the DJ chip, Up next, the star and the full rail
+    /// start after it; nothing hittable sits on it; the targets stay 44 pt.
+    @MainActor
+    func testOpenLandscapeSpreadReportedFold() throws {
+        let foldMinX: CGFloat = 352
+        let foldWidth: CGFloat = 64
+        // The band is the scenario's (`RailDCaptureContainer.reportedFoldBand`); the launch-argument
+        // override never reached the player on iOS CI (runs 45117022603, 45154494478).
+        XCTAssertEqual(foldMinX + foldWidth, 416)
+        let app = try launch("railDLandscapeSpreadReportedFold", container: Self.landscape,
+                             orientation: .landscapeLeft, extra: ["-AeroDJForcePhoneIdiom", "YES"])
+        let box = try settledContainer(app, size: Self.landscape)
+        let any = app.descendants(matching: .any)
+        let rail = try assertRail(app, id: "folded.systemBar", hasCollapse: true)
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail))
+        assertNoHorizontalBar(app)
+        let title = try assertChipLinesUpWithTitle(app)
+        let foldMin = box.minX + foldMinX
+        let foldMax = box.minX + foldMinX + foldWidth
+        let track = try XCTUnwrap(settledFrame(of: any["folded.trackColumn"], "track column"))
+        XCTAssertLessThanOrEqual(track.maxX, foldMin + 1, "the art column \(track) ends before the fold")
+        XCTAssertGreaterThanOrEqual(title.minX, foldMax - 1, "the title \(title) starts after the fold")
+        XCTAssertGreaterThanOrEqual(rail.minX, foldMax - 1, "the rail \(rail) is after the fold")
+        let upNext = any["duo.upNext"]
+        XCTAssertTrue(upNext.waitForExistence(timeout: 5), "Up next missing\n\(app.debugDescription)")
+        XCTAssertGreaterThanOrEqual(upNext.frame.minX, foldMax - 1, "Up next \(upNext.frame) is after the fold")
+        let star = app.buttons["nowPlaying.rating"].firstMatch
+        XCTAssertTrue(star.waitForExistence(timeout: 5), "the star is missing\n\(app.debugDescription)")
+        XCTAssertGreaterThanOrEqual(star.frame.minX, foldMax - 1, "the star \(star.frame) is after the fold")
+        assertAtLeastPoints(star.frame.width, 44, "star \(star.frame)")
+        assertAtLeastPoints(star.frame.height, 44, "star \(star.frame)")
+        assertNothingInteractiveOnTheFold(app, box: box, foldMin: foldMin, foldMax: foldMax, top: track.minY)
+        save(app, "rail-d-duo-open-landscape-book-reported-fold",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
     /// Accessibility text at 820 × 640, regular: still the rail player (`layout.compact` with
@@ -176,8 +218,43 @@ final class RailDLayoutTests: XCTestCase {
              container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
+    /// `fold`: the forced band in container points (#507 rest), checked with
+    /// `assertNothingInteractiveOnTheFold` below the header row. Nil (flat) skips that check.
+    /// #507 rest (-Nova): the rail's ⋯ panel in book pose at accessibility text. It grows inward
+    /// as its rows wrap; it stops at the content column, after the reported fold (352…416), and
+    /// every row stays a 44 pt target.
     @MainActor
-    private func assertDeviceWindowPlayer(_ scenario: String, shot: String) throws {
+    func testOpenLandscapeBookPoseMoreMenuAtAccessibilityTextStaysOffTheFold() throws {
+        let foldMax: CGFloat = 416
+        let app = try launch("railDLandscapeSpreadReportedFold", container: Self.landscape, orientation: .landscapeLeft,
+                             extra: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL",
+                                     "-AeroDJForcePhoneIdiom", "YES"])
+        let box = try settledContainer(app, size: Self.landscape)
+        let any = app.descendants(matching: .any)
+        let rail = any["folded.systemBar"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 15), "the rail\n\(app.debugDescription)")
+        let more = rail.buttons.matching(identifier: "folded.more").firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 5), "⋯ missing from the rail\n\(app.debugDescription)")
+        more.tap()
+        let menu = any["folded.moreMenu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5), "⋯ panel missing\n\(app.debugDescription)")
+        let panel = try XCTUnwrap(settledFrame(of: menu, "⋯ panel"))
+        XCTAssertGreaterThanOrEqual(panel.minX, box.minX + foldMax - 1, "the panel \(panel) reaches the fold")
+        XCTAssertLessThanOrEqual(panel.maxX, rail.frame.minX + 1, "the panel opens inward of the rail")
+        let rows = menu.buttons.matching(NSPredicate(format: "NOT (identifier ENDSWITH %@)", ".label"))
+            .allElementsBoundByIndex.filter { $0.exists && $0.isHittable }
+        XCTAssertFalse(rows.isEmpty, "no rows\n\(app.debugDescription)")
+        for row in rows {
+            assertAtLeastPoints(row.frame.height, 44, "\(row.identifier) \(row.frame)")
+            XCTAssertGreaterThanOrEqual(row.frame.minX, box.minX + foldMax - 1, "\(row.identifier) \(row.frame) on the fold")
+        }
+        save(app, "rail-d-duo-open-landscape-book-more-ax",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
+    }
+
+    @MainActor
+    private func assertDeviceWindowPlayer(_ scenario: String, shot: String,
+                                          fold: (min: CGFloat, max: CGFloat)? = nil) throws {
         let size = CGSize(width: 951, height: 669)
         let app = try launch(scenario, container: size, orientation: .landscapeLeft,
                              extra: ["-AeroDJRailDDeviceWindow", "YES", "-AeroDJForcePhoneIdiom", "YES"])
@@ -243,6 +320,10 @@ final class RailDLayoutTests: XCTestCase {
         assertAtLeastPoints(star.frame.width, 44)
         assertAtLeastPoints(star.frame.height, 44)
         XCTAssertLessThanOrEqual(star.frame.maxX, rail.frame.minX + 1)
+        if let fold {
+            assertNothingInteractiveOnTheFold(app, box: box, foldMin: box.minX + fold.min,
+                                              foldMax: box.minX + fold.max, top: track.minY)
+        }
         save(app, shot, container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 

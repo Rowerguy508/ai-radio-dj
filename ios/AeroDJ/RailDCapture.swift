@@ -30,7 +30,17 @@ struct RailDCaptureContainer: View {
     static let deviceWindowKey = "AeroDJRailDDeviceWindow"
     static let deviceWindowSize = CGSize(width: 951, height: 669)
 
+    /// #507 rest (-Nova): the fold the system reports in book pose, margins included, for
+    /// `railDLandscapeSpreadReportedFold`. A scenario, not launch arguments, as on Stations
+    /// (`StationsLayoutCaptureScenario.reportedFoldBand`): the argument override never reached
+    /// the player on iOS CI (run 45154494478 drew the centred band).
+    static let reportedFoldBand = FoldAwareness.Division(minX: 352, minY: 0, width: 64, height: 640, isActive: true)
+
     static func frame(for scenario: StudioCaptureScenario) -> Frame {
+        sizedFrame(for: scenario)
+    }
+
+    private static func sizedFrame(for scenario: StudioCaptureScenario) -> Frame {
         let frame = baseFrame(for: scenario)
         guard UserDefaults.standard.bool(forKey: deviceWindowKey),
               frame.size == StudioCapture.duoTentContainerSize else { return frame }
@@ -63,6 +73,10 @@ struct RailDCaptureContainer: View {
             return Frame(size: landscape, sizeClass: .regular, sidebar: nil,
                          fold: FoldPoseOverride(hinge: .init(status: .partiallyOpen, angleDegrees: 150),
                                                 divisions: [foldBand]))
+        case .railDLandscapeSpreadReportedFold:
+            return Frame(size: landscape, sizeClass: .regular, sidebar: nil,
+                         fold: FoldPoseOverride(hinge: .init(status: .partiallyOpen, angleDegrees: 150),
+                                                divisions: [reportedFoldBand]))
         case .railDLandscapeCentred:
             return Frame(size: landscape, sizeClass: .regular, sidebar: nil,
                          fold: FoldPoseOverride(hinge: .init(status: .fullyOpen, angleDegrees: 180), divisions: []))

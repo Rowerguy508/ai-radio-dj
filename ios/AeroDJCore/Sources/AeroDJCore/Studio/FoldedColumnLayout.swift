@@ -261,14 +261,21 @@ public struct DuoMoreMenuLayout: Equatable, Sendable {
         self.topGap = topGap
     }
 
-    public static func resolve(safeWidth: Double, safeHeight: Double) -> DuoMoreMenuLayout {
+    /// `leadingLimit` (#507 rest, -Nova): in book pose, the content column's leading edge (after
+    /// the fold). The panel grows inward no further than that, never under one 44 pt target.
+    /// Nil (every other layout) or a non-finite value is today's width.
+    public static func resolve(safeWidth: Double, safeHeight: Double,
+                               leadingLimit: Double? = nil) -> DuoMoreMenuLayout {
         let column = FoldedColumnLayout.duoHorizontal(containerWidth: max(0, safeWidth),
                                                       containerHeight: max(safeHeight, 1),
                                                       artMin: 140, artMax: 420)
         // 8 pt before the rail, then the rest of the safe box. A 220 pt cap clipped
         // "Tune station" once Dynamic Type reached the size the UI tests launch with.
         let trailingGap = min(max(0, safeWidth - 44), column.edgeInset + column.barWidth + 8)
-        let width = max(44, safeWidth - trailingGap)
+        var width = max(44, safeWidth - trailingGap)
+        if let leadingLimit, leadingLimit.isFinite {
+            width = max(44, min(width, safeWidth - trailingGap - leadingLimit))
+        }
         let topGap = min(column.topClearance, max(0, safeHeight - 44))
         let maxHeight = max(44, safeHeight - topGap - 8)
         return DuoMoreMenuLayout(width: width, maxHeight: maxHeight, trailingGap: trailingGap, topGap: topGap)
