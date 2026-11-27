@@ -133,6 +133,26 @@ final class RewindWatchGuardTests: XCTestCase {
         XCTAssertNil(d.pendingSkipLoadCut, "an interruption explains the stop")
     }
 
+    func testAUserPauseEndsTheCappedWatch() {
+        var d = PlaybackBoundaryDetector()
+        var t = armedCappedWatch(&d)
+        _ = d.consume(sample("song-2", 0, t))
+        d.pausedByApp(.userPause)
+        t += window
+        _ = d.consume(sample("song-2", 0, t))
+        XCTAssertFalse(d.takeSkipStartStalled(), "a paused song at 0:00 is the user's pause, not a start that never began")
+    }
+
+    func testAnInterruptionEndsTheCappedWatch() {
+        var d = PlaybackBoundaryDetector()
+        var t = armedCappedWatch(&d)
+        _ = d.consume(sample("song-2", 0, t))
+        d.pausedByApp(.systemInterruption)
+        t += window
+        _ = d.consume(sample("song-2", 0, t))
+        XCTAssertFalse(d.takeSkipStartStalled(), "an interruption explains the stop")
+    }
+
     // MARK: the stall must be one entry's
 
     func testTwoEntriesStoppedAtStartAreNotOneStallForTheRewindWatch() {
