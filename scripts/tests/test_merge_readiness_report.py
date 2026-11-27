@@ -78,10 +78,12 @@ jobs:
 class DispatchOnlyNA(NoNetwork):
     """Dispatch-only jobs are N/A on PR runs, never a missing required check (#653 / #556)."""
 
-    def _report(self, workflows, check_runs=None):
+    def _report(self, workflows, check_runs=None, head_branch=None):
         f = fixture()
         f["workflows"] = workflows
         f["check_runs"] = check_runs if check_runs is not None else f["check_runs"]
+        if head_branch is not None:
+            f["pr"] = dict(f["pr"], head_branch=head_branch)
         return m.build_report(**f)
 
     def test_a_dispatch_only_job_is_na_on_a_pr_and_a_missing_pr_job_is_still_flagged(self):
@@ -167,12 +169,20 @@ jobs:
         self._assert_stays_required(
             "github.event_name == 'workflow_dispatch' && (always())", "Unparseable parens")
 
-    def _assert_on_stays_required(self, workflow, job_name):
-        r = self._report([{"path": IOS, "text": workflow}], check_runs=[])
+    def _assert_on_stays_required(self, workflow, job_name, head_branch=None):
+        r = self._report([{"path": IOS, "text": workflow}], check_runs=[],
+                         head_branch=head_branch)
         self.assertTrue(any(f"{job_name}: missing" in b for b in r["checks"]["bad"]),
                         (workflow, r["checks"]))
         self.assertFalse(any(s.startswith("N/A") for _, s in r["checks"]["rows"]),
                          (workflow, r["checks"]["rows"]))
+
+    def _assert_on_is_na(self, workflow, job_name, head_branch=None):
+        r = self._report([{"path": IOS, "text": workflow}], check_runs=[],
+                         head_branch=head_branch)
+        self.assertTrue(any(job_name in n and s.startswith("N/A") for n, s in r["checks"]["rows"]),
+                        (workflow, r["checks"]["rows"]))
+        self.assertFalse(any(job_name in b for b in r["checks"]["bad"]), r["checks"]["bad"])
 
     def test_pull_request_target_on_stays_required(self):
         """Echo: map, string, and list forms of pull_request_target must stay required."""
@@ -262,6 +272,96 @@ jobs:
         self.assertTrue(any("Scheduled job" in n and s.startswith("N/A") for n, s in r["checks"]["rows"]),
                         r["checks"]["rows"])
         self.assertFalse(r["checks"]["bad"], r["checks"]["bad"])
+
+    def test_unfiltered_push_stays_required(self):
+        """Sentinel: an unfiltered push also fires on same-repo PR branch pushes."""
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+jobs:
+  only:
+    name: Unfiltered push job
+""", "Unfiltered push job", head_branch="atlas/foo")
+        self._assert_on_stays_required("""
+name: Manual
+on: [push]
+jobs:
+  only:
+    name: List push job
+""", "List push job", head_branch="atlas/foo")
+        self._assert_on_stays_required("""
+name: Manual
+on: push
+jobs:
+  only:
+    name: String push job
+""", "String push job", head_branch="atlas/foo")
+
+    def test_push_branches_filter_uses_the_head_branch(self):
+        matching = """
+name: Manual
+on:
+  push:
+    branches: [atlas/foo]
+jobs:
+  only:
+    name: Matching push job
+"""
+        other = """
+name: Manual
+on:
+  push:
+    branches:
+      - main
+jobs:
+  only:
+    name: Other branch job
+"""
+        self._assert_on_stays_required(matching, "Matching push job", head_branch="atlas/foo")
+        self._assert_on_is_na(other, "Other branch job", head_branch="atlas/foo")
+
+    def test_tags_only_push_is_na(self):
+        self._assert_on_is_na("""
+name: Manual
+on:
+  push:
+    tags: [v1.0]
+jobs:
+  only:
+    name: Tags only job
+""", "Tags only job", head_branch="atlas/foo")
+
+    def test_unevaluable_push_filter_fails_closed(self):
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches-ignore: [main]
+jobs:
+  only:
+    name: Ignore filter job
+""", "Ignore filter job", head_branch="atlas/foo")
+        # A branches filter without a head branch cannot be evaluated.
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: [main]
+jobs:
+  only:
+    name: No head job
+""", "No head job")
+        self._assert_on_stays_required("""
+name: Manual
+on:
+  push:
+    branches: [atlas/*]
+    paths: ['ios/**']
+jobs:
+  only:
+    name: Glob paths job
+""", "Glob paths job", head_branch="atlas/foo")
 
 
 class Signs(NoNetwork):
