@@ -68,7 +68,11 @@ final class StationRatingsFeedTests: XCTestCase {
                                  expected: () -> StationRatingRevision) async {
         let deadline = ContinuousClock.now + .seconds(5)
         while feed.stagedRatingRevision != expected(), ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
+            do {
+                try await Task.sleep(for: .milliseconds(10))
+            } catch {
+                break
+            }
         }
     }
 
