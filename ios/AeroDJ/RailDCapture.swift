@@ -107,7 +107,6 @@ struct RailDCaptureContainer: View {
                     NavigationStack { player }
                 }
             }
-            .modifier(CaptureStatusColumn(width: scenario.isRailDCollapsed ? Self.openStatusColumn : 0))
             .environment(\.horizontalSizeClass, frame.sizeClass)
             .environment(\.foldPoseOverride, frame.fold)
             .frame(width: frame.size.width, height: frame.size.height)
@@ -122,6 +121,13 @@ struct RailDCaptureContainer: View {
     /// #460: the trailing status column, or the content unchanged at width 0 (every other frame).
     /// `openDuoWindow` carries the inset to the player: a GeometryReader inside the padded
     /// safe area sees trailing 0, the same gotcha as on the device (read insets at the root).
+    ///
+    /// Applied to the player inside the `NavigationStack` (`player`), never around it: a
+    /// `safeAreaPadding` outside the stack does not reach the stack's content, so the player's
+    /// reader spanned the whole 820 / 640 pt container and the rail, placed in the status column
+    /// past the reader's trailing edge, was drawn outside the clipped container (iOS run
+    /// 45972443266: More at x = container + 4.5 pt, not hittable). Inside the stack the reader
+    /// ends at the column, as on the device, and the rail is drawn in the column. -Nova
     private struct CaptureStatusColumn: ViewModifier {
         let width: CGFloat
         @ViewBuilder func body(content: Content) -> some View {
@@ -148,6 +154,7 @@ struct RailDCaptureContainer: View {
                           DuoStationSwitch.Stop(id: "late-night", name: "Late Night"),
                       ],
                       onOpenStation: { _ in })
+        .modifier(CaptureStatusColumn(width: scenario.isRailDCollapsed ? Self.openStatusColumn : 0))
     }
 }
 #endif

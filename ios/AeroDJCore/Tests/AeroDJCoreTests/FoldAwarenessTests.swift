@@ -390,6 +390,37 @@ final class FoldAwarenessTests: XCTestCase {
         }
     }
 
+    /// iOS run 45972443266 (-Nova): the rail is placed past the reader's trailing edge, in the
+    /// status column, so the reader must end where the column starts. The captures' readers once
+    /// spanned the whole container (the status column never reached them) and Rail D was drawn
+    /// outside it, so no rail control was hittable. Pinned here for the readers the captures now
+    /// give the player, the container less the 73 pt column (upright 640, sideways 820, the
+    /// 500 pt sidebar detail): the rail, plates and all, ends inside the container, in the column.
+    func testTheFlatRailEndsInsideTheContainerWhenTheReaderStopsAtTheStatusColumn() throws {
+        let containers: [(width: Double, height: Double)] = [(640, 764), (820, 576), (500, 576)]
+        for container in containers {
+            let reader = container.width - duoStatusColumn
+            let label = "\(container.width)x\(container.height), reader \(reader)"
+            let m = centredColumn(width: reader, height: container.height)
+            let split = try XCTUnwrap(FoldAwareness.flatRailColumn(containerWidth: reader,
+                                                                   containerHeight: container.height,
+                                                                   column: m.column, artSide: m.artSide,
+                                                                   leadingInset: 0, trailingInset: duoStatusColumn), label)
+            XCTAssertGreaterThanOrEqual(split.railMinX, reader, "the rail is in the status column: \(label)")
+            XCTAssertLessThanOrEqual(split.railMaxX, container.width - RailDLayout.trailingInset + 0.001,
+                                     "the rail ends inside the container: \(label)")
+            XCTAssertLessThanOrEqual(split.columnMaxX, reader + 0.001, "the column stops at the status column: \(label)")
+            // The same placement read against the whole container (the old capture) lands the
+            // rail past the container's trailing edge: that is the run's 'not hittable'.
+            let whole = centredColumn(width: container.width, height: container.height)
+            let outside = try XCTUnwrap(FoldAwareness.flatRailColumn(containerWidth: container.width,
+                                                                     containerHeight: container.height,
+                                                                     column: whole.column, artSide: whole.artSide,
+                                                                     leadingInset: 0, trailingInset: duoStatusColumn), label)
+            XCTAssertGreaterThan(outside.railMinX, container.width, "the old capture's rail: \(label)")
+        }
+    }
+
     /// The Duo turned the other way: a leading status column only. The rail stays on the
     /// column's trailing side, inside the container (`bookRailColumn`).
     func testALeadingStatusColumnKeepsTheRailBesideTheColumn() throws {
