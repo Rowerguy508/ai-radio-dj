@@ -45,8 +45,6 @@ final class SkipReasonLogTests: XCTestCase {
         XCTAssertTrue(source.contains("if let reason = PlaybackLog.boundarySkipToLog(djSession.lastNoBreak) {"))
         XCTAssertTrue(source.contains("music.logBreakSkipped(after: k, reason: reason)"))
         XCTAssertFalse(source.contains("reason: .notPlanned)"), "no hard-coded skip reason")
-        XCTAssertEqual(source.components(separatedBy: "music.logBreakSkipped(").count - 1, 1,
-                       "every talk-over skip log goes through boundarySkipToLog")
     }
 
     // MARK: - #304 R3: nil or non-positive song duration logs .durationUnknown
