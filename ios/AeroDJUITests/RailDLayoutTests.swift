@@ -5,7 +5,8 @@ import UIKit
 /// side (⋯, Play/Pause, Skip, Queue, Sleep, the vertical song-position bar, the live dot) on the
 /// iPhone, the closed Duo and the open Duo; no horizontal progress bar. Each frame of the mock
 /// is a capture (`RailDCaptureContainer`, or the plain capture path on the iPhone), checked and
-/// saved here. Required in ios.yml: rail-d-iphone, rail-d-duo-closed, rail-d-duo-open-portrait,
+/// saved here. Required in ios.yml: rail-d-iphone, rail-d-duo-closed,
+/// rail-d-duo-closed-status-column (build 58 follow-up), rail-d-duo-open-portrait,
 /// rail-d-duo-open-portrait-sidebar, rail-d-duo-open-landscape-spread,
 /// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar. Not required:
 /// rail-d-duo-open-landscape-book-collapsed (#548, the spread's frame with the rail collapsed).
@@ -20,6 +21,8 @@ final class RailDLayoutTests: XCTestCase {
     /// `RailDLayout.railWidth` and `RailDLayout.trailingInset` (spec D: 56 pt glass, 8 pt in).
     private static let railGlassWidth: CGFloat = 56
     private static let railEdgeInset: CGFloat = 8
+    /// `RailDCaptureContainer.closedStatusColumnWidth`: the closed Duo's status column (≈ 73 pt).
+    private static let statusColumn: CGFloat = 73
 
     override func setUp() {
         continueAfterFailure = false
@@ -60,6 +63,36 @@ final class RailDLayoutTests: XCTestCase {
         assertNoHorizontalBar(app)
         try assertClosedChip(app, rail: rail)
         save(app, "rail-d-duo-closed")
+    }
+
+    /// Build 58 follow-up (-Nova): the physical closed Duo has a trailing status column (time,
+    /// battery ring) that the player's reader never sees as its own inset. The capture pads the
+    /// container's trailing safe area by `RailDCaptureContainer.closedStatusColumnWidth` (as the
+    /// device does) and hands the player the same width through `trailingSystemInset`, the value
+    /// `StationSplitRoot` reads at the window root. Owner's call: wherever there is a trailing
+    /// system inset, the rail tucks into it, below the status cluster, right of the art.
+    @MainActor
+    func testClosedDuoRailTucksUnderTheStatusColumn() throws {
+        let app = try launch("railDDuoClosed", container: Self.closed, orientation: .portrait,
+                             extra: ["-AeroDJCaptureClosedStatusColumn", "YES"])
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["folded.outer"].waitForExistence(timeout: 15), "the closed reskin\n\(app.debugDescription)")
+        let box = try settledContainer(app, size: Self.closed)
+        let rail = try assertRail(app, id: "folded.closedRail", hasCollapse: false)
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail), "rail \(rail) left the container \(box)")
+        let art = try XCTUnwrap(settledFrame(of: any["folded.artCard.artwork"], "art"))
+        XCTAssertGreaterThan(rail.minX, art.maxX, "rail \(rail) overlaps the art \(art)")
+        // In the status column: the rail's leading edge is inside it (the column's leading 2.5 pt
+        // of slack aside), not 8 pt in from the column's leading edge as on build 58.
+        let columnMinX = box.maxX - Self.statusColumn
+        XCTAssertGreaterThanOrEqual(rail.minX, columnMinX - 3,
+                                    "rail \(rail) is not under the \(Self.statusColumn) pt status column of \(box)")
+        XCTAssertLessThan(rail.maxX, box.maxX, "rail \(rail) runs off the container \(box)")
+        // Below the status cluster (`DuoStationsLayout.statusColumnClearance`, from the safe top).
+        XCTAssertGreaterThan(rail.minY, art.minY, "rail \(rail) starts above the art \(art): under the cluster")
+        assertNoHorizontalBar(app)
+        try assertClosedChip(app, rail: rail)
+        save(app, "rail-d-duo-closed-status-column", container: any["capture.railDContainer"])
     }
 
     @MainActor

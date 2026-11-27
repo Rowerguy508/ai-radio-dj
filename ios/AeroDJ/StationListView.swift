@@ -293,6 +293,9 @@ struct StationSplitRoot<Detail: View>: View {
         // The player's open-Duo rail reads the window from here. Nil off the open Duo (the
         // default), so every other window's player is unchanged.
         .environment(\.openDuoWindow, openDuoWindowMetrics)
+        // Build 58 follow-up (-Nova): the window's trailing system inset, measured here at the root
+        // (the player's reader sits inside the safe area and reads 0). A value, never an `if`.
+        .environment(\.trailingSystemInset, trailingSystemInset)
         .onGeometryChange(for: CGSize.self) { proxy in
             CGSize(width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
                    height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom)
@@ -329,6 +332,18 @@ struct StationSplitRoot<Detail: View>: View {
                                    window: windowSize, insets: windowInsets, scale: Double(displayScale),
                                    sizeClass: horizontalSizeClass)
         }
+        // Build 58 follow-up: one line when the trailing system inset changes (not per body pass).
+        // Points only: the window's insets and size and the value; no station or user data.
+        .onChange(of: TrailingInsetLog.Key(inset: trailingSystemInset, measured: windowSize.width > 0),
+                  initial: true) { _, key in
+            guard key.measured else { return }
+            TrailingInsetLog.decided(inset: key.inset, window: windowSize, insets: windowInsets)
+        }
+    }
+
+    /// Build 58 follow-up (-Nova): `DuoStationsLayout.trailingSystemInset` on the measured window.
+    private var trailingSystemInset: Double {
+        DuoStationsLayout.trailingSystemInset(leading: windowInsets.leading, trailing: windowInsets.trailing)
     }
 
     /// The window the player's open-Duo rail lines up with: the trailing unsafe column and the
@@ -759,6 +774,25 @@ enum OpenDuoGateLog {
         // The rail's status-column clearance is estimated from the owner's shots, not measured.
         let clearance = String(format: "%.0f", DuoStationsLayout.statusColumnClearance)
         log.notice("stations gate duo \(usesDuoStations, privacy: .public) phone gate \(phone, privacy: .public) idiom phone \(idiomPhone, privacy: .public) model iPhone \(modelIPhone, privacy: .public) hinge \(hasFold, privacy: .public) size class \(sizeClassName, privacy: .public) window \(size, privacy: .public) scale \(scaleText, privacy: .public) safe \(safe, privacy: .public) rail clearance \(clearance, privacy: .public)")
+    }
+}
+
+/// Build 58 follow-up (-Nova): the trailing system inset the window root measured, so the device
+/// confirms what the player will be given. Release-safe: points only.
+enum TrailingInsetLog {
+    struct Key: Equatable {
+        var inset: Double
+        var measured: Bool
+    }
+
+    private static let log = Logger(subsystem: "com.aerodj.app", category: "layout")
+
+    static func decided(inset: Double, window: CGSize, insets: OpenDuoGateLog.Insets) {
+        let size = String(format: "%.0fx%.0f", Double(window.width), Double(window.height))
+        let safe = String(format: "t%.0f l%.0f b%.0f r%.0f", insets.top, insets.leading,
+                          insets.bottom, insets.trailing)
+        let value = String(format: "%.1f", inset)
+        log.notice("trailing system inset \(value, privacy: .public) window \(size, privacy: .public) safe \(safe, privacy: .public)")
     }
 }
 
