@@ -1256,14 +1256,33 @@ private final class Show {
         XCTAssertFalse(coordinator.isInFlight, name, file: file, line: line)
     }
 
+    /// Waits until the skip load is sitting in the test gate, or the deadline elapses.
+    /// The existing assert still fails by name if the load never arrived.
     func untilLoadSuspended() async {
-        for _ in 0..<1000 where !gate.isWaiting { await Task.yield() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !gate.isWaiting, ContinuousClock.now < deadline {
+            do {
+                try await Task.sleep(for: .milliseconds(10))
+            } catch {
+                break
+            }
+        }
         XCTAssertTrue(gate.isWaiting, "the skip load is in flight")
     }
 
-    func untilIdle() async {
-        for _ in 0..<1000 where coordinator.isInFlight || gate.isWaiting { await Task.yield() }
-        XCTAssertFalse(coordinator.isInFlight)
+    /// Waits until the coordinator is idle and the test gate is not holding a load, or the
+    /// deadline elapses. The existing assert still fails by name if a skip is still in flight.
+    func untilIdle(file: StaticString = #filePath, line: UInt = #line) async {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while coordinator.isInFlight || gate.isWaiting, ContinuousClock.now < deadline {
+            do {
+                try await Task.sleep(for: .milliseconds(10))
+            } catch {
+                break
+            }
+        }
+        XCTAssertFalse(coordinator.isInFlight, file: file, line: line)
+        XCTAssertFalse(gate.isWaiting, file: file, line: line)
     }
 
     func untilDropsSettle() async {
