@@ -34,6 +34,7 @@ jobs:
     outputs:
       ios: ${{ steps.filter.outputs.ios }}
       core: ${{ steps.filter.outputs.core }}
+      systembars: ${{ steps.filter.outputs.systembars }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -57,6 +58,21 @@ jobs:
               - 'docs/site/HOLD-pro.md'
               - 'docs/site/DRAFT-privacy-tester-voice.md'
               - 'docs/PRIVACY_MATRIX.md'
+            # #683: the Xcode 27.2 iPad system-vertical-bar owner shots. A skipped
+            # job reports success, so this can stay a required check without
+            # spending a hosted Mac when none of these paths changed. -Nova
+            systembars:
+              - 'ios/AeroDJUITests/SystemVerticalBarsCaptureTests.swift'
+              - 'ios/AeroDJCore/Sources/AeroDJCore/Studio/SystemVerticalBarsCapture.swift'
+              - 'ios/AeroDJCore/Tests/AeroDJCoreTests/SystemVerticalBarsCaptureTests.swift'
+              - 'ios/AeroDJ/SystemVerticalBarsCapture.swift'
+              - 'ios/AeroDJ/DuoVerticalRail.swift'
+              - 'ios/AeroDJ/PlayingScreen.swift'
+              - 'ios/AeroDJ/FoldedPlayer.swift'
+              - 'ios/AeroDJ/StudioCapture.swift'
+              - 'ios/AeroDJ/RailDCapture.swift'
+              - 'ios/AeroDJ/StationListView.swift'
+              - '.github/workflows/ios.yml'
 
   core-tests:
     name: AeroDJCore tests
@@ -1342,12 +1358,13 @@ jobs:
   # which compiles the toolbar out, and the Duo UI job's 466 x 678 window skips these
   # tests (that skip is unchanged). This job uses the same hosted xcode-27 image as
   # Duo UI, an iOS 27.2 iPad, and requires the four PNGs the same way Studio shots
-  # are required (ls / grep on the shot prefix). App code is not changed. Fry owns
-  # ios.yml.
+  # are required (ls / grep on the shot prefix). Gated on changes.outputs.systembars;
+  # a skipped job reports success, like the other iOS jobs. App code is not changed.
+  # Fry owns ios.yml.
   system-vertical-bars-ipad:
     name: System vertical bar captures (Xcode 27.2, iPad)
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    if: needs.changes.outputs.systembars == 'true'
     runs-on: xcode-27
     timeout-minutes: 80
     env:
