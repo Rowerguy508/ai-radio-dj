@@ -59,6 +59,15 @@ final class StationRatingsFeedTests: XCTestCase {
         book.bias(recipeID: nil, configuration: Self.station, today: Self.today).revision
     }
 
+    /// Waits until the staged queue carries the current ratings, or the deadline elapses.
+    /// The caller's existing asserts still fail by name if the rebuild did not finish.
+    private func waitUntilStaged(_ feed: StationQueueFeed<String>) async {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while feed.stagedRatingRevision != current(feed), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     // MARK: Revision
 
     func testARatingRebuildsTheStagedQueueWithoutAStationChange() async {
@@ -109,7 +118,7 @@ final class StationRatingsFeedTests: XCTestCase {
         XCTAssertEqual(refill?.first, "q1", "a rating never strands the station")
         XCTAssertEqual(refill?.count, 12, "the stale queue is handed over screened")
         XCTAssertEqual(refill?.contains("first-core-2"), false, "a just-marked never song never plays, not even once")
-        for _ in 0..<200 where f.stagedRatingRevision != current(f) { await Task.yield() }
+        await waitUntilStaged(f)
         XCTAssertEqual(f.stagedRatingRevision, current(f), "the next refill is rebuilt with the rating")
         f.handOffFinished(.started)
         let next = f.queueForNextSong(after: 0, in: ["r0", "r1"], active: Self.station, playbackMayStart: true, sameSong: ==) ?? []
@@ -122,7 +131,7 @@ final class StationRatingsFeedTests: XCTestCase {
         _ = await f.prepare(Self.station)
         never("first-related-0")
         f.ratingsChanged(Self.station)
-        for _ in 0..<200 where f.stagedRatingRevision != current(f) { await Task.yield() }
+        await waitUntilStaged(f)
         XCTAssertEqual(f.stagedRatingRevision, current(f))
         XCTAssertEqual(f.stagedCount, 11)
     }
