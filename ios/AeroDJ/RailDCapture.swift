@@ -120,11 +120,17 @@ struct RailDCaptureContainer: View {
     }
 
     /// #460: the trailing status column, or the content unchanged at width 0 (every other frame).
+    /// `openDuoWindow` carries the inset to the player: a GeometryReader inside the padded
+    /// safe area sees trailing 0, the same gotcha as on the device (read insets at the root).
     private struct CaptureStatusColumn: ViewModifier {
         let width: CGFloat
         @ViewBuilder func body(content: Content) -> some View {
             if width > 0 {
-                content.safeAreaPadding(.trailing, width)
+                content
+                    .safeAreaPadding(.trailing, width)
+                    .environment(\.openDuoWindow, OpenDuoWindowMetrics(
+                        trailingInset: width,
+                        railTop: CGFloat(RailDLayout.closedVerticalInset)))
             } else {
                 content
             }
