@@ -7,7 +7,8 @@ import UIKit
 /// is a capture (`RailDCaptureContainer`, or the plain capture path on the iPhone), checked and
 /// saved here. Required in ios.yml: rail-d-iphone, rail-d-duo-closed,
 /// rail-d-duo-closed-status-column (build 58 follow-up),
-/// rail-d-duo-closed-status-column-ax5 (AX5 overflow follow-up), rail-d-duo-open-portrait,
+/// rail-d-duo-closed-status-column-ax5 (AX5 overflow follow-up),
+/// rail-d-duo-closed-status-column-ax3 (owner, Nov 27: names wrap at large text), rail-d-duo-open-portrait,
 /// rail-d-duo-open-portrait-sidebar, rail-d-duo-open-landscape-spread,
 /// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar. Not required:
 /// rail-d-duo-open-landscape-book-collapsed (#548, the spread's frame with the rail collapsed).
@@ -101,12 +102,42 @@ final class RailDLayoutTests: XCTestCase {
     /// overflow the 56 pt rail. Same status-column capture as above, at AX5; those three
     /// icons must stay inside the rail, and the shot is rail-d-duo-closed-status-column-ax5.
     /// Art may drop in ViewThatFits at AX5, so this does not require the art card. -Nova
+    ///
+    /// Owner (Nov 27, 2026, relayed by Orion): "Fix the cut-off station and song names at large
+    /// text first." The same launch now also checks the station, song and artist names carry the
+    /// fixture's full strings and wrap instead of truncating ("Morni…" on the #668 shot). -Nova
     @MainActor
     func testClosedDuoRailTucksUnderTheStatusColumnAtAX5() throws {
+        try assertStatusColumnAtAccessibilitySize(Self.ax5, shot: "rail-d-duo-closed-status-column-ax5",
+                                                  requiresWrap: true)
+    }
+
+    /// Owner (Nov 27): the AX3 sibling of the shot above, same checks. At AX3 a name that fits
+    /// on one line may stay one line; one that does not must wrap. -Nova
+    @MainActor
+    func testClosedDuoRailTucksUnderTheStatusColumnAtAX3() throws {
+        try assertStatusColumnAtAccessibilitySize(Self.ax3, shot: "rail-d-duo-closed-status-column-ax3",
+                                                  requiresWrap: false)
+    }
+
+    /// `UICTContentSizeCategoryAccessibilityXXXL` (AX5) and `…AccessibilityXL` (AX3).
+    private static var ax5: (launch: String, category: UIContentSizeCategory) {
+        ("UICTContentSizeCategoryAccessibilityXXXL", .accessibilityExtraExtraExtraLarge)
+    }
+    private static var ax3: (launch: String, category: UIContentSizeCategory) {
+        ("UICTContentSizeCategoryAccessibilityXL", .accessibilityExtraLarge)
+    }
+    /// `PlaybackFixtures.station` and `PlaybackFixtures.songs[0]`, the capture's playing song.
+    private static let fixtureStation = "Morning Calm"
+    private static let fixtureTitle = "Morning Light"
+    private static let fixtureArtist = "The Calm Collective"
+
+    @MainActor
+    private func assertStatusColumnAtAccessibilitySize(_ size: (launch: String, category: UIContentSizeCategory),
+                                                       shot: String, requiresWrap: Bool) throws {
         let app = try launch("railDDuoClosed", container: Self.closed, orientation: .portrait,
                              extra: ["-AeroDJCaptureClosedStatusColumn", "YES",
-                                     "-UIPreferredContentSizeCategoryName",
-                                     "UICTContentSizeCategoryAccessibilityXXXL"])
+                                     "-UIPreferredContentSizeCategoryName", size.launch])
         let any = app.descendants(matching: .any)
         XCTAssertTrue(any["folded.outer"].waitForExistence(timeout: 15), "the closed reskin\n\(app.debugDescription)")
         let box = try settledContainer(app, size: Self.closed)
@@ -123,8 +154,55 @@ final class RailDLayoutTests: XCTestCase {
             XCTAssertLessThanOrEqual(frame.width, Self.railGlassWidth + 1,
                                      "\(id) \(frame) is wider than the 56 pt glass")
         }
+        // The names: full strings, inside the column left of the rail, and wrapped wherever one
+        // line cannot hold them. Sizes are FoldedOuterHeader / FoldedOuterTitleRow's
+        // @ScaledMetric bases (17 headline; RailDLayout.closedTitlePointSize 40 largeTitle with
+        // -0.6 tracking; RailDLayout.closedArtistPointSize 17 subheadline).
+        var wrapped = 0
+        wrapped += try assertNameNotTruncated(app, id: "station.title.name", text: Self.fixtureStation,
+                                              style: .headline, base: 17, weight: .heavy,
+                                              category: size.category, box: box, rail: rail)
+        wrapped += try assertNameNotTruncated(app, id: "folded.titleBlock.title", text: Self.fixtureTitle,
+                                              style: .largeTitle, base: 40, weight: .heavy, tracking: -0.6,
+                                              category: size.category, box: box, rail: rail)
+        wrapped += try assertNameNotTruncated(app, id: "folded.titleBlock.artist", text: Self.fixtureArtist,
+                                              style: .subheadline, base: 17, weight: .semibold,
+                                              category: size.category, box: box, rail: rail)
+        if requiresWrap {
+            // At AX5 the song title cannot fit one line beside the rail (the #668 shot's "Morni…"),
+            // so the check above must have seen at least it wrap.
+            XCTAssertGreaterThanOrEqual(wrapped, 1, "no name needed to wrap at AX5: the check is not testing anything")
+        }
         assertNoHorizontalBar(app)
-        save(app, "rail-d-duo-closed-status-column-ax5", container: any["capture.railDContainer"])
+        save(app, shot, container: any["capture.railDContainer"])
+    }
+
+    /// The name's exposed frame (`CaptureNameFrames`, status-column capture only) carries the full
+    /// string, starts on screen, stays left of the rail, and is more than one line tall whenever
+    /// its single-line width at this size is wider than the frame: that is, it wrapped instead of
+    /// truncating. Returns 1 when it had to wrap.
+    @MainActor
+    private func assertNameNotTruncated(_ app: XCUIApplication, id: String, text: String,
+                                        style: UIFont.TextStyle, base: CGFloat, weight: UIFont.Weight,
+                                        tracking: CGFloat = 0, category: UIContentSizeCategory,
+                                        box: CGRect, rail: CGRect,
+                                        file: StaticString = #filePath, line: UInt = #line) throws -> Int {
+        let element = app.descendants(matching: .any)[id]
+        XCTAssertTrue(element.waitForExistence(timeout: 5), "\(id) missing\n\(app.debugDescription)", file: file, line: line)
+        XCTAssertEqual(element.label, text, "\(id) is not the full name", file: file, line: line)
+        let frame = try XCTUnwrap(settledFrame(of: element, id), file: file, line: line)
+        XCTAssertGreaterThanOrEqual(frame.minX, box.minX - 1, "\(id) \(frame) starts off the container", file: file, line: line)
+        XCTAssertLessThanOrEqual(frame.maxX, rail.minX + 1, "\(id) \(frame) runs under the rail \(rail)", file: file, line: line)
+        XCTAssertLessThan(frame.minY, box.maxY, "\(id) \(frame) is below the window", file: file, line: line)
+        let traits = UITraitCollection(preferredContentSizeCategory: category)
+        let pointSize = UIFontMetrics(forTextStyle: style).scaledValue(for: base, compatibleWith: traits)
+        let font = UIFont.systemFont(ofSize: pointSize, weight: weight)
+        let oneLine = (text as NSString).size(withAttributes: [.font: font]).width + tracking * CGFloat(text.count)
+        guard oneLine > frame.width + 2 else { return 0 }
+        XCTAssertGreaterThan(frame.height, font.lineHeight * 1.5,
+                             "\(id) \(frame) is one line but \(text) needs \(oneLine) pt at \(pointSize) pt: truncated",
+                             file: file, line: line)
+        return 1
     }
 
     @MainActor

@@ -143,6 +143,24 @@ final class FoldedOuterLayoutTests: XCTestCase {
         XCTAssertEqual(FoldedOuterLayout.artistLineLimit, 1)
     }
 
+    /// Owner (Nov 27): names wrap at accessibility sizes beside the closed Duo's status column
+    /// only. Default sizes and the iPhone (no trailing inset) keep one line.
+    func testNamesWrapOnlyAtAccessibilitySizesWithATrailingInset() {
+        for inset in [73.0, 59, 1] {
+            XCTAssertNil(FoldedOuterLayout.nameLineLimit(1, accessibilityText: true, trailingSystemInset: inset), "\(inset)")
+            XCTAssertTrue(FoldedOuterLayout.wrapsNames(accessibilityText: true, trailingSystemInset: inset))
+        }
+        for inset in [0.0, 0.5, -12, .nan, .infinity] {
+            XCTAssertEqual(FoldedOuterLayout.nameLineLimit(1, accessibilityText: true, trailingSystemInset: inset), 1, "\(inset)")
+            XCTAssertFalse(FoldedOuterLayout.wrapsNames(accessibilityText: true, trailingSystemInset: inset))
+        }
+        for inset in [0.0, 73] {
+            XCTAssertEqual(FoldedOuterLayout.nameLineLimit(1, accessibilityText: false, trailingSystemInset: inset), 1)
+            XCTAssertEqual(FoldedOuterLayout.nameLineLimit(FoldedOuterLayout.titleLineLimit, accessibilityText: false,
+                                                           trailingSystemInset: inset), FoldedOuterLayout.titleLineLimit)
+        }
+    }
+
     func testFreedSpaceGoesToTheArt() {
         // The NEXT row (44 + 12) and the Playing-from toolbar (52 + 12 + 8) are gone.
         XCTAssertEqual(FoldedOuterLayout.artReserveBelowBefore537 - FoldedOuterLayout.artReserveBelow, 128)

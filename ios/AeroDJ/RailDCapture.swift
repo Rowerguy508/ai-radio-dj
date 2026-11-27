@@ -44,6 +44,11 @@ struct RailDCaptureContainer: View {
     /// `folded.artCard.*` in the tree). Accessibility only; no pixel changes.
     static var exposesArtCard: Bool { UserDefaults.standard.bool(forKey: closedStatusColumnKey) }
 
+    /// Owner (Nov 27, -Nova): the same launch exposes the station, song and artist Texts' own
+    /// frames (`CaptureNameFrames` in FoldedPlayer.swift) so the AX tests can check the names
+    /// wrap instead of truncating. Accessibility only; a 0.001-alpha fill in that capture only.
+    static var exposesNameFrames: Bool { UserDefaults.standard.bool(forKey: closedStatusColumnKey) }
+
     /// The injected column width for this scenario: 0 unless the launch asks for it on the closed Duo.
     static func closedStatusColumn(for scenario: StudioCaptureScenario) -> Double {
         guard scenario.railDFrame == .railDDuoClosed,

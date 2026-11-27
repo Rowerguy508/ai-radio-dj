@@ -43,6 +43,23 @@ public enum FoldedOuterLayout {
     /// line each, truncated at the tail. VoiceOver still reads both in full.
     public static let titleLineLimit = 1
     public static let artistLineLimit = 1
+
+    /// Owner (Nov 27, 2026, relayed by Orion): "Fix the cut-off station and song names at large
+    /// text first." At accessibility sizes in the closed Duo's status-column layout (a trailing
+    /// system inset, the window value #626 tucks the rail into), the station, song and artist
+    /// names wrap instead of truncating (HIG Dynamic Type: let text wrap, let the layout grow).
+    /// Nil is SwiftUI's unlimited `lineLimit`. Every other case returns `oneLine` unchanged: the
+    /// default sizes, and the iPhone (no trailing inset) at every size, so iPhone snapshots,
+    /// including its AX captures, stay byte-identical.
+    public static func nameLineLimit(_ oneLine: Int, accessibilityText: Bool,
+                                     trailingSystemInset: Double) -> Int? {
+        wrapsNames(accessibilityText: accessibilityText, trailingSystemInset: trailingSystemInset) ? nil : oneLine
+    }
+
+    /// True when `nameLineLimit` lets the names wrap (and the header centres its wrapped lines).
+    public static func wrapsNames(accessibilityText: Bool, trailingSystemInset: Double) -> Bool {
+        accessibilityText && trailingSystemInset.isFinite && trailingSystemInset > 0.5
+    }
     /// Height kept for the header, title, DJ line and pinned controls under the art at
     /// default text sizes (accessibility sizes use `FoldedStyle.artReserveAccessibility`).
     /// #537 gives the art what the NEXT row (44 + 12) and the Playing-from toolbar

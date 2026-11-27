@@ -1565,6 +1565,16 @@ private struct FoldedOuterHeader: View {
     let heading: StationHeading
     let dismiss: () -> Void
     @ScaledMetric(relativeTo: .headline) private var stationNameSize: CGFloat = 17
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.trailingSystemInset) private var trailingSystemInset
+    @Environment(\.railDSliceTitle) private var sliceTitle
+
+    /// Owner (Nov 27): the name wraps at accessibility sizes beside the closed Duo's status
+    /// column (`FoldedOuterLayout.wrapsNames`). The split slices and every other case keep one line.
+    private var wraps: Bool {
+        sliceTitle == nil && FoldedOuterLayout.wrapsNames(accessibilityText: typeSize.isAccessibilitySize,
+                                                          trailingSystemInset: trailingSystemInset)
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1590,13 +1600,16 @@ private struct FoldedOuterHeader: View {
                 Text(heading.header.name)
                     .font(.system(size: stationNameSize, weight: .heavy))
                     .foregroundStyle(.white)
-                    .lineLimit(1)
+                    .lineLimit(wraps ? nil : 1)
+                    .modifier(WrappedName(wraps: wraps, alignment: .center))
+                    .modifier(CaptureNameAnchor(id: "station.title.name", label: heading.header.name))
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Station, \(heading.header.name)")
             .accessibilityAddTraits(.isHeader)
             // #537: the header names the station now that the Playing-from chip is gone.
             .accessibilityIdentifier("station.title")
+            .modifier(CaptureNameFrames())
             Spacer(minLength: 0)
             Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
         }
@@ -1618,6 +1631,16 @@ private struct FoldedOuterTitleRow: View {
     @Environment(\.railDSliceTitle) private var sliceTitle
     @ScaledMetric(relativeTo: .largeTitle) private var sliceOpenTitleSize = CGFloat(RailDLayout.openTitlePointSize)
     @ScaledMetric(relativeTo: .largeTitle) private var sliceColumnTitleSize = CGFloat(RailDLayout.railColumnTitlePointSize)
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.trailingSystemInset) private var trailingSystemInset
+
+    /// Owner (Nov 27): the song and artist names wrap at accessibility sizes beside the closed
+    /// Duo's status column (`FoldedOuterLayout.nameLineLimit`); the upper part's ViewThatFits /
+    /// ScrollView takes the extra height. The split slices keep their own limit.
+    private var wraps: Bool {
+        sliceTitle == nil && FoldedOuterLayout.wrapsNames(accessibilityText: typeSize.isAccessibilitySize,
+                                                          trailingSystemInset: trailingSystemInset)
+    }
 
     private var resolvedTitleSize: CGFloat {
         switch sliceTitle {
@@ -1638,13 +1661,21 @@ private struct FoldedOuterTitleRow: View {
                 .font(.system(size: resolvedTitleSize, weight: .heavy))
                 .tracking(-0.6)
                 .foregroundStyle(.white)
-                .lineLimit(sliceTitle == nil ? FoldedOuterLayout.titleLineLimit : SplitViewLayout.sliceTitleLineLimit)
+                .lineLimit(sliceTitle == nil
+                           ? FoldedOuterLayout.nameLineLimit(FoldedOuterLayout.titleLineLimit,
+                                                             accessibilityText: typeSize.isAccessibilitySize,
+                                                             trailingSystemInset: trailingSystemInset)
+                           : SplitViewLayout.sliceTitleLineLimit)
                 .truncationMode(.tail)
+                .modifier(WrappedName(wraps: wraps, alignment: .leading))
+                .modifier(CaptureNameAnchor(id: "folded.titleBlock.title", label: track.title))
             Text(track.artistName)
                 .font(.system(size: artistSize, weight: .semibold))
                 .foregroundStyle(FoldedStyle.secondaryInk)
-                .lineLimit(FoldedOuterLayout.artistLineLimit)
+                .lineLimit(wraps ? nil : FoldedOuterLayout.artistLineLimit)
                 .truncationMode(.tail)
+                .modifier(WrappedName(wraps: wraps, alignment: .leading))
+                .modifier(CaptureNameAnchor(id: "folded.titleBlock.artist", label: track.artistName))
             if isTestStation, !statusPinned {
                 FoldedTestStationTag().padding(.top, 2)
             }
@@ -1654,6 +1685,7 @@ private struct FoldedOuterTitleRow: View {
         .accessibilityLabel("\(track.title), \(track.artistName)")
         .accessibilityAddTraits(.isHeader)
         .accessibilityIdentifier("folded.titleBlock")
+        .modifier(CaptureNameFrames())
     }
 }
 
@@ -2914,6 +2946,97 @@ private struct ArtCardTestExposure: ViewModifier {
         #endif
     }
 }
+
+/// Owner (Nov 27, -Nova): a wrapped name (`FoldedOuterLayout.wrapsNames`) takes the height its
+/// lines need and aligns them like its block. `wraps == false` returns the Text as is, so the
+/// default sizes and the iPhone draw exactly what they drew before.
+private struct WrappedName: ViewModifier {
+    let wraps: Bool
+    let alignment: TextAlignment
+
+    func body(content: Content) -> some View {
+        if wraps {
+            content
+                .multilineTextAlignment(alignment)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            content
+        }
+    }
+}
+
+/// Owner (Nov 27) names-wrap UI test (-Nova): the station, song and artist Texts sit inside
+/// `.accessibilityElement(children: .ignore)` blocks (VoiceOver reads one label), so XCUITest
+/// cannot see their own frames. Under the status-column capture launch only
+/// (`RailDCaptureContainer.exposesNameFrames`, DEBUG), each Text reports its bounds and the block
+/// overlays a label-only, non-hit-testable element with the full string at those bounds, so
+/// `RailDLayoutTests` can check that the name wrapped instead of truncating. Everywhere else,
+/// and in Release, both modifiers return the content as is.
+private struct CaptureNameAnchor: ViewModifier {
+    let id: String
+    let label: String
+
+    func body(content: Content) -> some View {
+        #if DEBUG
+        if RailDCaptureContainer.exposesNameFrames {
+            content.anchorPreference(key: CaptureNameFramesKey.self, value: .bounds) {
+                [id: CaptureNameFrame(label: label, bounds: $0)]
+            }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+private struct CaptureNameFrames: ViewModifier {
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    func body(content: Content) -> some View {
+        #if DEBUG
+        // Accessibility sizes only, so the default-size status-column shot keeps its pixels.
+        if RailDCaptureContainer.exposesNameFrames && typeSize.isAccessibilitySize {
+            content.overlayPreferenceValue(CaptureNameFramesKey.self) { frames in
+                GeometryReader { proxy in
+                    ForEach(frames.keys.sorted(), id: \.self) { id in
+                        if let frame = frames[id] {
+                            let rect = proxy[frame.bounds]
+                            Rectangle()
+                                .fill(Color.white.opacity(0.001))
+                                .frame(width: rect.width, height: rect.height)
+                                .position(x: rect.midX, y: rect.midY)
+                                .allowsHitTesting(false)
+                                .accessibilityElement()
+                                .accessibilityLabel(frame.label)
+                                .accessibilityIdentifier(id)
+                        }
+                    }
+                }
+            }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+#if DEBUG
+private struct CaptureNameFrame {
+    let label: String
+    let bounds: Anchor<CGRect>
+}
+
+private struct CaptureNameFramesKey: PreferenceKey {
+    static var defaultValue: [String: CaptureNameFrame] { [:] }
+    static func reduce(value: inout [String: CaptureNameFrame], nextValue: () -> [String: CaptureNameFrame]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+#endif
 
 /// Build 54 follow-up (-Nova): the open-Duo window as `StationSplitRoot` measured it, for the
 /// player's rail. `trailingInset` is the window's trailing unsafe width (the device's status
