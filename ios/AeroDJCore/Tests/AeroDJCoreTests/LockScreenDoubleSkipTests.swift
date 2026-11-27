@@ -1282,6 +1282,7 @@ private final class Show {
             }
         }
         XCTAssertFalse(coordinator.isInFlight, file: file, line: line)
+        XCTAssertFalse(gate.isWaiting, file: file, line: line)
     }
 
     func untilDropsSettle() async {
