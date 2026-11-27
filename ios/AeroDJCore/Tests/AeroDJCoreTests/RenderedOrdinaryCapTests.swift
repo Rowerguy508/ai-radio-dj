@@ -320,6 +320,37 @@ final class SessionOrdinaryCapReportTests: XCTestCase {
         XCTAssertFalse(session.ordinaryCapReport.skippedOverCap.contains(k))
     }
 
+    /// #329 (-Fry): the boundary rebuild (a cue dropped after render, here one naming a song the
+    /// station now leaves out) keeps the measured-audio cap's `trimmedCueIDs`, so the session's
+    /// report still counts the trimmed line.
+    func testTrimmedCueIDsSurviveTheBoundaryRebuild() async throws {
+        let (session, preparer, _) = await makeSession(seconds: ["Rain later": 3.0], defaultSeconds: 5.5)
+        let (k, planned) = try firstTrimmableBreak(in: session)
+        let extraCue = try XCTUnwrap(planned.cues.first { $0.text.hasPrefix("Rain later") })
+        let (dropped, songIDs) = try XCTUnwrap(planned.cues.lazy.compactMap { cue -> (UUID, [String])? in
+            guard !planned.optionalCueIDs.contains(cue.id),
+                  case .trackMetadata(let ids, _)? = planned.attributions[cue.id], !ids.isEmpty else { return nil }
+            return (cue.id, ids)
+        }.first, "expected a required cue attributed to a song")
+
+        let waitTask = Task { await waitForPrepared(preparer: preparer, afterTrack: k) }
+        await Task.yield()
+        await session.songStarted(index: k, remaining: .seconds(10))
+        await waitTask.value
+
+        var droppedCounts: [ExcludedCueCounts] = []
+        session.onExcludedCuesDropped = { at, counts in if at == k { droppedCounts.append(counts) } }
+        session.songsExcluded(Set(songIDs))
+        let rawAired = await session.naturalBoundary(afterTrack: k)
+        let aired = try XCTUnwrap(rawAired, "one required line is left, so the break still airs")
+
+        XCTAssertEqual(droppedCounts.count, 1, "the excluded song's cue is dropped at the boundary")
+        XCTAssertFalse(aired.cues.contains { $0.id == dropped }, "the rebuilt break leaves the excluded cue out")
+        XCTAssertTrue(aired.trimmedCueIDs.contains(extraCue.id), "the rebuild keeps the measured-audio trims")
+        XCTAssertEqual(session.ordinaryCapReport.trimmedOptionalLines[k], aired.trimmedCueIDs.count)
+        XCTAssertFalse(session.ordinaryCapReport.skippedOverCap.contains(k))
+    }
+
     func testTrimmedCueIDsSurviveNaturalBoundaryCueFilterRebuild() async throws {
         let (session, preparer, tracks) = await makeSession(seconds: ["Rain later": 3.0], defaultSeconds: 5.5)
         let (k, planned) = try firstTrimmableBreak(in: session)
