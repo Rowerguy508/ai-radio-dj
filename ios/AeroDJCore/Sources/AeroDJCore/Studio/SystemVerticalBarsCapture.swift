@@ -27,16 +27,28 @@ public enum SystemVerticalBarsCapture {
             raw.flatMap(Scenario.init(rawValue:))
         }
 
+        /// Shot file prefix, including the capture frame the test sets (for example
+        /// `system-vertical-bars-820x640-open-landscape`). The UI test rebuilds this from
+        /// the settled container so the name matches the size it read.
         public var shotName: String {
-            switch self {
-            case .duoOpenPortrait: "system-vertical-bars-duo-open-portrait"
-            case .duoOpenLandscape: "system-vertical-bars-duo-open-landscape"
-            }
+            Self.shotName(width: containerWidth, height: containerHeight,
+                          landscape: self == .duoOpenLandscape)
         }
 
         /// The same frame after Collapse (`folded.collapse`), for the owner's open question
         /// "should Collapse keep a rail at all?".
-        public var collapsedShotName: String { shotName + "-collapsed" }
+        public var collapsedShotName: String {
+            Self.shotName(width: containerWidth, height: containerHeight,
+                          landscape: self == .duoOpenLandscape, collapsed: true)
+        }
+
+        public static func shotName(width: Double, height: Double, landscape: Bool,
+                                    collapsed: Bool = false) -> String {
+            let w = Int(width.rounded())
+            let h = Int(height.rounded())
+            let pose = landscape ? "open-landscape" : "open-portrait"
+            return "system-vertical-bars-\(w)x\(h)-\(pose)" + (collapsed ? "-collapsed" : "")
+        }
 
         public var containerWidth: Double {
             switch self {

@@ -1,17 +1,22 @@
 import XCTest
 import UIKit
 
-/// #465 item 1, DEBUG capture only (-Nova): the open Duo with the iOS 27.1 system vertical bar
-/// in place of Rail D, for the owner's decision. Launched with `-AeroDJCaptureSystemVerticalBars
-/// YES`; the frames are Rail D's (640 x 820 compact, 820 x 640 regular with a flat hinge).
+/// #465 item 1 / #652, DEBUG capture only (-Nova): the open Duo with the iOS 27.1 system
+/// vertical bar in place of Rail D, for the owner's decision. Launched with
+/// `-AeroDJCaptureSystemVerticalBars YES`. The frames are Rail D's (640 x 820 compact, 820 x 640
+/// regular with a flat hinge), sized by the existing Studio capture container, not by a device
+/// check.
 ///
 /// Skips, never fails, where the shot can't be real:
-/// - a window smaller than the frame (the hosted iPhone Duo window, 466 x 678, and every iPhone),
+/// - a window smaller than the frame (the hosted iPhone Duo window, 466 x 678, and every iPhone).
+///   This skip is unchanged, so the Duo UI job is unchanged.
 /// - a binary or OS without the vertical bar (`capture.systemVerticalBars` reads `railD`: the
-///   Xcode 26.6 / iOS 26.5 SDK lanes compile the toolbar out).
-/// Shots (not required in ios.yml): system-vertical-bars-duo-open-portrait,
-/// system-vertical-bars-duo-open-portrait-collapsed, system-vertical-bars-duo-open-landscape,
-/// system-vertical-bars-duo-open-landscape-collapsed.
+///   Xcode 26.6 / iOS 26.5 SDK lanes, including today's Studio UI job, compile the toolbar out).
+///
+/// Required in ios.yml (Xcode 27.2 iPad job, same grep style as Studio shots), named from the
+/// settled capture-frame size the test sets and reads:
+/// system-vertical-bars-640x820-open-portrait, system-vertical-bars-640x820-open-portrait-collapsed,
+/// system-vertical-bars-820x640-open-landscape, system-vertical-bars-820x640-open-landscape-collapsed.
 ///
 /// Whether iOS draws the bar vertically is the system's call (`toolbarVerticalBehavior(.automatic)`
 /// resolves by device and window), so the axis is recorded in the attachment, not asserted.
@@ -31,20 +36,18 @@ final class SystemVerticalBarsCaptureTests: XCTestCase {
 
     @MainActor
     func testOpenPortraitSystemVerticalBars() throws {
-        try run("systemVerticalBarsDuoOpenPortrait", size: Self.portrait, orientation: .portrait,
-                shot: "system-vertical-bars-duo-open-portrait")
+        try run("systemVerticalBarsDuoOpenPortrait", size: Self.portrait, orientation: .portrait)
     }
 
     @MainActor
     func testOpenLandscapeSystemVerticalBars() throws {
-        try run("systemVerticalBarsDuoOpenLandscape", size: Self.landscape, orientation: .landscapeLeft,
-                shot: "system-vertical-bars-duo-open-landscape")
+        try run("systemVerticalBarsDuoOpenLandscape", size: Self.landscape, orientation: .landscapeLeft)
     }
 
     // MARK: Flow
 
     @MainActor
-    private func run(_ scenario: String, size: CGSize, orientation: UIDeviceOrientation, shot: String) throws {
+    private func run(_ scenario: String, size: CGSize, orientation: UIDeviceOrientation) throws {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
                                "-AeroDJStudioCaptureScenario", scenario] + Self.flag
@@ -52,6 +55,7 @@ final class SystemVerticalBarsCaptureTests: XCTestCase {
         app.launchAfterLeftoverExits()
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10), "no window\n\(app.debugDescription)")
+        // Keep this skip: the hosted iPhone Duo window (466 x 678) must not fail the Duo UI job.
         try XCTSkipUnless(window.frame.width >= size.width && window.frame.height >= size.height,
                           "window \(window.frame.size) is smaller than the \(size) frame")
         let any = app.descendants(matching: .any)
@@ -68,6 +72,10 @@ final class SystemVerticalBarsCaptureTests: XCTestCase {
 
         let container = any["capture.railDContainer"]
         XCTAssertTrue(container.waitForExistence(timeout: 10), "container missing\n\(app.debugDescription)")
+        let box = try settledContainer(app, size: size)
+        let landscape = orientation.isLandscape
+        let shot = shotName(size: box, landscape: landscape)
+        let collapsedShot = shotName(size: box, landscape: landscape, collapsed: true)
         let spinners = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"), object: app.activityIndicators)
         _ = XCTWaiter().wait(for: [spinners], timeout: 10)
 
@@ -99,7 +107,38 @@ final class SystemVerticalBarsCaptureTests: XCTestCase {
             assertAtLeastPoints(expand.frame.width, 44, "folded.expandRail width")
             assertAtLeastPoints(expand.frame.height, 44, "folded.expandRail height")
         }
-        save(app, "\(shot)-collapsed")
+        save(app, collapsedShot)
+    }
+
+    /// The capture-frame size, once settled, clipped to the simulator window. The shot name
+    /// uses this measured size, which must match the frame the test set (within 1 pt).
+    @MainActor
+    private func settledContainer(_ app: XCUIApplication, size: CGSize) throws -> CGSize {
+        let container = app.descendants(matching: .any)["capture.railDContainer"]
+        let window = app.windows.firstMatch.frame
+        let deadline = Date().addingTimeInterval(10)
+        var last: CGRect?
+        while Date() < deadline {
+            var frame = container.exists ? container.frame : .null
+            if !window.isNull, !window.isEmpty, !frame.isNull { frame = frame.intersection(window) }
+            if !frame.isNull, !frame.isEmpty,
+               abs(frame.width - size.width) <= 1, abs(frame.height - size.height) <= 1,
+               let last,
+               abs(last.width - frame.width) <= 0.5, abs(last.height - frame.height) <= 0.5 {
+                return CGSize(width: frame.width, height: frame.height)
+            }
+            last = (frame.isNull || frame.isEmpty) ? nil : frame
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTFail("container never settled at \(size) in window \(window): \(container.frame)")
+        return size
+    }
+
+    private func shotName(size: CGSize, landscape: Bool, collapsed: Bool = false) -> String {
+        let w = Int(size.width.rounded())
+        let h = Int(size.height.rounded())
+        let pose = landscape ? "open-landscape" : "open-portrait"
+        return "system-vertical-bars-\(w)x\(h)-\(pose)" + (collapsed ? "-collapsed" : "")
     }
 
     /// "vertical" when the bar's controls stack in one column, "horizontal" when they share a row.
