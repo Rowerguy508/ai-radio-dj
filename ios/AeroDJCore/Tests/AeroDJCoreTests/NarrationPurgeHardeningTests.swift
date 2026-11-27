@@ -177,9 +177,9 @@ final class CacheRetentionSweepTests: XCTestCase {
         await run.value
     }
 
-    /// Sentinel item 3 (clock skew): a clip stored while the clock was 30 days ahead is clamped
-    /// to `now` by the first sweep that sees it, so it cannot outlive 7 days once the clock is
-    /// corrected. File cache (relaunch-safe) and in-memory cache alike.
+    /// Sentinel item 3 (clock skew), tightened by #82 F2: a clip stored while the clock was 30
+    /// days ahead is deleted by the first sweep that sees it once the clock is corrected, never
+    /// re-stamped. File cache (relaunch-safe) and in-memory cache alike.
     func testClipStampedInTheFutureCannotOutliveSevenDays() async throws {
         let t0 = Date(timeIntervalSince1970: 1_800_000_000)
         let clock = TestClock(t0.addingTimeInterval(30 * 24 * 3600))
@@ -197,14 +197,8 @@ final class CacheRetentionSweepTests: XCTestCase {
             var done = sweeps.makeAsyncIterator()
             let run = Task { await AudioCacheSweeper(cache: cache).run(ticks: ticks, onSweep: { swept.yield() }) }
             _ = await done.next()
-            let clamped = await cache.audio(for: "skewed")
-            XCTAssertEqual(clamped?.createdAt, t0, "\(type(of: cache)): stamp clamped to no later than now")
-
-            clock.set(t0.addingTimeInterval(7 * 24 * 3600 + 1))
-            tick.yield()
-            _ = await done.next()
             let left = await cache.audio(for: "skewed")
-            XCTAssertNil(left, "\(type(of: cache)): gone 7 days after the corrected clock first saw it")
+            XCTAssertNil(left, "\(type(of: cache)): a future-stamped clip is deleted by the first sweep")
             tick.finish()
             await run.value
         }
