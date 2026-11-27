@@ -747,6 +747,9 @@ final class StudioScreenTests: XCTestCase {
     }
 
     /// Collapse leaves the unfolded rail and shows the centred column. Playback stays up.
+    /// #460 (-Nova): this container has no side status column, like every iPad window, so the
+    /// collapsed player keeps the pinned column (`FoldAwareness.flatRailColumn` is nil). The
+    /// open Duo's status column is covered by the RailDLayoutTests collapsed frames.
     @MainActor
     func testCollapseUnfoldedRailShowsTheFoldedColumn() throws {
         try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
@@ -767,6 +770,8 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["folded.systemBar"].exists)
         XCTAssertTrue(app.buttons["transport.playPause"].exists, "playback stays on screen")
+        XCTAssertFalse(app.descendants(matching: .any)["folded.collapsedRailD"].exists,
+                       "no side status column, so no collapsed Rail D (#460)")
     }
 
     /// #502: the unfolded Duo (640 × 820 pt) with the DJ on air, so the owner can see that
@@ -958,7 +963,8 @@ final class StudioScreenTests: XCTestCase {
     /// Build 51 issue 1: the open Duo held sideways (820 × 640 pt with its navigation bar) showed
     /// the centred column with the scrubber cut off and no Play/Skip. Now it is the rail; after
     /// Collapse the transport is pinned on screen, ⋯ and Show rail sit in the top header row,
-    /// and Show rail brings the rail back.
+    /// and Show rail brings the rail back. #460 (-Nova): no side status column here, so the
+    /// collapsed column stays the pinned one (the iPad-window path); see RailDLayoutTests.
     @MainActor
     func testOpenDuoLandscapeKeepsTheTransportOnScreenWithAndWithoutTheRail() throws {
         try XCTSkipUnless(isOpenLayout, "The 820 × 640 pt container needs an iPad-size simulator window")
@@ -980,6 +986,7 @@ final class StudioScreenTests: XCTestCase {
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: bar)
         XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "collapse left the rail up")
         XCTAssertTrue(any["folded.wideColumn"].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertFalse(any["folded.collapsedRailD"].exists, "no side status column, so no collapsed Rail D (#460)")
         assertTransportOnScreen(app, window: window, box: box, "landscape, rail collapsed")
         let expand = app.buttons["folded.expandRail"]
         XCTAssertTrue(expand.waitForExistence(timeout: 5), "no way back to the rail\n\(app.debugDescription)")

@@ -30,6 +30,13 @@ struct RailDCaptureContainer: View {
     static let deviceWindowKey = "AeroDJRailDDeviceWindow"
     static let deviceWindowSize = CGSize(width: 951, height: 669)
 
+    /// #460 (-Nova): the collapsed frames draw the open Duo's trailing status column as a
+    /// trailing safe-area inset (≈ 73 pt in the owner's build 54 @3x shots,
+    /// `DuoStationsLayout.statusColumnClearance`'s note), which no iPad simulator window has.
+    /// The collapsed player reads it like the device's (`FoldAwareness.flatRailColumn`). Every
+    /// other frame keeps no inset, so its shot is unchanged.
+    static let openStatusColumn: CGFloat = 73
+
     static func frame(for scenario: StudioCaptureScenario) -> Frame {
         let frame = baseFrame(for: scenario)
         guard UserDefaults.standard.bool(forKey: deviceWindowKey),
@@ -111,6 +118,31 @@ struct RailDCaptureContainer: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
+    /// #460: the trailing status column, or the content unchanged at width 0 (every other frame).
+    /// `openDuoWindow` carries the inset to the player: a GeometryReader inside the padded
+    /// safe area sees trailing 0, the same gotcha as on the device (read insets at the root).
+    ///
+    /// Applied to the player inside the `NavigationStack` (`player`), never around it: a
+    /// `safeAreaPadding` outside the stack does not reach the stack's content, so the player's
+    /// reader spanned the whole 820 / 640 pt container and the rail, placed in the status column
+    /// past the reader's trailing edge, was drawn outside the clipped container (iOS run
+    /// 45972443266: More at x = container + 4.5 pt, not hittable). Inside the stack the reader
+    /// ends at the column, as on the device, and the rail is drawn in the column. -Nova
+    private struct CaptureStatusColumn: ViewModifier {
+        let width: CGFloat
+        @ViewBuilder func body(content: Content) -> some View {
+            if width > 0 {
+                content
+                    .safeAreaPadding(.trailing, width)
+                    .environment(\.openDuoWindow, OpenDuoWindowMetrics(
+                        trailingInset: width,
+                        railTop: CGFloat(RailDLayout.closedVerticalInset)))
+            } else {
+                content
+            }
+        }
+    }
+
     private var player: some View {
         PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
                       snapshot: scenario.snapshot, actions: .preview,
@@ -122,6 +154,7 @@ struct RailDCaptureContainer: View {
                           DuoStationSwitch.Stop(id: "late-night", name: "Late Night"),
                       ],
                       onOpenStation: { _ in })
+        .modifier(CaptureStatusColumn(width: scenario.isRailDCollapsed ? Self.openStatusColumn : 0))
     }
 }
 #endif

@@ -174,6 +174,85 @@ public enum FoldAwareness {
                               railMinX: book.minX + column + gap, railWidth: railWidth)
     }
 
+    /// #460 (-Nova): the open Duo with its rail collapsed, outside book pose (flat open, and the
+    /// sidebar-open detail). The owner's rule for #460 is that on the Duo the bottom controls
+    /// live on the right, and his Nov 17 call gave the open Duo "book pose included" the closed
+    /// screen's Rail D. So the collapsed column keeps that rail too.
+    ///
+    /// The gate (`usesFlatRailD`) is the layout the size classes and the container already chose
+    /// (`.duoHorizontal`, or the regular-width rail column) plus the window's safe area: the Duo
+    /// draws its status cluster as a vertical column on a side edge, a leading or trailing
+    /// safe-area inset. Size classes cannot separate the open Duo from an iPad window of the
+    /// same size: the device reports regular width at 951 x 669 (build 54), and iPad Split View
+    /// and Stage Manager windows are regular or compact width at every comparable size, always
+    /// regular height. Window size cannot either (an iPad Split View slice is 778 x 820). The
+    /// side inset can: an iPad window's status bar is a top inset, never a side one.
+    ///
+    /// Geometry: the pinned column's width (`column`), centred in the container less one
+    /// `duoEdgeInset` either side. With a trailing status column (`trailingInset`, the window's
+    /// trailing unsafe width) the closed screen's 56 pt rail sits in it, under the clock, as on
+    /// the closed Duo (`DuoStationsLayout.closedRailTrailingInset`); `railMinX` may then be past
+    /// `containerWidth`, and the caller draws into that column. A leading-only column (the Duo
+    /// turned the other way) keeps the rail on the column's trailing side (`bookRailColumn`).
+    /// Nil without a side inset, narrower than `FoldedColumnLayout.railColumnMinWidth`, a bad
+    /// measurement, or no room for a column beside the rail: the caller keeps the pinned column.
+    public static func flatRailColumn(containerWidth: Double, containerHeight: Double,
+                                      column: Double, artSide: Double,
+                                      leadingInset: Double, trailingInset: Double) -> BookRailColumn? {
+        guard containerWidth.isFinite, containerHeight.isFinite, column.isFinite, artSide.isFinite,
+              containerWidth > 0, containerHeight > 0, column > 0 else { return nil }
+        let leading = leadingInset.isFinite ? max(0, leadingInset) : 0
+        let trailing = trailingInset.isFinite ? max(0, trailingInset) : 0
+        guard max(leading, trailing) > statusColumnMinInset,
+              containerWidth >= FoldedColumnLayout.railColumnMinWidth else { return nil }
+        let edge = FoldedColumnLayout.duoEdgeInset
+        let width = min(column, max(0, containerWidth - edge * 2))
+        guard width > 0 else { return nil }
+        let minX = (containerWidth - width) / 2
+        guard trailing > statusColumnMinInset else {
+            return bookRailColumn(BookColumn(minX: minX, width: width, artSide: max(0, min(artSide, width))))
+        }
+        let railWidth = FoldedOuterLayout.closedRailWidth
+        let railMinX = containerWidth + trailing
+            - DuoStationsLayout.closedRailTrailingInset(trailingUnsafeWidth: trailing) - railWidth
+        let columnWidth = min(width, railMinX - bookRailGap - minX)
+        guard columnWidth > 0 else { return nil }
+        return BookRailColumn(columnMinX: minX, columnWidth: columnWidth,
+                              artSide: max(0, min(artSide, columnWidth)),
+                              railMinX: railMinX, railWidth: railWidth)
+    }
+
+    /// A side safe-area inset wider than this is a status column. The same 0.5 pt test
+    /// `DuoStationsLayout.railTopInset` and `closedRailTrailingInset` use.
+    public static let statusColumnMinInset: Double = 0.5
+
+    /// #460 (-Nova): whether the collapsed player draws `flatRailColumn` instead of the pinned
+    /// column. The layout must already be the open-Duo one the size class and the container
+    /// choose (`DisplayContinuity.layout` gave `.duoHorizontal`, or the regular-width rail column,
+    /// `FoldedColumnLayout.usesRailColumn`), and the window must have a side status column.
+    /// Every iPhone is false (portrait is `.phoneBottom`; landscape has side insets but is the
+    /// centred column, never the rail column). Every iPad window is false (no side inset).
+    public static func usesFlatRailD(hasRegularWidth: Bool, containerWidth: Double, containerHeight: Double,
+                                     accessibilityTextSize: Bool = false,
+                                     leadingInset: Double, trailingInset: Double) -> Bool {
+        let placement = DisplayContinuity.layout(hasRegularWidth: hasRegularWidth,
+                                                 containerWidth: containerWidth,
+                                                 containerHeight: containerHeight,
+                                                 accessibilityTextSize: accessibilityTextSize,
+                                                 isPhoneIdiom: false).controlPlacement
+        let railLayout = placement == .duoHorizontal
+            || (placement != nil && FoldedColumnLayout.usesRailColumn(hasRegularWidth: hasRegularWidth,
+                                                                      containerWidth: containerWidth,
+                                                                      containerHeight: containerHeight))
+        guard railLayout else { return false }
+        let m = FoldedColumnLayout.metrics(containerWidth: containerWidth, containerHeight: containerHeight,
+                                           reserveBelowArt: FoldedColumnLayout.centredColumnReserveBelowArt,
+                                           artMin: 140, artMax: 420)
+        return flatRailColumn(containerWidth: containerWidth, containerHeight: containerHeight,
+                              column: m.column, artSide: m.artSide,
+                              leadingInset: leadingInset, trailingInset: trailingInset) != nil
+    }
+
     /// The gates `resolve` applies before it looks for a fold.
     private static func isBookPose(containerWidth: Double, containerHeight: Double, hinge: HingeSample?) -> Bool {
         guard containerWidth.isFinite, containerHeight.isFinite,

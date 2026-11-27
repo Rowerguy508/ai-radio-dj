@@ -42,7 +42,12 @@ struct PlayingScreen: View {
     @State private var showWorkspace = false
     /// Collapse on the unfolded rail shows the centred column. The container size stays,
     /// and nothing starts or stops. A real fold clears it.
+    #if DEBUG
+    /// Collapsed-rail captures set this before the screen is created (`StudioCaptureCollapse`).
+    @State private var duoCollapsed = StudioCaptureCollapse.initial
+    #else
     @State private var duoCollapsed = false
+    #endif
     /// One search session above the compact/Studio switch so a fold cannot wipe results.
     @StateObject private var studioSearch = StudioSearchModel()
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -144,6 +149,12 @@ struct PlayingScreen: View {
                 // Later appears of this screen (a fold that rebuilds it) do not clear.
                 if DisplayContinuityLaunch.shouldReset("player-scroll") {
                     storedScrollAnchor = ""
+                }
+                // #460: a collapsed-rail capture frame opens with Collapse tapped.
+                // Stay true until Show rail, so a rebuild of this screen (the stack
+                // settling, the status-column inset taking effect) does not lose Collapse.
+                if StudioCaptureCollapse.initial {
+                    duoCollapsed = true
                 }
                 if let initial = StudioCaptureSegment.initial {
                     segment = initial
@@ -287,7 +298,12 @@ struct PlayingScreen: View {
                          onReview: { segment = .connections; showWorkspace = true },
                          showsUnfoldedRail: showsRail,
                          onCollapseRail: { duoCollapsed = true },
-                         onExpandRail: hasRail ? { duoCollapsed = false } : nil,
+                         onExpandRail: hasRail ? {
+                            #if DEBUG
+                            StudioCaptureCollapse.initial = false
+                            #endif
+                            duoCollapsed = false
+                         } : nil,
                          railColumn: railColumn,
                          placementSize: splitCanvas == nil ? CGSize(width: width, height: routeHeight) : nil,
                          stationStops: stationStops,
@@ -314,7 +330,15 @@ struct PlayingScreen: View {
                                keepSystemVerticalBar: placement == .duoHorizontal,
                                barEdge: barEdge)
                 .onChange(of: placement) { _, new in
-                    if new != .duoHorizontal { duoCollapsed = false }
+                    // Collapse applies to the unfolded-Duo rail: `.duoHorizontal` or the
+                    // regular-width rail column. A sidebar or a slightly shorter landscape
+                    // window still has that rail (#460); only leaving both clears Collapse.
+                    let keepsRail = new == .duoHorizontal
+                        || FoldedColumnLayout.usesRailColumn(
+                            hasRegularWidth: horizontalSizeClass == .regular,
+                            containerWidth: width,
+                            containerHeight: Double(routeHeight))
+                    if !keepsRail { duoCollapsed = false }
                 }
         case .studio:
             if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {

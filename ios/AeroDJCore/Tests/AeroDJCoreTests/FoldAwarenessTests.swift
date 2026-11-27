@@ -340,13 +340,198 @@ final class FoldAwarenessTests: XCTestCase {
         XCTAssertNil(FoldAwareness.bookRailColumn(.init(minX: 16, width: .nan, artSide: 100)))
     }
 
-    /// Full open (flat, `railDLandscapeCentred`) and no fold reading: no book column, so the
-    /// collapsed Duo keeps integration's pinned column.
+    /// Full open (flat, `railDLandscapeCentred`) and no fold reading: no book column. #460: the
+    /// collapsed Duo then takes `flatRailColumn` (below), not integration's pinned column.
     func testOutsideBookPoseThereIsNoBookRail() {
         let band = vertical(minX: 396, width: 28, height: 640)
         XCTAssertNil(bookColumn(width: 820, height: 640, status: .fullyOpen, divisions: []))
         XCTAssertNil(bookColumn(width: 820, height: 640, status: .fullyOpen, divisions: [band]))
         XCTAssertNil(bookColumn(width: 820, height: 640, status: .partiallyOpen, divisions: []))
+    }
+
+    // MARK: - #460 flat open Duo: the collapsed column keeps Rail D, gated on the status column (-Nova)
+
+    /// The open Duo's trailing status column (≈ 73 pt in the owner's build 54 @3x shots; the
+    /// closed Duo's is 84 pt) and the capture's stand-in for it.
+    private let duoStatusColumn = 73.0
+
+    /// The open Duo's collapsed frames outside book pose, each with its status column: upright
+    /// (640 x 820 and its reader under the navigation bar), sideways (820 x 640 / 576), the
+    /// owner's device window (951 x 669) and the sidebar-open details (350 and 500 pt). The rail
+    /// sits in the trailing status column, under the clock; the column is centred in the safe
+    /// width and never reaches the status column; every rail plate and the bar fit.
+    func testTheFlatCollapsedColumnPutsRailDInTheTrailingStatusColumn() throws {
+        let frames: [(width: Double, height: Double)] = [
+            (640, 820), (640, 764), (820, 640), (820, 576), (951, 669), (350, 764), (500, 576),
+        ]
+        let slots = RailDLayout.slots(hasCollapse: false, showsTransport: true, showsScrubber: true)
+        for status in [duoStatusColumn, 84] {
+            for frame in frames {
+                let label = "\(frame.width)x\(frame.height) status \(status)"
+                let m = centredColumn(width: frame.width, height: frame.height)
+                let split = try XCTUnwrap(FoldAwareness.flatRailColumn(containerWidth: frame.width,
+                                                                       containerHeight: frame.height,
+                                                                       column: m.column, artSide: m.artSide,
+                                                                       leadingInset: 0, trailingInset: status), label)
+                XCTAssertEqual(split.railWidth, RailDLayout.railWidth, "the closed screen's rail: \(label)")
+                XCTAssertGreaterThanOrEqual(split.railMinX, frame.width, "rail in the status column: \(label)")
+                XCTAssertEqual(frame.width + status - split.railMaxX,
+                               DuoStationsLayout.closedRailTrailingInset(trailingUnsafeWidth: status),
+                               accuracy: 0.001, "the closed Duo's inset under the clock: \(label)")
+                XCTAssertGreaterThanOrEqual(split.railMinX - split.columnMaxX, FoldAwareness.bookRailGap - 0.001, label)
+                XCTAssertGreaterThanOrEqual(split.columnMinX, FoldedColumnLayout.duoEdgeInset - 0.001, label)
+                XCTAssertLessThanOrEqual(split.columnMaxX, frame.width - FoldedColumnLayout.duoEdgeInset + 0.001, label)
+                XCTAssertEqual(split.columnMinX, frame.width - split.columnMaxX, accuracy: 0.001, "centred: \(label)")
+                XCTAssertGreaterThanOrEqual(split.columnWidth, StudioLayoutMetrics.touchTargetMin, label)
+                XCTAssertLessThanOrEqual(split.artSide, split.columnWidth, label)
+                XCTAssertTrue(RailDLayout.fits(railHeight: RailDLayout.closedRailHeight(containerHeight: frame.height),
+                                               slots: slots), label)
+            }
+        }
+    }
+
+    /// iOS run 45972443266 (-Nova): the rail is placed past the reader's trailing edge, in the
+    /// status column, so the reader must end where the column starts. The captures' readers once
+    /// spanned the whole container (the status column never reached them) and Rail D was drawn
+    /// outside it, so no rail control was hittable. Pinned here for the readers the captures now
+    /// give the player, the container less the 73 pt column (upright 640, sideways 820, the
+    /// 500 pt sidebar detail): the rail, plates and all, ends inside the container, in the column.
+    func testTheFlatRailEndsInsideTheContainerWhenTheReaderStopsAtTheStatusColumn() throws {
+        let containers: [(width: Double, height: Double)] = [(640, 764), (820, 576), (500, 576)]
+        for container in containers {
+            let reader = container.width - duoStatusColumn
+            let label = "\(container.width)x\(container.height), reader \(reader)"
+            let m = centredColumn(width: reader, height: container.height)
+            let split = try XCTUnwrap(FoldAwareness.flatRailColumn(containerWidth: reader,
+                                                                   containerHeight: container.height,
+                                                                   column: m.column, artSide: m.artSide,
+                                                                   leadingInset: 0, trailingInset: duoStatusColumn), label)
+            XCTAssertGreaterThanOrEqual(split.railMinX, reader, "the rail is in the status column: \(label)")
+            XCTAssertLessThanOrEqual(split.railMaxX, container.width - RailDLayout.trailingInset + 0.001,
+                                     "the rail ends inside the container: \(label)")
+            XCTAssertLessThanOrEqual(split.columnMaxX, reader + 0.001, "the column stops at the status column: \(label)")
+            // The same placement read against the whole container (the old capture) lands the
+            // rail past the container's trailing edge: that is the run's 'not hittable'.
+            let whole = centredColumn(width: container.width, height: container.height)
+            let outside = try XCTUnwrap(FoldAwareness.flatRailColumn(containerWidth: container.width,
+                                                                     containerHeight: container.height,
+                                                                     column: whole.column, artSide: whole.artSide,
+                                                                     leadingInset: 0, trailingInset: duoStatusColumn), label)
+            XCTAssertGreaterThan(outside.railMinX, container.width, "the old capture's rail: \(label)")
+        }
+    }
+
+    /// The Duo turned the other way: a leading status column only. The rail stays on the
+    /// column's trailing side, inside the container (`bookRailColumn`).
+    func testALeadingStatusColumnKeepsTheRailBesideTheColumn() throws {
+        let m = centredColumn(width: 820, height: 576)
+        let split = try XCTUnwrap(FoldAwareness.flatRailColumn(containerWidth: 820, containerHeight: 576,
+                                                               column: m.column, artSide: m.artSide,
+                                                               leadingInset: duoStatusColumn, trailingInset: 0))
+        XCTAssertEqual(split.railMinX - split.columnMaxX, FoldAwareness.bookRailGap, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(split.railMaxX, 820 - FoldedColumnLayout.duoEdgeInset + 0.001)
+        XCTAssertGreaterThan(split.railMinX + split.railWidth / 2, 410, "rail on the right")
+    }
+
+    /// No side inset, no collapsed Rail D, at any size: this is how every iPad window (full
+    /// screen, Split View, Slide Over, Stage Manager) keeps the pinned column, since its status
+    /// bar is a top inset. A bad measurement and a column with no room beside the rail too.
+    func testWithoutASideStatusColumnThereIsNoFlatRail() {
+        func flat(_ width: Double, _ height: Double, column: Double = 360,
+                  leading: Double = 0, trailing: Double = 0) -> FoldAwareness.BookRailColumn? {
+            FoldAwareness.flatRailColumn(containerWidth: width, containerHeight: height, column: column,
+                                         artSide: 200, leadingInset: leading, trailingInset: trailing)
+        }
+        for (width, height) in [(640.0, 820.0), (820, 640), (951, 669), (778, 820), (1024, 1366), (350, 764)] {
+            XCTAssertNil(flat(width, height), "\(width)x\(height) with no side inset")
+            XCTAssertNil(flat(width, height, trailing: FoldAwareness.statusColumnMinInset), "a 0.5 pt inset is not a column")
+        }
+        XCTAssertNotNil(flat(FoldedColumnLayout.railColumnMinWidth, 764, trailing: duoStatusColumn))
+        XCTAssertNil(flat(FoldedColumnLayout.railColumnMinWidth - 0.5, 764, trailing: duoStatusColumn))
+        XCTAssertNil(flat(.nan, 820, trailing: duoStatusColumn))
+        XCTAssertNil(flat(640, .infinity, trailing: duoStatusColumn))
+        XCTAssertNil(flat(640, 820, trailing: .nan))
+        XCTAssertNil(flat(640, 820, column: 0, trailing: duoStatusColumn))
+        XCTAssertNil(flat(640, 820, column: FoldedOuterLayout.closedRailWidth + FoldAwareness.bookRailGap,
+                          leading: duoStatusColumn), "no room for a column beside the rail")
+    }
+
+    // MARK: - #460 the whole gate: size class + container + window safe area (-Nova)
+
+    private struct Window {
+        let name: String
+        let regularWidth: Bool
+        let width: Double
+        let height: Double
+        let leading: Double
+        let trailing: Double
+    }
+
+    /// Open Duo upright and sideways, at the size class each frame uses (the captures' compact
+    /// upright stand-in, the device's measured regular width) and with the sidebar open: the
+    /// collapsed player keeps Rail D.
+    func testTheOpenDuoGetsTheFlatRailAtEitherWidthClass() {
+        let duo: [Window] = [
+            Window(name: "open Duo upright, compact", regularWidth: false, width: 640, height: 820, leading: 0, trailing: 73),
+            Window(name: "open Duo upright, regular", regularWidth: true, width: 640, height: 820, leading: 0, trailing: 73),
+            Window(name: "open Duo sideways, regular", regularWidth: true, width: 820, height: 640, leading: 0, trailing: 73),
+            Window(name: "open Duo device window", regularWidth: true, width: 951, height: 669, leading: 0, trailing: 73),
+            Window(name: "open Duo sideways, other way", regularWidth: true, width: 820, height: 640, leading: 73, trailing: 0),
+            Window(name: "open Duo, sidebar open, upright", regularWidth: true, width: 350, height: 820, leading: 0, trailing: 73),
+            Window(name: "open Duo, sidebar open, sideways", regularWidth: true, width: 500, height: 640, leading: 0, trailing: 73),
+        ]
+        for w in duo {
+            XCTAssertTrue(FoldAwareness.usesFlatRailD(hasRegularWidth: w.regularWidth, containerWidth: w.width,
+                                                      containerHeight: w.height,
+                                                      leadingInset: w.leading, trailingInset: w.trailing), w.name)
+        }
+    }
+
+    /// iPad windows of open-Duo size at the classes iPadOS gives them: Split View halves and
+    /// thirds, Slide Over, Stage Manager windows, full screen. The status bar is a top inset,
+    /// so none gets the flat rail, whatever the class or size. Same sizes with a side inset
+    /// would (that is the only difference), which is why the gate reads the inset.
+    func testIPadWindowsNeverGetTheFlatRail() {
+        let pads: [Window] = [
+            Window(name: "Split View 2/3, 11-inch landscape", regularWidth: true, width: 778, height: 834, leading: 0, trailing: 0),
+            Window(name: "Split View 2/3, 10.9-inch landscape", regularWidth: true, width: 790, height: 820, leading: 0, trailing: 0),
+            Window(name: "Split View half, 13-inch landscape", regularWidth: true, width: 678, height: 1024, leading: 0, trailing: 0),
+            Window(name: "Split View half, 11-inch landscape", regularWidth: false, width: 590, height: 834, leading: 0, trailing: 0),
+            Window(name: "Split View 2/3, 11-inch portrait", regularWidth: false, width: 504, height: 1194, leading: 0, trailing: 0),
+            Window(name: "Split View 1/3, 11-inch landscape", regularWidth: false, width: 375, height: 834, leading: 0, trailing: 0),
+            Window(name: "Slide Over", regularWidth: false, width: 320, height: 760, leading: 0, trailing: 0),
+            Window(name: "Stage Manager, open-Duo size", regularWidth: true, width: 820, height: 640, leading: 0, trailing: 0),
+            Window(name: "Stage Manager, upright", regularWidth: false, width: 640, height: 820, leading: 0, trailing: 0),
+            Window(name: "Stage Manager, device-window size", regularWidth: true, width: 951, height: 669, leading: 0, trailing: 0),
+            Window(name: "full screen 11-inch", regularWidth: true, width: 1194, height: 834, leading: 0, trailing: 0),
+            Window(name: "full screen 13-inch portrait", regularWidth: true, width: 1032, height: 1376, leading: 0, trailing: 0),
+        ]
+        for w in pads {
+            XCTAssertFalse(FoldAwareness.usesFlatRailD(hasRegularWidth: w.regularWidth, containerWidth: w.width,
+                                                       containerHeight: w.height,
+                                                       leadingInset: w.leading, trailingInset: w.trailing), w.name)
+        }
+        // Size classes and size tie with the open Duo: the same window with a status column passes.
+        XCTAssertTrue(FoldAwareness.usesFlatRailD(hasRegularWidth: true, containerWidth: 820, containerHeight: 640,
+                                                  leadingInset: 0, trailingInset: duoStatusColumn))
+    }
+
+    /// iPhones are unchanged: portrait is the phone column, and landscape (side insets for the
+    /// Dynamic Island) is the centred column, never a rail layout, at either width class. The
+    /// closed Duo (466 x 678 with its 84 pt status column) is the phone column.
+    func testIPhonesAndTheClosedDuoNeverGetTheFlatRail() {
+        let phones: [Window] = [
+            Window(name: "iPhone 16e portrait", regularWidth: false, width: 390, height: 844, leading: 0, trailing: 0),
+            Window(name: "iPhone Pro Max portrait", regularWidth: false, width: 440, height: 956, leading: 0, trailing: 0),
+            Window(name: "iPhone 16e landscape", regularWidth: false, width: 844, height: 390, leading: 47, trailing: 47),
+            Window(name: "iPhone Pro Max landscape", regularWidth: true, width: 956, height: 440, leading: 62, trailing: 62),
+            Window(name: "closed Duo", regularWidth: false, width: 466, height: 678, leading: 0, trailing: 84),
+        ]
+        for w in phones {
+            XCTAssertFalse(FoldAwareness.usesFlatRailD(hasRegularWidth: w.regularWidth, containerWidth: w.width,
+                                                       containerHeight: w.height,
+                                                       leadingInset: w.leading, trailingInset: w.trailing), w.name)
+        }
     }
 
     private func centredColumn(width: Double, height: Double) -> (artSide: Double, column: Double) {

@@ -7,7 +7,9 @@ import UIKit
 /// is a capture (`RailDCaptureContainer`, or the plain capture path on the iPhone), checked and
 /// saved here. Required in ios.yml: rail-d-iphone, rail-d-duo-closed, rail-d-duo-open-portrait,
 /// rail-d-duo-open-portrait-sidebar, rail-d-duo-open-landscape-spread,
-/// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar. Not required:
+/// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar, and (#460, the flat
+/// frames with the rail collapsed) rail-d-duo-open-portrait-collapsed,
+/// rail-d-duo-open-landscape-collapsed, rail-d-duo-open-landscape-sidebar-collapsed. Not required:
 /// rail-d-duo-open-landscape-book-collapsed (#548, the spread's frame with the rail collapsed).
 /// A frame bigger than the simulator window is skipped, as in `AppWideLayoutTests`.
 final class RailDLayoutTests: XCTestCase {
@@ -20,6 +22,8 @@ final class RailDLayoutTests: XCTestCase {
     /// `RailDLayout.railWidth` and `RailDLayout.trailingInset` (spec D: 56 pt glass, 8 pt in).
     private static let railGlassWidth: CGFloat = 56
     private static let railEdgeInset: CGFloat = 8
+    /// `RailDCaptureContainer.openStatusColumn` (#460): the collapsed frames' trailing status column.
+    private static let openStatusColumn: CGFloat = 73
 
     override func setUp() {
         continueAfterFailure = false
@@ -322,6 +326,76 @@ final class RailDLayoutTests: XCTestCase {
         expand.tap()
         XCTAssertTrue(any["folded.systemBar"].waitForExistence(timeout: 10), "Show rail did not bring the rail back")
         XCTAssertFalse(any["folded.bookColumn"].exists)
+    }
+
+    // MARK: #460: the collapsed rail keeps Rail D (-Nova)
+
+    /// #460 (owner: "all the stuff on the bottom should live on the right side for a duo"):
+    /// Collapse used to pin the scrubber, Play/Skip and the station bar at the bottom of a
+    /// centred column. Now the open Duo keeps the closed screen's Rail D on the column's
+    /// trailing side, upright, sideways and with the Stations sidebar (the narrow detail).
+    @MainActor
+    func testOpenPortraitCollapsedKeepsRailD() throws {
+        try assertCollapsedRailD("railDPortraitCollapsed", size: Self.portrait, orientation: .portrait,
+                                 sidebar: false, shot: "rail-d-duo-open-portrait-collapsed")
+    }
+
+    @MainActor
+    func testOpenLandscapeCollapsedKeepsRailD() throws {
+        try assertCollapsedRailD("railDLandscapeCollapsed", size: Self.landscape, orientation: .landscapeLeft,
+                                 sidebar: false, shot: "rail-d-duo-open-landscape-collapsed")
+    }
+
+    @MainActor
+    func testOpenLandscapeSidebarCollapsedKeepsRailD() throws {
+        try assertCollapsedRailD("railDLandscapeSidebarCollapsed", size: Self.landscape, orientation: .landscapeLeft,
+                                 sidebar: true, shot: "rail-d-duo-open-landscape-sidebar-collapsed")
+    }
+
+    /// The collapsed column (`folded.collapsedRailD`) with Rail D (`folded.closedRail`) trailing
+    /// it: every rail control hittable and at least 44 pt (`assertRail`), the song position in
+    /// the rail and no horizontal bar, no bottom-pinned column, Show rail in the header, and
+    /// Show rail brings the full rail back. The shot is the container element.
+    @MainActor
+    private func assertCollapsedRailD(_ scenario: String, size: CGSize, orientation: UIDeviceOrientation,
+                                      sidebar: Bool, shot: String) throws {
+        let app = try launch(scenario, container: size, orientation: orientation)
+        let box = try settledContainer(app, size: size)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["folded.collapsedRailD"].waitForExistence(timeout: 10),
+                      "the collapsed open Duo is not the Rail D column\n\(app.debugDescription)")
+        XCTAssertFalse(any["folded.systemBar"].exists, "the full rail is still up")
+        XCTAssertFalse(any["folded.wideColumn"].exists, "the bottom-pinned column is back")
+        let rail = try assertRail(app, id: "folded.closedRail", hasCollapse: false)
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail), "rail \(rail) left the container \(box)")
+        XCTAssertGreaterThan(rail.midX, box.midX, "Rail D is not on the right: \(rail) in \(box)")
+        // The capture's trailing status column (`RailDCaptureContainer.openStatusColumn`, 73 pt):
+        // the rail sits in it, under the clock, as on the device.
+        XCTAssertGreaterThanOrEqual(rail.minX, box.maxX - Self.openStatusColumn - 1,
+                                    "Rail D \(rail) is not in the trailing status column of \(box)")
+        assertNoHorizontalBar(app)
+        let column = try XCTUnwrap(settledFrame(of: any["folded.collapsedRailD.column"], "collapsed column"))
+        XCTAssertLessThanOrEqual(column.maxX, box.maxX - Self.openStatusColumn + 1,
+                                 "the column \(column) reaches into the status column of \(box)")
+        XCTAssertGreaterThanOrEqual(rail.minX, column.maxX - 1, "Rail D \(rail) is not right of the column \(column)")
+        for identifier in ["transport.playPause", "transport.skip", "queue.affordance"] {
+            let frame = app.buttons[identifier].frame
+            XCTAssertFalse(column.insetBy(dx: 1, dy: 1).contains(CGPoint(x: frame.midX, y: frame.midY)),
+                           "\(identifier) \(frame) is still in the column \(column)")
+        }
+        if sidebar {
+            let sidebarFrame = try XCTUnwrap(settledFrame(of: any["split.sidebar"], "sidebar"))
+            XCTAssertGreaterThanOrEqual(column.minX, sidebarFrame.maxX - 1, "side by side, not an overlay")
+        }
+        let expand = app.buttons["folded.expandRail"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 5), "Show rail missing\n\(app.debugDescription)")
+        XCTAssertTrue(expand.isHittable)
+        assertAtLeastPoints(expand.frame.width, 44)
+        assertAtLeastPoints(expand.frame.height, 44)
+        save(app, shot, container: any["capture.railDContainer"])
+        expand.tap()
+        XCTAssertTrue(any["folded.systemBar"].waitForExistence(timeout: 10), "Show rail did not bring the rail back")
+        XCTAssertFalse(any["folded.collapsedRailD"].exists)
     }
 
     // MARK: DJ states (Echo, #558): debug-only extra shots, not required in ios.yml

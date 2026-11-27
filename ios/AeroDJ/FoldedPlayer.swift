@@ -200,7 +200,7 @@ struct FoldedPlayer: View {
                 if showsUnfoldedRail {
                     railColumnBody(in: geo.size)
                 } else {
-                    pinnedColumnBody(in: geo.size)
+                    pinnedColumnBody(in: geo.size, status: statusColumn(geo))
                         .onAppear { moreOpen = false }
                 }
             } else {
@@ -236,7 +236,8 @@ struct FoldedPlayer: View {
                         // Build 51: the collapsed rail pins the transport; the scrolling centred
                         // column left Play and Skip below the 820 × 640 window.
                         pinnedColumnBody(in: geo.size, foldAware: true,
-                                         placementHeight: (placementSize ?? geo.size).height)
+                                         placementHeight: (placementSize ?? geo.size).height,
+                                         status: statusColumn(geo))
                             .onAppear { moreOpen = false }
                     }
                 }
@@ -931,15 +932,18 @@ struct FoldedPlayer: View {
     /// `foldAware` is true only on the two `.duoHorizontal` collapsed branches (#507 / #548). In
     /// book pose (`FoldAwareness.bookColumn`) the column moves to one side of the fold and, per
     /// the owner's Nov 17 call, carries the closed screen's Rail D with the song position in the
-    /// rail (`bookRailColumnBody`). Outside book pose, and on the sidebar-open detail (false),
-    /// this is integration's pinned column unchanged.
+    /// rail (`bookRailColumnBody`). #460 (-Nova): outside book pose, and on the sidebar-open
+    /// detail, an open-Duo-sized window (`FoldAwareness.flatRailColumn`) gets the same column
+    /// and rail, centred, so the scrubber, Play/Skip and the station bar no longer sit at the
+    /// bottom. Any other size (a full-screen iPad) keeps integration's pinned column unchanged.
     ///
     /// `placementHeight` is the height the caller chose `.duoHorizontal` from (the route height,
     /// `placementSize`). The reader under the navigation bar is shorter (820 x 576 in the 820 x 640
     /// landscape window), and `FoldAwareness.bookColumn` re-checks `.duoHorizontal` on the height
     /// it is given, so the drawn height made book pose fall back to the centred column. -Nova
     private func pinnedColumnBody(in size: CGSize, foldAware: Bool = false,
-                                  placementHeight: CGFloat? = nil) -> some View {
+                                  placementHeight: CGFloat? = nil,
+                                  status: StatusColumn = .none) -> some View {
         let reserve: Double = typeSize.isAccessibilitySize ? FoldedColumnLayout.centredColumnReserveBelowArtAccessibility : FoldedColumnLayout.centredColumnReserveBelowArt
         let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
                                            containerHeight: Double(size.height),
@@ -953,9 +957,24 @@ struct FoldedPlayer: View {
                                        column: m.column, artSide: m.artSide)
             : nil
         let split = book.flatMap { FoldAwareness.bookRailColumn($0) }
+        // #460 (-Nova): outside book pose the open Duo keeps Rail D too, so nothing is left at
+        // the bottom. Gated on the window's side status column (`FoldAwareness.flatRailColumn`):
+        // nil (today's pinned column) for every iPad window, which has none.
+        let flat = split == nil
+            ? FoldAwareness.flatRailColumn(containerWidth: Double(size.width),
+                                           containerHeight: Double(size.height),
+                                           column: m.column, artSide: m.artSide,
+                                           leadingInset: Double(status.leading),
+                                           trailingInset: Double(status.trailing))
+            : nil
         return Group {
             if let split {
                 bookRailColumnBody(in: size, split: split)
+            } else if let flat {
+                // A trailing status column: the rail sits in it, under the clock.
+                let extend = status.trailing > CGFloat(FoldAwareness.statusColumnMinInset) ? status.trailing : 0
+                bookRailColumnBody(in: size, split: flat, identifier: "folded.collapsedRailD",
+                                   extend: extend, railTop: status.railTop)
             } else {
                 centredPinnedColumn(in: size, metrics: m)
             }
@@ -1009,7 +1028,16 @@ struct FoldedPlayer: View {
     /// bar, the live dot) on its trailing side, inside the same span. No horizontal scrubber,
     /// transport row or station bar in the column: the rail carries them, and Tune is in the
     /// rail's ⋯ as on the closed screen. Show rail stays in the column's header. -Nova
-    private func bookRailColumnBody(in size: CGSize, split: FoldAwareness.BookRailColumn) -> some View {
+    ///
+    /// #460 (-Nova): the flat collapsed column (`FoldAwareness.flatRailColumn`) draws the same
+    /// body under `identifier` "folded.collapsedRailD", so the book-pose tests keep their element.
+    ///
+    /// `extend` (the flat case with a trailing status column): the body spans that column too,
+    /// so the rail can sit in it; 0 is the book pose, unchanged. `railTop`: the rail's top in
+    /// this body (level with the Stations rail, under the clock); nil keeps the 8 pt inset.
+    private func bookRailColumnBody(in size: CGSize, split: FoldAwareness.BookRailColumn,
+                                    identifier: String = "folded.bookColumn",
+                                    extend: CGFloat = 0, railTop: CGFloat? = nil) -> some View {
         typealias Gap = FoldedColumnLayout.Spacing
         let column = CGFloat(split.columnWidth)
         return HStack(alignment: .top, spacing: CGFloat(split.railMinX - split.columnMaxX)) {
@@ -1034,7 +1062,7 @@ struct FoldedPlayer: View {
             }
             .frame(width: column, height: size.height, alignment: .top)
             .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("folded.bookColumn.column")
+            .accessibilityIdentifier("\(identifier).column")
             .accessibilitySortPriority(1)
             ClosedVerticalRail(dj: dj, upNext: snapshot.upNext,
                                transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
@@ -1052,14 +1080,34 @@ struct FoldedPlayer: View {
                     Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
                 }
             }
-            .padding(.vertical, CGFloat(RailDLayout.closedVerticalInset))
+            .padding(.top, railTop ?? CGFloat(RailDLayout.closedVerticalInset))
+            .padding(.bottom, CGFloat(RailDLayout.closedVerticalInset))
             .frame(width: CGFloat(split.railWidth), height: size.height)
             .accessibilitySortPriority(0)
         }
         .padding(.leading, CGFloat(split.columnMinX))
-        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .frame(width: size.width + extend, height: size.height, alignment: .topLeading)
+        .padding(.trailing, -extend)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("folded.bookColumn")
+        .accessibilityIdentifier(identifier)
+    }
+
+    /// #460 (-Nova): the window's side status column for the collapsed open Duo. The trailing
+    /// width is the root's measurement (`openDuoWindow`, read at the split root, which sees the
+    /// window's insets) when there is one, otherwise this reader's, as the closed-Duo reskin
+    /// reads it (build 58). `railTop` lines the rail up with the Stations rail, under the clock.
+    struct StatusColumn: Sendable {
+        var leading: CGFloat
+        var trailing: CGFloat
+        var railTop: CGFloat?
+        static let none = StatusColumn(leading: 0, trailing: 0, railTop: nil)
+    }
+
+    private func statusColumn(_ geo: GeometryProxy) -> StatusColumn {
+        let trailing = openDuoWindow.map { max(0, $0.trailingInset) } ?? max(0, geo.safeAreaInsets.trailing)
+        let readerMinY = geo.frame(in: .global).minY
+        let railTop = openDuoWindow.map { max(CGFloat(RailDLayout.closedVerticalInset), $0.railTop - readerMinY) }
+        return StatusColumn(leading: max(0, geo.safeAreaInsets.leading), trailing: trailing, railTop: railTop)
     }
 
     /// Show rail (build 51, -Atlas): brings the rail back after Collapse. 44 × 44.
