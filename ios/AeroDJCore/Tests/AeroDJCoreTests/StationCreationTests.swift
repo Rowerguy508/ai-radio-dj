@@ -140,6 +140,21 @@ final class StudioSaveRecipeFromRequestTests: XCTestCase {
         XCTAssertEqual(StationDiscoveryLevel.matching(studio.station.active), .familiar)
     }
 
+    // Fry #218: every recipe apply through the studio (created-station tap, Tune, create-and-apply)
+    // records which recipe the live station has, so a created-station re-tap can't trust a stale id.
+    func testLastAppliedRecipeIDFollowsEveryApply() async throws {
+        let studio = await makeCreationStudio()
+        XCTAssertNil(studio.lastAppliedRecipeID)
+        let a = try await studio.saveRecipe(named: "A", from: StationCreationRequest(source: .artists([seed(.artist, "1")])), applying: true).get()
+        XCTAssertEqual(studio.lastAppliedRecipeID, a.id, "create-and-apply")
+        let b = try await studio.saveRecipe(named: "B", from: StationCreationRequest(source: .artists([seed(.artist, "2")]))).get()
+        XCTAssertEqual(studio.lastAppliedRecipeID, a.id, "saving without applying changes nothing")
+        _ = await studio.applyRecipe(b.id)                    // Tune > Recipes
+        XCTAssertEqual(studio.lastAppliedRecipeID, b.id)
+        _ = await studio.applyRecipe(UUID())                  // a failed apply: unknown state
+        XCTAssertNil(studio.lastAppliedRecipeID)
+    }
+
     func testInvalidRequestSavesNothing() async {
         let studio = await makeCreationStudio()
         let result = await studio.saveRecipe(named: "Bad", from: StationCreationRequest(source: .genre(seed(.genre, "../x"))))

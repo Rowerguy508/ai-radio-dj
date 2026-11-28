@@ -203,9 +203,31 @@ Unfolded Studio corners (`StudioCornerRadius`, continuous): panes 30, workspace 
 fields 14, segmented control capsule. Only Zone B's workspace reads them (`\.studioPanes`),
 so the compact layout and its sheet keep their radii.
 
-- **Switch rule:** `GeometryReader` on the root of the playing screen. If
-  `width >= studioMinWidth` → Studio; else → compact. The switch is the only
-  layout decision. Nothing else reads size class to pick a layout.
+- **Switch rule:** `GeometryReader` on the root of the playing screen calls
+  `DisplayContinuity.layout`, and the folded player calls that same function
+  with its own container. Size class gates the Studio (`horizontalSizeClass == .regular`);
+  a missing size class stays compact. Below `studioMinWidth` the compact arm
+  chooses the phone column, the centred column, or the horizontal Duo. No other
+  view reads size class to pick a player layout, and no layout is keyed with `.id`
+  on the size class. Opening the phone keeps the scroll anchor, the selected
+  station and playback; it does not load again.
+- **Wide listen layout:** below the Studio switch the compact player is used.
+  iPhone landscape, and any wide container shorter than `FoldedColumnLayout.duoMinHeight`
+  (`studioMinWidth`, 716 pt — including the 680 pt compact-to-regular probe), keeps the
+  centred column: ⋯ in a header row, title and DJ status centred, controls under the
+  art, Play/Pause on the centre line. The unfolded Duo is wide and at least that tall
+  (`controlPlacement` is `.duoHorizontal`): artwork and the title stay in the
+  left half, an empty gutter sits on the centre fold, and the right half is a content
+  column (horizontal scrubber, station, DJ chip, and Search Apple
+  Music when nothing is playing, fitted to the column width) plus a glass rail
+  (collapse, more, play/pause, skip, queue, sleep timer, and a live dot). The
+  content column has no transport row. The dot is lit only while
+  the DJ state is `.speaking`. Collapse shows this centred column and does not
+  change playback. Controls start below `duoStatusClearance`. Below 500 pt
+  wide (every iPhone in portrait) the compact player is unchanged.
+- **Regular-width arrangement:** regular width on the open Duo, and every
+  wide-and-tall container at either size class, gets `FoldedPlayer` with the
+  rail (#544, #542). The two-pane arrangement is no longer routed.
 - **No `ViewThatFits` at the top level.** Use it inside a zone, for example to pick
   between icon+label and icon-only transport buttons at large text sizes.
 - **Height:** if the container height is below 480 pt in Studio, Zone A keeps the
@@ -213,6 +235,15 @@ so the compact layout and its sheet keep their radii.
 - **Rotation and fold:** they change the container only. No `onChange` of size
   class starts or stops anything (see the fold rules in `docs/device-install.md`
   and PR #52's review).
+- **App-wide screens** (`AppWideLayout`, #465 item 10): Library (the add-station
+  walkthrough's playlist step), Stations and Settings share one decision from the width
+  class and the container. Under `wideMinWidth`, and any compact container shorter than
+  `duoMinHeight` (every iPhone, narrow Split View), is the phone path and the screen is
+  unchanged. Wider: Library and Settings hold a 560 pt readable column and Library's
+  results go to two columns; Stations on the unfolded Duo (compact class) is a grid of
+  the carousel cards, while regular width keeps the list beside the detail. Accessibility
+  text sizes keep one column. Bars are not moved here (Split View's outer edge is
+  `SplitViewLayout`). `foldDivision` and `arrangement` are reserved for items 2 and 4.
 
 ---
 
@@ -240,6 +271,18 @@ so the compact layout and its sheet keep their radii.
 - Artwork and the background may ignore the safe area.
 - Compact: transport and queue affordance sit in `.safeAreaInset(edge: .bottom)`,
   so the home indicator never covers them.
+- **Split View** (`SplitViewLayout`): compact narrow, half, two-thirds and full.
+  The leading and trailing safe areas are read separately. The larger one is the
+  outer edge, and the Now Playing symbol bar, the station sidebar, and the Library
+  and Settings bar buttons sit on that side. Equal insets keep the current side.
+  A full-screen iPhone, including landscape, does not take this path. A split slice
+  that is taller than it is wide (the Duo in landscape) still does. A missing width
+  class is compact (`SplitViewLayout.chrome(widthClass: nil, ...)`). On those Duo
+  landscape slices (320, 410 and 500 × 640) Now Playing keeps Rail D, never the
+  compact phone column: the column beside the 56 pt rail, the rail on the trailing (right)
+  edge as on the closed Duo,
+  and a 34 or 28 pt title on up to two lines (`SplitViewLayout.keepsRailD`). Hit targets
+  stay at least 44 pt, and controls stay inside the container.
 - Scroll only where content can exceed the container: the queue list, the Tune and
   Connections segments, and the whole layout at accessibility sizes. Zone A itself
   does not scroll in Studio.

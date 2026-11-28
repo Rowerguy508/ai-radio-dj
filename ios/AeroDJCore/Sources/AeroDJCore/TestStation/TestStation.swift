@@ -27,7 +27,7 @@ public enum TestStation {
 
     public static let paidDailyCapMicrodollars = 0
     public static let cadence = DJCadence(talkFraction: 0.3, minSongsBetweenBreaks: 2,
-                                          maxTransitionSeconds: 12, maxBriefingBreakSeconds: 45)
+                                          maxTransitionSeconds: 15, maxBriefingBreakSeconds: 45)
     public static let cacheRetention: TimeInterval = AudioCacheRetention.maximum
 
     /// Beta-default settings, with only the fixture-backed integrations requested.

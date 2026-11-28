@@ -142,7 +142,7 @@ struct MusicSearch {
                 let tracks = try music.searchResults.resolve(results: results, startIndex: startIndex)
                 // Consent / approved-handoff check runs here, before personal cues reach the session.
                 let handoff = briefing()
-                let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) }
+                let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName, origin: $0.origin) }
                 let briefingForQueue = handoff.forQueue()
                 let sources = handoff.connectionItems
                 // Play first (P0 build 8). TapPlaySequence is the live order: play, then
@@ -155,7 +155,8 @@ struct MusicSearch {
                     play: { try await music.play(tracks, station: station) },
                     scheduleBreakPrep: { reservation in
                         djSession.beginQueueInBackground(
-                            reservation, djTracks, briefing: briefingForQueue, sources: sources)
+                            reservation, djTracks, briefing: briefingForQueue, sources: sources,
+                            stationName: station.name, stationID: station.id)
                     },
                     release: { djSession.releaseQueueSetup($0) })
             })

@@ -177,9 +177,9 @@ final class CacheRetentionSweepTests: XCTestCase {
         await run.value
     }
 
-    /// Sentinel item 3 (clock skew): a clip stored while the clock was 30 days ahead is clamped
-    /// to `now` by the first sweep that sees it, so it cannot outlive 7 days once the clock is
-    /// corrected. File cache (relaunch-safe) and in-memory cache alike.
+    /// Sentinel item 3 (clock skew), tightened by #82 F2: a clip stored while the clock was 30
+    /// days ahead is deleted by the first sweep that sees it once the clock is corrected, never
+    /// re-stamped. File cache (relaunch-safe) and in-memory cache alike.
     func testClipStampedInTheFutureCannotOutliveSevenDays() async throws {
         let t0 = Date(timeIntervalSince1970: 1_800_000_000)
         let clock = TestClock(t0.addingTimeInterval(30 * 24 * 3600))
@@ -197,14 +197,8 @@ final class CacheRetentionSweepTests: XCTestCase {
             var done = sweeps.makeAsyncIterator()
             let run = Task { await AudioCacheSweeper(cache: cache).run(ticks: ticks, onSweep: { swept.yield() }) }
             _ = await done.next()
-            let clamped = await cache.audio(for: "skewed")
-            XCTAssertEqual(clamped?.createdAt, t0, "\(type(of: cache)): stamp clamped to no later than now")
-
-            clock.set(t0.addingTimeInterval(7 * 24 * 3600 + 1))
-            tick.yield()
-            _ = await done.next()
             let left = await cache.audio(for: "skewed")
-            XCTAssertNil(left, "\(type(of: cache)): gone 7 days after the corrected clock first saw it")
+            XCTAssertNil(left, "\(type(of: cache)): a future-stamped clip is deleted by the first sweep")
             tick.finish()
             await run.value
         }
@@ -213,7 +207,7 @@ final class CacheRetentionSweepTests: XCTestCase {
     }
 
     /// Sentinel item 4 (relaunch with stale files), through the production entry point
-    /// `start(purgingPersonalFirst:)` that `OnDeviceSpeechProvider` calls at launch: personal clips
+    /// `startPurgingPersonalFirst` that `OnDeviceSpeechProvider` calls at launch: personal clips
     /// (metadata and audio), orphaned audio and expired generic clips left by an earlier run are
     /// deleted before the first tick, and the launch log line counts what is left.
     func testLaunchSweepRemovesStalePersonalAndOrphanFilesBeforeTheFirstTick() async throws {
@@ -231,15 +225,20 @@ final class CacheRetentionSweepTests: XCTestCase {
         await earlier.store(CachedAudio(data: Data([4]), seconds: 1, providerID: "device", voiceID: "v"), for: "k2")
 
         let relaunched = FileAudioCache(directory: dir, now: { clock.now })
-        let launched = expectation(description: "launch sweep")
-        let line = LockedBox<String?>(nil)
-        let task = AudioCacheSweeper(cache: relaunched).start(every: .seconds(3600), purgingPersonalFirst: true,
-                                                              onLaunchSweep: { line.set($0); launched.fulfill() })
-        await fulfillment(of: [launched], timeout: 10)
+        // Build 39 flake (iOS run 41800021409, -Fry): the launch sweep runs in a detached
+        // `.utility` task, which a loaded simulator can hold past a 10 s expectation. Wait for the
+        // sweep's own signal instead of a wall clock, as the other sweeper tests here do. The
+        // assertions are unchanged; a sweep that never ran still fails them (or hangs the suite).
+        let (launches, launched) = AsyncStream<String?>.makeStream()
+        let task = AudioCacheSweeper.startPurgingPersonalFirst(relaunched, every: .seconds(3600),
+                                                              onLaunchSweep: { launched.yield($0) })
+        var signals = launches.makeAsyncIterator()
+        let line = await signals.next()
         task.cancel()
+        launched.finish()
         let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
         XCTAssertEqual(files, ["k2.json"], "only the fresh generic clip survives the relaunch")
-        XCTAssertEqual(line.value, "AeroDJ.cache narration cache count=1 personal=0 after=launch",
+        XCTAssertEqual(line ?? nil, "AeroDJ.cache narration cache count=1 personal=0 after=launch",
                        "the launch line counts what is left after the sweep")
     }
 
@@ -523,7 +522,10 @@ final class BoundaryExpiryTests: XCTestCase {
                                      cache: cache, revocations: revocations)
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: station.active.cadence())
         let dj = DJPresentationStore()
-        let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 9 }, now: { clock.now })
+        // #332 caps a break at one personal update by default. These boundary checks need several
+        // sources in the same break, so the rig opts in to 3 (the purge rules are per cue either way).
+        let session = DJBreakSession(preparer: preparer, station: station, dj: dj,
+                                     base: DJCadence(maxPersonalUpdatesPerBreak: 3), seed: 1, hour: { 9 }, now: { clock.now })
         session.purger = NarrationPurger(cache: cache, preparer: preparer, session: session, revocations: revocations,
                                          feed: NarrationPurgeFeed())
         await session.start()
@@ -691,7 +693,9 @@ final class OnBreakMustStopHookTests: XCTestCase {
                                      cache: cache, revocations: revocations)
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: station.active.cadence())
         let dj = DJPresentationStore()
-        let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 9 })
+        // #332 caps a break at one personal update by default; `sources: n` needs n in one break.
+        let session = DJBreakSession(preparer: preparer, station: station, dj: dj,
+                                     base: DJCadence(maxPersonalUpdatesPerBreak: max(1, n)), seed: 1, hour: { 9 })
         let stops = StopLog()
         if hook { session.onBreakMustStop = { reason, tag in stops.reasons.append(reason); stops.tags.append(tag) } }
         await session.start()

@@ -98,10 +98,19 @@ struct AddStationWalkthroughView: View {
     @State private var typedName = ""
     @State private var query = ""
     @State private var browsingLibrary = false
+    @State private var searchAttempt = 0
     @State private var forward = true
     @State private var savedName: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AccessibilityFocusState private var headingFocused: Bool
+    /// #465 item 10: nil on every phone and narrow split, which keeps the 20 pt gutter and
+    /// one results column exactly as before.
+    @Environment(\.appWideLayout) private var appWide
+
+    /// Extra side inset that holds the step at the readable width. Zero on the phone path.
+    private var wideLeadingInset: CGFloat { CGFloat(appWide?.leadingInset ?? 0) }
+    private var wideTrailingInset: CGFloat { CGFloat(appWide?.trailingInset ?? 0) }
 
     init(studio: StudioPresentationModel, creation: StationCreationModel,
          initialStep: AddStationStep = .kind, initialKind: StationCreationKind? = nil,
@@ -120,6 +129,25 @@ struct AddStationWalkthroughView: View {
     }
 
     var body: some View {
+        SplitBarHost(preferred: .leading) { insets in
+            GeometryReader { proxy in
+                let layout = LibraryDuoLayout.decide(.init(
+                    containerWidth: Double(proxy.size.width),
+                    containerHeight: Double(proxy.size.height),
+                    accessibilityTextSize: dynamicTypeSize.isAccessibilitySize,
+                    hasSplitInsets: insets != nil))
+                if layout.mode == .twoPane {
+                    twoPaneLibraryBrowser(layout)
+                } else {
+                    libraryBrowser(insets)
+                }
+            }
+        }
+    }
+
+    /// Library playlists are one step of this walkthrough. `insets` nil keeps Cancel
+    /// on the leading edge.
+    private func libraryBrowser(_ insets: SplitInsets?) -> some View {
         NavigationStack {
             VStack(spacing: 0) {
                 StepIndicator(current: step, complete: { AddStationWalkthrough.isComplete($0, progress) })
@@ -134,7 +162,8 @@ struct AddStationWalkthroughView: View {
                             .accessibilityFocused($headingFocused)
                         stepContent
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.leading, 20 + wideLeadingInset)
+                    .padding(.trailing, 20 + wideTrailingInset)
                     .padding(.vertical, 18)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     // New identity per step, so the transition and pop-ins rerun.
@@ -147,9 +176,12 @@ struct AddStationWalkthroughView: View {
             }
             .background(AddStationStyle.canvas.ignoresSafeArea())
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: SplitToolbar.placement(
+                    preferred: .leading, edge: insets?.barEdge,
+                    leading: .cancellationAction, trailing: .topBarTrailing)) {
                     Button(savedName == nil ? "Cancel" : "Done") { onClose() }
                         .disabled(creation.isSaving)
+                        .modifier(SplitMinimumTarget(enabled: insets != nil))
                         .accessibilityIdentifier("addStation.cancel")
                 }
             }
@@ -160,6 +192,183 @@ struct AddStationWalkthroughView: View {
         .preferredColorScheme(.dark)
         .tint(.white)
         .interactiveDismissDisabled(creation.isSaving)
+    }
+
+    /// #461 PR 3 (-Nova): Open-Duo Landscape (`820 × 640 pt`) horizontal Library / Add-Station
+    /// two-pane layout (`02-library-duo.png`). Left pane holds step progress, heading, source
+    /// picker, search field, and picked chips; center 32 pt gutter stays clear on device midpoint
+    /// (`x = 410 pt`); right pane holds the single-column scrollable results or step choices;
+    /// trailing 56 pt rail holds `Cancel`/`Done`, `Back`, and `Next`/`Save` (≥ 44 × 44 pt).
+    private func twoPaneLibraryBrowser(_ layout: LibraryDuoLayout.Decision) -> some View {
+        let kind = chosenKind ?? creation.kind
+        return HStack(spacing: 0) {
+            Color.clear.frame(width: layout.leadingPadding)
+
+            // Left pane: controls, source switcher, search, selected chips
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 14) {
+                    StepIndicator(current: step, complete: { AddStationWalkthrough.isComplete($0, progress) })
+                    Text(heading)
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .accessibilityAddTraits(.isHeader)
+                        .accessibilityFocused($headingFocused)
+                    if step == .picks {
+                        Text(AddStationWalkthrough.pickHint(for: kind))
+                            .font(.subheadline)
+                            .foregroundStyle(AddStationStyle.secondary)
+                        if kind == .playlist {
+                            Picker("Playlists from", selection: $browsingLibrary) {
+                                Text("Apple Music").tag(false)
+                                Text("Your library").tag(true)
+                            }
+                            .pickerStyle(.segmented)
+                            .accessibilityIdentifier("addStation.playlistSource")
+                        }
+                        if !(kind == .playlist && browsingLibrary) {
+                            searchField(kind)
+                        }
+                        if !creation.selected.isEmpty { selectedChips }
+                        if let restriction = creation.reachRestriction {
+                            Label(restriction.message, systemImage: "lock.iphone")
+                                .font(.caption)
+                                .foregroundStyle(AddStationStyle.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else if savedName == nil {
+                        Text("New station")
+                            .font(.subheadline)
+                            .foregroundStyle(AddStationStyle.secondary)
+                    }
+                }
+                .padding(.vertical, 20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(width: layout.leftPaneWidth)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("library.pane.controls")
+
+            // Center fold gutter aligned to device midpoint (x = 410 pt on 820 × 640).
+            Color.clear
+                .frame(width: layout.gutterWidth)
+                .accessibilityHidden(true)
+
+            // Right pane: scrollable single-column results or active step content
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 12) {
+                    if step == .picks {
+                        resultsList(forceSingleColumn: true)
+                    } else {
+                        stepContent
+                    }
+                }
+                .padding(.vertical, 20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .id(step)
+                .transition(stepTransition)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("addStation.step.\(step.number)")
+            }
+            .frame(width: layout.rightPaneWidth)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("library.pane.results")
+
+            Color.clear.frame(width: layout.trailingPadding)
+
+            // Trailing 56 pt action rail: Cancel/Done at top, Back + primary action at bottom.
+            VStack(spacing: 12) {
+                Button { onClose() } label: {
+                    Image(systemName: savedName == nil ? "xmark" : "checkmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(Circle().fill(Color.white.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+                .disabled(creation.isSaving)
+                .accessibilityLabel(savedName == nil ? "Cancel" : "Done")
+                .accessibilityIdentifier("addStation.cancel")
+
+                Spacer(minLength: 12)
+
+                if savedName == nil, step.previous != nil {
+                    Button { goBack() } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 44, height: 44)
+                            .background(Circle().fill(Color.white.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!AddStationWalkthrough.canGoBack(from: step, progress))
+                    .accessibilityLabel("Back")
+                    .accessibilityIdentifier("addStation.back")
+                }
+
+                if savedName != nil {
+                    railPrimaryButton(title: "Done", icon: "checkmark", id: "addStation.done", enabled: true) {
+                        onClose()
+                    }
+                } else if step == .review {
+                    railPrimaryButton(title: creation.isSaving ? "Saving…" : "Save station",
+                                      icon: "checkmark",
+                                      id: "addStation.save",
+                                      enabled: AddStationWalkthrough.canSave(on: step, progress)) {
+                        save()
+                    }
+                    .accessibilityHint("Adds it to your Stations list. What's playing doesn't change.")
+                } else {
+                    railPrimaryButton(title: "Next",
+                                      icon: "arrow.right",
+                                      id: "addStation.next",
+                                      enabled: AddStationWalkthrough.canGoNext(from: step, progress)) {
+                        goNext()
+                    }
+                }
+            }
+            .padding(.vertical, 16)
+            .frame(width: layout.railWidth)
+            .frame(maxHeight: .infinity)
+            .background(Color.white.opacity(0.04))
+            .overlay(alignment: .leading) {
+                Rectangle().fill(AddStationStyle.hairline).frame(width: 1)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("library.rail")
+        }
+        .background(AddStationStyle.canvas.ignoresSafeArea())
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("library.twoPane")
+        .preferredColorScheme(.dark)
+        .tint(.white)
+        .interactiveDismissDisabled(creation.isSaving)
+        .task(id: step == .picks ? SearchKey(kind: kind, query: query, library: browsingLibrary, attempt: searchAttempt) : nil) {
+            guard step == .picks else { return }
+            if kind == .playlist && browsingLibrary {
+                await creation.loadLibraryPlaylists()
+                return
+            }
+            if kind != .genre {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            await creation.search(query)
+        }
+    }
+
+    private func railPrimaryButton(title: String, icon: String, id: String, enabled: Bool,
+                                   action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(AddStationStyle.canvas)
+                .frame(width: 44, height: 44)
+                .background(Circle().fill(Color.white.opacity(enabled ? 1 : 0.35)))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(title)
+        .accessibilityIdentifier(id)
     }
 
     private var heading: String {
@@ -250,16 +459,17 @@ struct AddStationWalkthroughView: View {
                     .foregroundStyle(AddStationStyle.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            resultsList
+            resultsList()
         }
-        // Genres list on arrival; library playlists load when that tab is chosen. Catalog search
+        // Genres list on arrival (fetched once through `GenreProviding`, then filtered on the
+        // device as you type); library playlists load when that tab is chosen. Catalog search
         // waits 300 ms after typing stops. All through `StationCreationModel`, never a new route.
-        .task(id: SearchKey(kind: kind, query: query, library: browsingLibrary)) {
+        .task(id: SearchKey(kind: kind, query: query, library: browsingLibrary, attempt: searchAttempt)) {
             if kind == .playlist && browsingLibrary {
                 await creation.loadLibraryPlaylists()
                 return
             }
-            if kind != .genre || !query.isEmpty {
+            if kind != .genre {
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 guard !Task.isCancelled else { return }
             }
@@ -271,6 +481,8 @@ struct AddStationWalkthroughView: View {
         let kind: StationCreationKind
         let query: String
         let library: Bool
+        /// Bumped by "Try again" so a failed load reruns with the same query.
+        let attempt: Int
     }
 
     private func searchField(_ kind: StationCreationKind) -> some View {
@@ -318,21 +530,61 @@ struct AddStationWalkthroughView: View {
     }
 
     @ViewBuilder
-    private var resultsList: some View {
+    private func resultsList(forceSingleColumn: Bool = false) -> some View {
+        let useWideGrid = !forceSingleColumn && wideColumns > 1
         switch creation.phase {
         case .idle:
             EmptyView()
         case .searching where creation.results.isEmpty:
-            ProgressView().frame(maxWidth: .infinity).padding(.vertical, 20)
-                .accessibilityLabel("Searching")
+            Group {
+                if creation.isLoadingGenres { ProgressView("Loading genres") } else { ProgressView() }
+            }
+                .tint(.white).foregroundStyle(AddStationStyle.secondary)
+                .frame(maxWidth: .infinity).padding(.vertical, 20)
+                .accessibilityLabel(creation.isLoadingGenres ? "Loading genres" : "Searching")
         case .empty:
-            Text("No matches. Try another name.")
+            Text(creation.kind == .genre
+                 ? (query.isEmpty ? "No genres are available right now." : "No genres match. Try another word.")
+                 : "No matches. Try another name.")
                 .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
+                .accessibilityIdentifier("addStation.empty")
         case .failed(let message):
             if let message {
-                Label(message, systemImage: "exclamationmark.triangle")
-                    .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 10) {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    // Genres: one explicit refetch (typing never refetches after a failure).
+                    Button("Try again") {
+                        if creation.kind == .genre {
+                            Task { await creation.retryGenres(matching: query) }
+                        } else {
+                            searchAttempt += 1
+                        }
+                    }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .accessibilityIdentifier("addStation.retry")
+                }
+            }
+        case .notAuthorized:
+            // Never prompts here: access is granted from a station (Allow) or Settings.
+            Text(GenrePickerCopy.connectAppleMusic)
+                .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("addStation.genres.connect")
+        case .searching where useWideGrid, .results where useWideGrid:
+            // #465 item 10: the Duo, iPad and Split View half and wider. The same rows, in
+            // reading order across then down, so VoiceOver order is unchanged.
+            VStack(spacing: 8) {
+                if creation.resultsSource == .libraryPlaylists { libraryHeader }
+                LazyVGrid(columns: appWide?.gridColumns ?? [], alignment: .leading, spacing: 8) {
+                    ForEach(Array(creation.results.enumerated()), id: \.element.id) { index, row in
+                        resultRow(row).popIn(min(index, 6) + 2)
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("addStation.results.grid")
             }
         case .searching, .results:
             VStack(spacing: 8) {
@@ -347,6 +599,17 @@ struct AddStationWalkthroughView: View {
                 }
             }
         }
+    }
+
+    /// Results columns: 1 (the phone list) unless `AppWideLayout` gives more.
+    private var wideColumns: Int { appWide?.columns ?? 1 }
+
+    /// The wide grid's copy of the phone header above the rows.
+    private var libraryHeader: some View {
+        Text("Your playlists").font(.footnote.weight(.semibold))
+            .foregroundStyle(AddStationStyle.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
     }
 
     private func resultRow(_ row: StationSeedSearchResult) -> some View {
@@ -492,7 +755,7 @@ struct AddStationWalkthroughView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Image(systemName: "checkmark.circle.fill").font(.system(size: 44)).foregroundStyle(.white)
                     .accessibilityHidden(true)
-                Text("\u{201C}\(savedName)\u{201D} is in your station recipes. Open Tune and tap Apply when you want it. Nothing that's playing changed.")
+                Text("\u{201C}\(savedName)\u{201D} is in your Stations list. Open it there when you want it. Nothing that's playing changed.")
                     .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -544,13 +807,14 @@ struct AddStationWalkthroughView: View {
             } else if step == .review {
                 primaryButton(creation.isSaving ? "Saving…" : "Save station", id: "addStation.save",
                               enabled: AddStationWalkthrough.canSave(on: step, progress)) { save() }
-                    .accessibilityHint("Saves it to your station recipes. What's playing doesn't change.")
+                    .accessibilityHint("Adds it to your Stations list. What's playing doesn't change.")
             } else {
                 primaryButton("Next", id: "addStation.next",
                               enabled: AddStationWalkthrough.canGoNext(from: step, progress)) { goNext() }
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.leading, 20 + wideLeadingInset)
+        .padding(.trailing, 20 + wideTrailingInset)
         .padding(.top, 10)
         .padding(.bottom, 14)
         .background(AddStationStyle.canvas)
@@ -608,6 +872,8 @@ private struct StepIndicator: View {
     let current: AddStationStep
     let complete: (AddStationStep) -> Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// #465 item 10: lines the indicator up with the capped step. Nil (0 pt) on phones.
+    @Environment(\.appWideLayout) private var appWide
 
     var body: some View {
         HStack(spacing: 6) {
@@ -621,6 +887,8 @@ private struct StepIndicator: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(AddStationStyle.secondary)
         }
+        .padding(.leading, CGFloat(appWide?.leadingInset ?? 0))
+        .padding(.trailing, CGFloat(appWide?.trailingInset ?? 0))
         .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.8), value: current)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(current.accessibilityLabel)
@@ -696,7 +964,7 @@ struct AddStationSummaryCard: View {
             row("DJ", personality)
             row("DJ talk", talk)
             row("Voice", AddStationTuning.voiceNote)
-            Text("Saved to your station recipes. It won't change what's playing.")
+            Text("Adds it to your Stations list. It won't change what's playing.")
                 .font(.caption)
                 .foregroundStyle(AddStationStyle.secondary)
                 .fixedSize(horizontal: false, vertical: true)

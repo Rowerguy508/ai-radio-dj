@@ -38,6 +38,10 @@ public enum ConfirmStep: Equatable, Sendable {
 public enum PlaybackConfirmPolicy {
     /// 16 polls x 0.5 s = the 8 s deadline from #109.
     public static let maxPolls = 16
+    /// Seconds between start-confirm polls (#109).
+    public static let pollInterval: TimeInterval = 0.5
+    /// `maxPolls` x `pollInterval`: the 8 s start-confirm deadline.
+    public static var deadlineSeconds: TimeInterval { Double(maxPolls) * pollInterval }
 
     /// `poll` is 1-based: the first check after the first sleep is poll 1.
     public static func step(status: ConfirmStatus, transportIsPreparing: Bool, poll: Int,
@@ -46,6 +50,17 @@ public enum PlaybackConfirmPolicy {
         guard transportIsPreparing else { return .stopWaiting }
         if status == .interrupted { return .failInterrupted }
         return poll >= maxPolls ? .reportTimeoutKeepPlayer : .keepWaiting
+    }
+
+    /// Whether the app's position poll, seeing MusicKit `.playing`, confirms the current attempt
+    /// (`confirmStart`). A `.preparing` start confirms (#109). #587 (-Fry): a start whose stall this
+    /// attempt already reported also confirms once it plays past 0:00, whatever the transport. The
+    /// skip path leaves transport `.playing`, so without this the banner outlived a playing song.
+    public static func pollConfirms(position: TimeInterval?, transportIsPreparing: Bool,
+                                    reportedThisAttempt: Bool) -> Bool {
+        if transportIsPreparing { return true }
+        guard reportedThisAttempt, let position else { return false }
+        return position > 0
     }
 
     /// Whether a step lets the app touch the player. Always false: the confirm never pauses.

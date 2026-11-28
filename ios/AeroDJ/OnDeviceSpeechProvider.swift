@@ -213,7 +213,7 @@ extension VoiceRenderer {
         let cache = FileAudioCache(directory: support.appendingPathComponent("Voice/Cache"))
         // Live consent is not persisted, so personal clips from an earlier launch go first; then
         // the 7-day cap is swept hourly, not only when a clip is read.
-        AudioCacheSweeper(cache: cache).start(purgingPersonalFirst: true)
+        AudioCacheSweeper.startPurgingPersonalFirst(cache)
         return VoiceRenderer(
             routes: PhononSpeechRoutes.make(),
             budget: VoiceBudget(dailyCapMicrodollars: VoiceBetaDefaults.paidDailyCapMicrodollars, file: support.appendingPathComponent("Voice/budget.json")),

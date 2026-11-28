@@ -30,7 +30,7 @@ public extension StationSetting {
         case .commentary: "DJ talk"
         case .briefing: "Morning briefing"
         case .integration(.calendar): "Calendar"
-        case .integration(.obsidian): "Obsidian notes"
+        case .integration(.obsidian): "Markdown notes"
         case .integration(.shareInbox): "Shared from Mail & Messages"
         }
     }

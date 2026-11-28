@@ -36,8 +36,8 @@ func djRenderer(paid: DJFakeVoice? = nil, paidTimeout: Duration = .seconds(2), f
     return VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: capMicrodollars), cache: InMemoryAudioCache())
 }
 
-func djTracks(_ n: Int) -> [DJTrack] {
-    (0..<n).map { DJTrack(id: "t\($0)", title: "Song \($0)", artist: "Artist \($0)") }
+func djTracks(_ n: Int, origin: TrackOrigin = .unknown) -> [DJTrack] {
+    (0..<n).map { DJTrack(id: "t\($0)", title: "Song \($0)", artist: "Artist \($0)", origin: origin) }
 }
 
 final class DJNarrationTests: XCTestCase {
@@ -71,12 +71,14 @@ final class DJNarrationTests: XCTestCase {
         let breaks = writer.plan(tracks: djTracks(41), briefing: nil, hour: 9).breaks
         // Last line of each break is the intro; normalise the song-specific parts away.
         let intros = breaks.map { $0.cues.last!.text.replacingOccurrences(of: #"\d+"#, with: "#", options: .regularExpression) }
-        for window in stride(from: 0, to: intros.count - 4, by: 5) {
-            XCTAssertEqual(Set(intros[window..<window + 5]).count, 5, "5 intro templates, none repeated within a cycle")
+        let n = EditorialTone.warm.closing.count
+        XCTAssertGreaterThanOrEqual(intros.count, n * 2)
+        for window in stride(from: 0, to: intros.count - n + 1, by: n) {
+            XCTAssertEqual(Set(intros[window..<window + n]).count, n, "\(n) intro templates, none repeated within a cycle")
         }
         XCTAssertTrue(zip(intros, intros.dropFirst()).allSatisfy { $0 != $1 })
-        XCTAssertEqual(breaks.first?.cues.first?.text.hasPrefix("Morning") == true
-                       || breaks.first?.cues.first?.text.hasPrefix("Good morning") == true, true, "time-of-day greeting")
+        XCTAssertTrue(EditorialTone.warm.greetings[.morning, default: []].contains(breaks.first?.cues.first?.text ?? ""),
+                      "time-of-day greeting")
     }
 
     func testOnlyRealMetadataIsSpoken() {
@@ -205,10 +207,12 @@ final class DJNarrationTests: XCTestCase {
                     case .personalContext(let item, let source, let provenance):
                         XCTAssertEqual(item, good.sourceItemID); XCTAssertEqual(source, .calendar); XCTAssertEqual(provenance, "calendar:1")
                         XCTAssertTrue(cue.text.contains("From your calendar."), "attribution is also spoken")
-                    case .trackMetadata(let ids):
+                    case .trackMetadata(let ids, _):
                         XCTAssertTrue(ids.allSatisfy { [djTracks(12)[djBreak.afterTrack].id, djTracks(12)[djBreak.afterTrack + 1].id].contains($0) })
                     case .presenter:
                         XCTAssertFalse(cue.text.contains("Song") || cue.text.contains("Artist"), "presenter lines carry no facts")
+                    case .stationName:
+                        XCTFail("the default writer speaks only the built-in brand")
                     }
                 }
             }

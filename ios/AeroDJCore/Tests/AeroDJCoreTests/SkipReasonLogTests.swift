@@ -29,7 +29,72 @@ final class SkipReasonLogTests: XCTestCase {
             .deletingLastPathComponent().appendingPathComponent("AeroDJ/PlayerView.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
         XCTAssertFalse(source.contains("logBreakSkipped(after: finishedIndex, reason: .notPlanned)"))
-        XCTAssertTrue(source.contains("PlaybackLog.noBreakReason(djSession.lastNoBreak)"))
+        XCTAssertTrue(source.contains("PlaybackLog.boundarySkipToLog(djSession.lastNoBreak)"))
+        XCTAssertTrue(source.contains("djSession.songStartedWithoutDuration(index: index)"),
+                      "the no-duration start reaches the session so its boundary is not logged twice")
         XCTAssertTrue(source.contains("PlaybackLog.handedOutReason(reason)"))
+    }
+
+    /// Echo's #673 note: the talk-over path's no-break boundary goes through the same filter, so
+    /// a no-duration song's missed break is not logged a second time as `.notPlanned` there.
+    func testTalkoverCoordinatorLogsTheRealReason() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("AeroDJ/TalkoverCoordinator.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(source.contains("if let reason = PlaybackLog.boundarySkipToLog(djSession.lastNoBreak) {"))
+        XCTAssertTrue(source.contains("music.logBreakSkipped(after: k, reason: reason)"))
+        XCTAssertFalse(source.contains("reason: .notPlanned)"), "no hard-coded skip reason")
+    }
+
+    /// Echo's #304 finding: TalkoverCoordinator's gap break with an empty line or no clips used
+    /// to skip the interlude without a log line. It now logs `.renderFailed`, the same reason
+    /// PlayerView's handed-out path logs for `.emptyLine`, before the skip.
+    func testTalkoverEmptyBreakLogsTheSkipBeforeSkipping() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("AeroDJ/TalkoverCoordinator.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let open = try XCTUnwrap(source.range(of: "guard !line.isEmpty, !clips.isEmpty else {"),
+                                 "the empty-break guard moved")
+        let close = try XCTUnwrap(source.range(of: "return", range: open.upperBound..<source.endIndex))
+        let block = String(source[open.upperBound..<close.lowerBound])
+        let log = try XCTUnwrap(block.range(of: "music.logBreakSkipped(after: k, reason: PlaybackLog.handedOutReason(.emptyLine))"),
+                                "the empty break is logged")
+        let skip = try XCTUnwrap(block.range(of: "music.skipInterlude()"))
+        XCTAssertLessThan(log.lowerBound, skip.lowerBound, "logged before the interlude is skipped")
+        XCTAssertTrue(block.contains("djSession.playbackFailed(afterTrack: k)"))
+        XCTAssertEqual(PlaybackLog.handedOutReason(.emptyLine), .renderFailed)
+    }
+
+    // MARK: - #304 R3: nil or non-positive song duration logs .durationUnknown
+
+    func testSongStartSkipReasonFlagsMissingOrInvalidDuration() {
+        XCTAssertEqual(PlaybackLog.songStartSkipReason(duration: nil), .durationUnknown)
+        XCTAssertEqual(PlaybackLog.songStartSkipReason(duration: 0), .durationUnknown)
+        XCTAssertEqual(PlaybackLog.songStartSkipReason(duration: -12), .durationUnknown)
+        XCTAssertEqual(PlaybackLog.songStartSkipReason(duration: .nan), .durationUnknown)
+        XCTAssertEqual(PlaybackLog.songStartSkipReason(duration: .infinity), .durationUnknown)
+        XCTAssertNil(PlaybackLog.songStartSkipReason(duration: 185.0))
+        XCTAssertEqual(PlaybackLog.breakSkipped(after: 2, reason: .durationUnknown),
+                       "break skipped after=2 reason=durationUnknown")
+    }
+
+    func testDurationUnknownSkipStaysQuietInPresentationState() {
+        var presentation = DJPresentationModel()
+        let state = presentation.apply(.breakSkipped(afterTrack: 2, .durationUnknown))
+        XCTAssertEqual(state, .idle)
+    }
+
+    /// PlayerView logs `.durationUnknown` when `onSongStarted` receives no usable duration
+    /// and captures `music` weakly to avoid a retain cycle on `music.onSongStarted`.
+    func testPlayerViewLogsNilDurationSkip() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("AeroDJ/PlayerView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(source.contains("music.onSongStarted = { [djSession, talkover, weak music]"))
+        XCTAssertTrue(source.contains("PlaybackLog.songStartSkipReason(duration: duration)"))
+        XCTAssertTrue(source.contains("music?.logBreakSkipped(after: index, reason: skip)"))
     }
 }

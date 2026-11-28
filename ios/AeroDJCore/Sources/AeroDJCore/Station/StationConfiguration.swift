@@ -121,7 +121,11 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
             minSongsBetweenBreaks: everySong ? 0 : base.minSongsBetweenBreaks,
             maxTransitionSeconds: min(base.maxTransitionSeconds, personality.maxTransitionSeconds),
             maxBriefingBreakSeconds: base.maxBriefingBreakSeconds,
-            allowsBackToBack: everySong
+            allowsBackToBack: everySong,
+            maxClosingSeconds: base.maxClosingSeconds,
+            maxOrdinaryBreakSeconds: base.maxOrdinaryBreakSeconds,
+            maxPersonalUpdatesPerBreak: base.maxPersonalUpdatesPerBreak,
+            maxOpenerBreakSeconds: base.maxOpenerBreakSeconds
         )
     }
 
@@ -187,10 +191,11 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
 public enum DJPersonality: String, Codable, Sendable, CaseIterable {
     case warm, upbeat, laidBack, minimal
 
-    /// Upper bound for a plain (non-briefing) transition. `minimal` keeps it short.
+    /// Upper bound for a plain break's main segment (the talk-over closing line has its own
+    /// `DJCadence.maxClosingSeconds`). `minimal` keeps it short.
     public var maxTransitionSeconds: Int {
         switch self {
-        case .warm, .upbeat, .laidBack: 12
+        case .warm, .upbeat, .laidBack: 15
         case .minimal: 6
         }
     }
@@ -256,6 +261,8 @@ public enum BriefingSection: String, Codable, Sendable, CaseIterable, Hashable {
 }
 
 /// A local time-of-day window, in minutes after midnight. May wrap past midnight.
+/// Since #332 it does not gate personal updates (they may air all day); it is kept so saved
+/// stations still decode and round-trip.
 public struct BriefingWindow: Codable, Equatable, Sendable {
     public var startMinute: Int
     public var durationMinutes: Int
