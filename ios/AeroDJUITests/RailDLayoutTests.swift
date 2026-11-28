@@ -6,7 +6,9 @@ import UIKit
 /// iPhone, the closed Duo and the open Duo; no horizontal progress bar. Each frame of the mock
 /// is a capture (`RailDCaptureContainer`, or the plain capture path on the iPhone), checked and
 /// saved here. Required in ios.yml: rail-d-iphone, rail-d-duo-closed,
-/// rail-d-duo-closed-status-column (build 58 follow-up), rail-d-duo-open-portrait,
+/// rail-d-duo-closed-status-column (build 58 follow-up),
+/// rail-d-duo-closed-status-column-ax5 (AX5 overflow follow-up),
+/// rail-d-duo-closed-status-column-ax3 (owner, Nov 27: names wrap at large text), rail-d-duo-open-portrait,
 /// rail-d-duo-open-portrait-sidebar, rail-d-duo-open-landscape-spread,
 /// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar. Not required:
 /// rail-d-duo-open-landscape-book-collapsed (#548, the spread's frame with the rail collapsed).
@@ -93,6 +95,133 @@ final class RailDLayoutTests: XCTestCase {
         assertNoHorizontalBar(app)
         try assertClosedChip(app, rail: rail)
         save(app, "rail-d-duo-closed-status-column", container: any["capture.railDContainer"])
+    }
+
+    /// AX5 overflow follow-up (Orion to the owner, from closed-ax5_iPhone-Duo on iOS
+    /// 45629736914): at accessibilityExtraExtraExtraLarge, Skip, Queue and the sleep timer
+    /// overflow the 56 pt rail. Same status-column capture as above, at AX5; those three
+    /// icons must stay inside the rail, and the shot is rail-d-duo-closed-status-column-ax5.
+    /// Art may drop in ViewThatFits at AX5, so this does not require the art card. -Nova
+    ///
+    /// Owner (Nov 27, 2026, relayed by Orion): "Fix the cut-off station and song names at large
+    /// text first." The same launch now also checks the station, song and artist names carry the
+    /// fixture's full strings and wrap instead of truncating ("Morni…" on the #668 shot). -Nova
+    @MainActor
+    func testClosedDuoRailTucksUnderTheStatusColumnAtAX5() throws {
+        try assertStatusColumnAtAccessibilitySize(Self.ax5, shot: "rail-d-duo-closed-status-column-ax5",
+                                                  requiresWrap: true)
+    }
+
+    /// Owner (Nov 27): the AX3 sibling of the shot above, same checks. At AX3 a name that fits
+    /// on one line may stay one line; one that does not must wrap. -Nova
+    @MainActor
+    func testClosedDuoRailTucksUnderTheStatusColumnAtAX3() throws {
+        try assertStatusColumnAtAccessibilitySize(Self.ax3, shot: "rail-d-duo-closed-status-column-ax3",
+                                                  requiresWrap: false)
+    }
+
+    /// `UICTContentSizeCategoryAccessibilityXXXL` (AX5) and `…AccessibilityXL` (AX3).
+    private static var ax5: (launch: String, category: UIContentSizeCategory) {
+        ("UICTContentSizeCategoryAccessibilityXXXL", .accessibilityExtraExtraExtraLarge)
+    }
+    private static var ax3: (launch: String, category: UIContentSizeCategory) {
+        ("UICTContentSizeCategoryAccessibilityXL", .accessibilityExtraLarge)
+    }
+    /// `PlaybackFixtures.station` and `PlaybackFixtures.songs[0]`, the capture's playing song.
+    private static let fixtureStation = "Morning Calm"
+    private static let fixtureTitle = "Morning Light"
+    private static let fixtureArtist = "The Calm Collective"
+
+    @MainActor
+    private func assertStatusColumnAtAccessibilitySize(_ size: (launch: String, category: UIContentSizeCategory),
+                                                       shot: String, requiresWrap: Bool) throws {
+        let app = try launch("railDDuoClosed", container: Self.closed, orientation: .portrait,
+                             extra: ["-AeroDJCaptureClosedStatusColumn", "YES",
+                                     // #668 AX5 follow-up: the owner's AX shots without the tag.
+                                     "-AeroDJCaptureHidesTestStationTag", "YES",
+                                     "-UIPreferredContentSizeCategoryName", size.launch])
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["folded.outer"].waitForExistence(timeout: 15), "the closed reskin\n\(app.debugDescription)")
+        let box = try settledContainer(app, size: Self.closed)
+        let rail = try assertRail(app, id: "folded.closedRail", hasCollapse: false)
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail), "rail \(rail) left the container \(box)")
+        let columnMinX = box.maxX - Self.statusColumn
+        XCTAssertGreaterThanOrEqual(rail.minX, columnMinX - 3,
+                                    "rail \(rail) is not under the \(Self.statusColumn) pt status column of \(box)")
+        XCTAssertLessThan(rail.maxX, box.maxX, "rail \(rail) runs off the container \(box)")
+        for id in ["transport.skip", "queue.affordance", "folded.sleepTimer"] {
+            let frame = try XCTUnwrap(settledFrame(of: any[id], id))
+            XCTAssertTrue(rail.insetBy(dx: -1, dy: -1).contains(frame),
+                          "\(id) \(frame) overflows the rail \(rail)")
+            XCTAssertLessThanOrEqual(frame.width, Self.railGlassWidth + 1,
+                                     "\(id) \(frame) is wider than the 56 pt glass")
+        }
+        // The names: full strings, inside the column left of the rail, and wrapped wherever one
+        // line cannot hold them. Sizes are FoldedOuterHeader / FoldedOuterTitleRow's
+        // @ScaledMetric bases (17 headline; RailDLayout.closedTitlePointSize 40 largeTitle with
+        // -0.6 tracking; RailDLayout.closedArtistPointSize 17 subheadline).
+        var wrapped = 0
+        wrapped += try assertNameNotTruncated(app, id: "station.title.name", text: Self.fixtureStation,
+                                              style: .headline, base: 17, weight: .heavy,
+                                              category: size.category, box: box, rail: rail)
+        wrapped += try assertNameNotTruncated(app, id: "folded.titleBlock.title", text: Self.fixtureTitle,
+                                              style: .largeTitle, base: 40, weight: .heavy, tracking: -0.6,
+                                              category: size.category, box: box, rail: rail)
+        wrapped += try assertNameNotTruncated(app, id: "folded.titleBlock.artist", text: Self.fixtureArtist,
+                                              style: .subheadline, base: 17, weight: .semibold,
+                                              category: size.category, box: box, rail: rail)
+        if requiresWrap {
+            // At AX5 the song title cannot fit one line beside the rail (the #668 shot's "Morni…"),
+            // so the check above must have seen at least it wrap.
+            XCTAssertGreaterThanOrEqual(wrapped, 1, "no name needed to wrap at AX5: the check is not testing anything")
+        }
+        // #668 AX5 follow-up (-Nova): on 5a0a3904's AX5 shot the pinned DJ chip cut the wrapped
+        // song title off and hid the artist. The chip now stacks under the names in their own flow:
+        // its top is at or below the artist's bottom, inside the column, left of the rail.
+        let artist = try XCTUnwrap(settledFrame(of: any["folded.titleBlock.artist"], "artist"))
+        let title = try XCTUnwrap(settledFrame(of: any["folded.titleBlock.title"], "title"))
+        XCTAssertLessThanOrEqual(title.maxY, artist.minY + 1, "title \(title) runs into the artist \(artist)")
+        let chip = any["dj.ready"]
+        XCTAssertTrue(chip.waitForExistence(timeout: 5), "DJ chip missing\n\(app.debugDescription)")
+        let chipFrame = try XCTUnwrap(settledFrame(of: chip, "dj.ready"))
+        XCTAssertGreaterThanOrEqual(chipFrame.minY, artist.maxY - 1,
+                                    "DJ chip \(chipFrame) sits over the artist \(artist)")
+        XCTAssertFalse(chipFrame.intersects(title), "DJ chip \(chipFrame) overlaps the title \(title)")
+        XCTAssertLessThanOrEqual(chipFrame.maxX, rail.minX + 1, "DJ chip \(chipFrame) runs under the rail \(rail)")
+        // Capture-only: these two owner shots draw without the TEST STATION tag.
+        XCTAssertFalse(any["folded.testStation"].exists, "TEST STATION tag is still drawn in \(shot)")
+        assertNoHorizontalBar(app)
+        save(app, shot, container: any["capture.railDContainer"])
+    }
+
+    /// The name's exposed frame (`CaptureNameFrames`, status-column capture only) carries the full
+    /// string, starts on screen, stays left of the rail, and is more than one line tall whenever
+    /// its single-line width at this size is wider than the frame: that is, it wrapped instead of
+    /// truncating. Returns 1 when it had to wrap.
+    @MainActor
+    private func assertNameNotTruncated(_ app: XCUIApplication, id: String, text: String,
+                                        style: UIFont.TextStyle, base: CGFloat, weight: UIFont.Weight,
+                                        tracking: CGFloat = 0, category: UIContentSizeCategory,
+                                        box: CGRect, rail: CGRect,
+                                        file: StaticString = #filePath, line: UInt = #line) throws -> Int {
+        let element = app.descendants(matching: .any)[id]
+        XCTAssertTrue(element.waitForExistence(timeout: 5), "\(id) missing\n\(app.debugDescription)", file: file, line: line)
+        XCTAssertEqual(element.label, text, "\(id) is not the full name", file: file, line: line)
+        let frame = try XCTUnwrap(settledFrame(of: element, id), file: file, line: line)
+        XCTAssertGreaterThanOrEqual(frame.minX, box.minX - 1, "\(id) \(frame) starts off the container", file: file, line: line)
+        XCTAssertLessThanOrEqual(frame.maxX, rail.minX + 1, "\(id) \(frame) runs under the rail \(rail)", file: file, line: line)
+        XCTAssertLessThan(frame.minY, box.maxY, "\(id) \(frame) is below the window", file: file, line: line)
+        let traits = UITraitCollection(preferredContentSizeCategory: category)
+        let pointSize = UIFontMetrics(forTextStyle: style).scaledValue(for: base, compatibleWith: traits)
+        let font = UIFont.systemFont(ofSize: pointSize, weight: weight)
+        let oneLine = (text as NSString).size(withAttributes: [.font: font]).width + tracking * CGFloat(text.count)
+        guard oneLine > frame.width + 2 else { return 0 }
+        // #668 AX5 follow-up: a wrapped name may be drawn down to 0.7× (`WordFitName`) so it breaks
+        // between words; two lines at 0.7× (1.4 lines) still clear 1.05 lines, one full line does not.
+        XCTAssertGreaterThan(frame.height, font.lineHeight * 0.7 * 1.5,
+                             "\(id) \(frame) is one line but \(text) needs \(oneLine) pt at \(pointSize) pt: truncated",
+                             file: file, line: line)
+        return 1
     }
 
     @MainActor

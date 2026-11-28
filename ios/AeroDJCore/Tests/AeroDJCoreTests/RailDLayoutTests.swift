@@ -15,6 +15,23 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(RailDLayout.thumbHitSide, 44)
         XCTAssertGreaterThanOrEqual(RailDLayout.minTrackLength, 44)
         XCTAssertLessThanOrEqual(RailDLayout.scrubberWidth, RailDLayout.railWidth)
+        XCTAssertEqual(RailDLayout.symbolPointSize, 22)
+    }
+
+    /// AX5 + a trailing status column caps the rail symbols at default title2; iPhone
+    /// (no inset) and default type sizes keep `.title2` unscaled in the view (nil).
+    func testSymbolCapOnlyAtAccessibilitySizeWithATrailingInset() {
+        XCTAssertEqual(RailDLayout.cappedSymbolPointSize(accessibilityText: true, trailingSystemInset: 73),
+                       RailDLayout.symbolPointSize)
+        XCTAssertEqual(RailDLayout.cappedSymbolPointSize(accessibilityText: true, trailingSystemInset: 59),
+                       RailDLayout.symbolPointSize)
+        XCTAssertNil(RailDLayout.cappedSymbolPointSize(accessibilityText: true, trailingSystemInset: 0))
+        XCTAssertNil(RailDLayout.cappedSymbolPointSize(accessibilityText: true, trailingSystemInset: 0.5))
+        XCTAssertNil(RailDLayout.cappedSymbolPointSize(accessibilityText: true, trailingSystemInset: -12))
+        XCTAssertNil(RailDLayout.cappedSymbolPointSize(accessibilityText: true, trailingSystemInset: .nan))
+        XCTAssertNil(RailDLayout.cappedSymbolPointSize(accessibilityText: true, trailingSystemInset: .infinity))
+        XCTAssertNil(RailDLayout.cappedSymbolPointSize(accessibilityText: false, trailingSystemInset: 73))
+        XCTAssertNil(RailDLayout.cappedSymbolPointSize(accessibilityText: false, trailingSystemInset: 0))
     }
 
     func testClosedSlotsAreMoreTransportQueueSleepScrubberLiveDot() {

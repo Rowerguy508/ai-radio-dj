@@ -1327,6 +1327,12 @@ extension FoldedPlayer {
         // would overrun its column by that much. 0 on iPhone and every simulator (byte-identical).
         let railExtra = max(0, railTrailing - CGFloat(RailDLayout.trailingInset))
         let art = outerArtSide(in: CGSize(width: max(0, size.width - railExtra), height: size.height))
+        // #668 AX5 follow-up (-Nova): where the names wrap beside the closed Duo's status column,
+        // the DJ chip stacks under them in the upper part's flow instead of pinning below it.
+        let djInFlow = FoldedOuterLayout.djLinePlacement(accessibilityText: accessibilityText,
+                                                         trailingSystemInset: trailingSystemInset,
+                                                         outerTrailingUnsafeWidth: trailingUnsafeWidth)
+            == .inFlowBelowNames
         return HStack(alignment: .top, spacing: 0) {
             VStack(spacing: 0) {
                 FoldedOuterHeader(heading: heading, dismiss: { dismiss() })
@@ -1335,9 +1341,10 @@ extension FoldedPlayer {
                 VStack(spacing: 0) {
                     if accessibilityText {
                         ViewThatFits(in: .vertical) {
-                            outerUpper(artSide: art, includesArt: true, pinsStatus: true)
-                            outerUpper(artSide: art, includesArt: false, pinsStatus: true)
-                            outerUpperScroll(artSide: art, showsIndicators: true, pinsStatus: true)
+                            outerUpper(artSide: art, includesArt: true, pinsStatus: true, djInFlow: djInFlow)
+                            outerUpper(artSide: art, includesArt: false, pinsStatus: true, djInFlow: djInFlow)
+                            outerUpperScroll(artSide: art, showsIndicators: true, pinsStatus: true,
+                                             djInFlow: djInFlow)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     } else {
@@ -1345,7 +1352,7 @@ extension FoldedPlayer {
                     }
                     // At accessibility sizes the controls keep their full height, so the pinned
                     // ON AIR pill stays on screen. The upper area shrinks or scrolls.
-                    outerControls(pinsStatus: accessibilityText)
+                    outerControls(pinsStatus: accessibilityText, djInFlow: djInFlow)
                         .fixedSize(horizontal: false, vertical: accessibilityText)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1407,8 +1414,10 @@ extension FoldedPlayer {
     }
 
     /// Art, title row and (default sizes) the quiet DJ line. `pinsStatus`: the status pill and
-    /// the DJ line are drawn in `outerControls` instead.
-    private func outerUpper(artSide: CGFloat, includesArt: Bool, pinsStatus: Bool) -> some View {
+    /// the DJ line are drawn in `outerControls` instead. `djInFlow` (#668 AX5 follow-up, only
+    /// with `pinsStatus`): the DJ line stays here, under the names, and only the pill is pinned.
+    private func outerUpper(artSide: CGFloat, includesArt: Bool, pinsStatus: Bool,
+                            djInFlow: Bool = false) -> some View {
         let inset = CGFloat(FoldedOuterLayout.contentInset)
         return VStack(spacing: 0) {
             if let track = heroTrack {
@@ -1445,6 +1454,13 @@ extension FoldedPlayer {
                             .padding(.horizontal, inset)
                             .padding(.top, 8)
                     }
+                } else if djInFlow {
+                    // #668 AX5 follow-up (-Nova): in normal flow under the artist, so the wrapped
+                    // names push it down (and the column scrolls) instead of running under it.
+                    FoldedOuterDJLine(dj: dj)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, inset)
+                        .padding(.top, 12)
                 }
             } else if let stage = OnAirOrbPresentation.resolve(content: content, isOnAir: false, pose: .folded).card {
                 // #434 (owner, Nov 23 2026): Idle and Starting in the folded player. The art
@@ -1489,10 +1505,11 @@ extension FoldedPlayer {
 
     /// Scrolls like compactUpperScroll: the same anchor binding and probe id, so #501's
     /// scroll continuity holds on the reskinned folded phone too (#535).
-    private func outerUpperScroll(artSide: CGFloat, showsIndicators: Bool, pinsStatus: Bool) -> some View {
+    private func outerUpperScroll(artSide: CGFloat, showsIndicators: Bool, pinsStatus: Bool,
+                                  djInFlow: Bool = false) -> some View {
         ScrollView(.vertical, showsIndicators: showsIndicators) {
             VStack(spacing: 0) {
-                outerUpper(artSide: artSide, includesArt: true, pinsStatus: pinsStatus)
+                outerUpper(artSide: artSide, includesArt: true, pinsStatus: pinsStatus, djInFlow: djInFlow)
                 if continuityProbe {
                     continuityRows.padding(.horizontal, CGFloat(FoldedOuterLayout.contentInset))
                 }
@@ -1515,16 +1532,21 @@ extension FoldedPlayer {
 
     /// Pinned under the upper part. `pinsStatus` (accessibility sizes): the status pill and the
     /// quiet DJ line sit here, above the scrubber, so ON AIR is on screen without scrolling.
-    private func outerControls(pinsStatus: Bool) -> some View {
+    /// `djInFlow` (#668 AX5 follow-up): the DJ line is in the upper part, so only ON AIR pins
+    /// here, and with no pill nothing is drawn (no empty padded band under the names).
+    private func outerControls(pinsStatus: Bool, djInFlow: Bool = false) -> some View {
         let inset = CGFloat(FoldedOuterLayout.contentInset)
+        let pinnedPill = FoldedOuterLayout.pinnedPill(for: FoldedOuterLayout.status(of: dj.state))
         return VStack(spacing: 0) {
-            if pinsStatus {
+            if pinsStatus && (!djInFlow || pinnedPill != nil) {
                 VStack(alignment: .leading, spacing: 8) {
                     // #537: ON AIR only; Mic down draws no chip.
-                    if let pill = FoldedOuterLayout.pinnedPill(for: FoldedOuterLayout.status(of: dj.state)) {
+                    if let pill = pinnedPill {
                         FoldedOuterStatusPill(status: pill)
                     }
-                    FoldedOuterDJLine(dj: dj)
+                    if !djInFlow {
+                        FoldedOuterDJLine(dj: dj)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, inset)
@@ -1565,6 +1587,16 @@ private struct FoldedOuterHeader: View {
     let heading: StationHeading
     let dismiss: () -> Void
     @ScaledMetric(relativeTo: .headline) private var stationNameSize: CGFloat = 17
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.trailingSystemInset) private var trailingSystemInset
+    @Environment(\.railDSliceTitle) private var sliceTitle
+
+    /// Owner (Nov 27): the name wraps at accessibility sizes beside the closed Duo's status
+    /// column (`FoldedOuterLayout.wrapsNames`). The split slices and every other case keep one line.
+    private var wraps: Bool {
+        sliceTitle == nil && FoldedOuterLayout.wrapsNames(accessibilityText: typeSize.isAccessibilitySize,
+                                                          trailingSystemInset: trailingSystemInset)
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1578,7 +1610,9 @@ private struct FoldedOuterHeader: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Back")
             .accessibilityIdentifier("folded.back")
-            Spacer(minLength: 0)
+            if !wraps {
+                Spacer(minLength: 0)
+            }
             VStack(spacing: 3) {
                 Text("Station")
                     .font(.caption2.weight(.bold))
@@ -1587,18 +1621,31 @@ private struct FoldedOuterHeader: View {
                     .foregroundStyle(Color(red: FoldedOuterLayout.playRingRed,
                                            green: FoldedOuterLayout.playRingGreen,
                                            blue: FoldedOuterLayout.playRingBlue))
-                Text(heading.header.name)
-                    .font(.system(size: stationNameSize, weight: .heavy))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
+                if wraps {
+                    // #668 AX5 follow-up (-Nova): breaks between words only (`WordFitName`).
+                    WordFitName(text: heading.header.name, size: stationNameSize, weight: .heavy,
+                                tracking: 0, color: .white, alignment: .center)
+                        .modifier(CaptureNameAnchor(id: "station.title.name", label: heading.header.name))
+                } else {
+                    Text(heading.header.name)
+                        .font(.system(size: stationNameSize, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .lineLimit(wraps ? nil : 1)
+                        .modifier(WrappedName(wraps: wraps, alignment: .center))
+                        .modifier(CaptureNameAnchor(id: "station.title.name", label: heading.header.name))
+                }
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Station, \(heading.header.name)")
             .accessibilityAddTraits(.isHeader)
             // #537: the header names the station now that the Playing-from chip is gone.
             .accessibilityIdentifier("station.title")
-            Spacer(minLength: 0)
-            Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
+            .modifier(CaptureNameFrames())
+            .modifier(WrappedHeaderName(wraps: wraps))
+            if !wraps {
+                Spacer(minLength: 0)
+                Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
+            }
         }
         .frame(minHeight: 44)
     }
@@ -1618,6 +1665,20 @@ private struct FoldedOuterTitleRow: View {
     @Environment(\.railDSliceTitle) private var sliceTitle
     @ScaledMetric(relativeTo: .largeTitle) private var sliceOpenTitleSize = CGFloat(RailDLayout.openTitlePointSize)
     @ScaledMetric(relativeTo: .largeTitle) private var sliceColumnTitleSize = CGFloat(RailDLayout.railColumnTitlePointSize)
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.trailingSystemInset) private var trailingSystemInset
+    @Environment(\.captureHidesTestStationTag) private var captureHidesTestStationTag
+
+    /// #668 AX5 follow-up (-Nova): the AX3 / AX5 status-column owner shots draw without the tag.
+    private var showsTestStationTag: Bool { isTestStation && !captureHidesTestStationTag }
+
+    /// Owner (Nov 27): the song and artist names wrap at accessibility sizes beside the closed
+    /// Duo's status column (`FoldedOuterLayout.nameLineLimit`); the upper part's ViewThatFits /
+    /// ScrollView takes the extra height. The split slices keep their own limit.
+    private var wraps: Bool {
+        sliceTitle == nil && FoldedOuterLayout.wrapsNames(accessibilityText: typeSize.isAccessibilitySize,
+                                                          trailingSystemInset: trailingSystemInset)
+    }
 
     private var resolvedTitleSize: CGFloat {
         switch sliceTitle {
@@ -1631,21 +1692,40 @@ private struct FoldedOuterTitleRow: View {
         VStack(alignment: .leading, spacing: 6) {
             // Accessibility sizes (pill pinned in the controls): the tag leads the row, so it
             // stays on screen above ON AIR when a long AX5 title pushes the rest out of view.
-            if isTestStation, statusPinned {
+            if showsTestStationTag, statusPinned {
                 FoldedTestStationTag().padding(.bottom, 2)
             }
-            Text(track.title)
-                .font(.system(size: resolvedTitleSize, weight: .heavy))
-                .tracking(-0.6)
-                .foregroundStyle(.white)
-                .lineLimit(sliceTitle == nil ? FoldedOuterLayout.titleLineLimit : SplitViewLayout.sliceTitleLineLimit)
-                .truncationMode(.tail)
-            Text(track.artistName)
-                .font(.system(size: artistSize, weight: .semibold))
-                .foregroundStyle(FoldedStyle.secondaryInk)
-                .lineLimit(FoldedOuterLayout.artistLineLimit)
-                .truncationMode(.tail)
-            if isTestStation, !statusPinned {
+            if wraps {
+                // #668 AX5 follow-up (-Nova): full strings, wrapped between words only
+                // (`WordFitName`); the upper part's ViewThatFits / ScrollView takes the height.
+                WordFitName(text: track.title, size: resolvedTitleSize, weight: .heavy,
+                            tracking: -0.6, color: .white, alignment: .leading)
+                    .modifier(CaptureNameAnchor(id: "folded.titleBlock.title", label: track.title))
+                WordFitName(text: track.artistName, size: artistSize, weight: .semibold,
+                            tracking: 0, color: FoldedStyle.secondaryInk, alignment: .leading)
+                    .modifier(CaptureNameAnchor(id: "folded.titleBlock.artist", label: track.artistName))
+            } else {
+                Text(track.title)
+                    .font(.system(size: resolvedTitleSize, weight: .heavy))
+                    .tracking(-0.6)
+                    .foregroundStyle(.white)
+                    .lineLimit(sliceTitle == nil
+                               ? FoldedOuterLayout.nameLineLimit(FoldedOuterLayout.titleLineLimit,
+                                                                 accessibilityText: typeSize.isAccessibilitySize,
+                                                                 trailingSystemInset: trailingSystemInset)
+                               : SplitViewLayout.sliceTitleLineLimit)
+                    .truncationMode(.tail)
+                    .modifier(WrappedName(wraps: wraps, alignment: .leading))
+                    .modifier(CaptureNameAnchor(id: "folded.titleBlock.title", label: track.title))
+                Text(track.artistName)
+                    .font(.system(size: artistSize, weight: .semibold))
+                    .foregroundStyle(FoldedStyle.secondaryInk)
+                    .lineLimit(wraps ? nil : FoldedOuterLayout.artistLineLimit)
+                    .truncationMode(.tail)
+                    .modifier(WrappedName(wraps: wraps, alignment: .leading))
+                    .modifier(CaptureNameAnchor(id: "folded.titleBlock.artist", label: track.artistName))
+            }
+            if showsTestStationTag, !statusPinned {
                 FoldedTestStationTag().padding(.top, 2)
             }
         }
@@ -1654,6 +1734,7 @@ private struct FoldedOuterTitleRow: View {
         .accessibilityLabel("\(track.title), \(track.artistName)")
         .accessibilityAddTraits(.isHeader)
         .accessibilityIdentifier("folded.titleBlock")
+        .modifier(CaptureNameFrames())
     }
 }
 
@@ -2056,6 +2137,20 @@ extension EnvironmentValues {
     var railDSliceTitle: SplitViewLayout.SliceTitle? {
         get { self[RailDSliceTitleKey.self] }
         set { self[RailDSliceTitleKey.self] = newValue }
+    }
+}
+
+/// #668 AX5 follow-up (-Nova): true only in the AX3 / AX5 closed-Duo status-column captures
+/// (`RailDCaptureContainer.hidesTestStationTagKey`), so the owner's shots show the names without
+/// the TEST STATION tag. False everywhere else: every other capture and Release are unchanged.
+private struct CaptureHidesTestStationTagKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var captureHidesTestStationTag: Bool {
+        get { self[CaptureHidesTestStationTagKey.self] }
+        set { self[CaptureHidesTestStationTagKey.self] = newValue }
     }
 }
 
@@ -2914,6 +3009,165 @@ private struct ArtCardTestExposure: ViewModifier {
         #endif
     }
 }
+
+/// Owner (Nov 27, -Nova): a wrapped name (`FoldedOuterLayout.wrapsNames`) takes the height its
+/// lines need and aligns them like its block. `wraps == false` returns the Text as is, so the
+/// default sizes and the iPhone draw exactly what they drew before.
+private struct WrappedName: ViewModifier {
+    let wraps: Bool
+    let alignment: TextAlignment
+
+    func body(content: Content) -> some View {
+        if wraps {
+            content
+                .multilineTextAlignment(alignment)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            content
+        }
+    }
+}
+
+/// #668 AX5 follow-up (-Nova): with the names wrapping, the station block takes the header's
+/// width beside Back (the centring slot and spacers are dropped by the caller), so a long word
+/// has the most room before it needs `WordFitName`'s smaller scale. `wraps == false`: as is.
+private struct WrappedHeaderName: ViewModifier {
+    let wraps: Bool
+
+    func body(content: Content) -> some View {
+        if wraps {
+            content.frame(maxWidth: .infinity, alignment: .center)
+        } else {
+            content
+        }
+    }
+}
+
+/// #668 AX5 follow-up (Orion, Nov 27, -Nova): a wrapped name (`FoldedOuterLayout.wrapsNames`) that
+/// breaks between words only. Text splits inside a word only when that word is wider than the
+/// line ("Mornin" / "g Calm" on 5a0a3904's AX5 shot), so each candidate is the full name at one of
+/// `FoldedOuterLayout.wrappedNameScales`, whose ideal width is its longest word on one line (a
+/// hidden, zero-height probe; the wrapped Text itself reports an ideal width of 0). `ViewThatFits`
+/// takes the first, largest scale whose longest word fits the line, else the 0.7 floor. The name
+/// is never truncated (no line limit, vertical fixedSize). Only the closed Duo's wrapped names use
+/// this; every other case keeps its one-line Text unchanged.
+private struct WordFitName: View {
+    let text: String
+    let size: CGFloat
+    let weight: Font.Weight
+    let tracking: CGFloat
+    let color: Color
+    let alignment: TextAlignment
+
+    var body: some View {
+        let scales = FoldedOuterLayout.wrappedNameScales
+        ViewThatFits(in: .horizontal) {
+            candidate(scales[0])
+            candidate(scales[1])
+            candidate(scales[2])
+            candidate(scales[3])
+        }
+    }
+
+    private var stackAlignment: HorizontalAlignment { alignment == .center ? .center : .leading }
+    private var frameAlignment: Alignment { alignment == .center ? .center : .leading }
+
+    private func candidate(_ scale: Double) -> some View {
+        let font = Font.system(size: size * CGFloat(scale), weight: weight)
+        let spacing = tracking * CGFloat(scale)
+        return VStack(alignment: stackAlignment, spacing: 0) {
+            Text(FoldedOuterLayout.longestWord(in: text))
+                .font(font)
+                .tracking(spacing)
+                .lineLimit(1)
+                .fixedSize()
+                .frame(height: 0)
+                .hidden()
+                .accessibilityHidden(true)
+            Text(text)
+                .font(font)
+                .tracking(spacing)
+                .foregroundStyle(color)
+                .lineLimit(nil)
+                .multilineTextAlignment(alignment)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: frameAlignment)
+        }
+    }
+}
+
+/// Owner (Nov 27) names-wrap UI test (-Nova): the station, song and artist Texts sit inside
+/// `.accessibilityElement(children: .ignore)` blocks (VoiceOver reads one label), so XCUITest
+/// cannot see their own frames. Under the status-column capture launch only
+/// (`RailDCaptureContainer.exposesNameFrames`, DEBUG), each Text reports its bounds and the block
+/// overlays a label-only, non-hit-testable element with the full string at those bounds, so
+/// `RailDLayoutTests` can check that the name wrapped instead of truncating. Everywhere else,
+/// and in Release, both modifiers return the content as is.
+private struct CaptureNameAnchor: ViewModifier {
+    let id: String
+    let label: String
+
+    func body(content: Content) -> some View {
+        #if DEBUG
+        if RailDCaptureContainer.exposesNameFrames {
+            content.anchorPreference(key: CaptureNameFramesKey.self, value: .bounds) {
+                [id: CaptureNameFrame(label: label, bounds: $0)]
+            }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+private struct CaptureNameFrames: ViewModifier {
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    func body(content: Content) -> some View {
+        #if DEBUG
+        // Accessibility sizes only, so the default-size status-column shot keeps its pixels.
+        if RailDCaptureContainer.exposesNameFrames && typeSize.isAccessibilitySize {
+            content.overlayPreferenceValue(CaptureNameFramesKey.self) { frames in
+                GeometryReader { proxy in
+                    ForEach(frames.keys.sorted(), id: \.self) { id in
+                        if let frame = frames[id] {
+                            let rect = proxy[frame.bounds]
+                            Rectangle()
+                                .fill(Color.white.opacity(0.001))
+                                .frame(width: rect.width, height: rect.height)
+                                .position(x: rect.midX, y: rect.midY)
+                                .allowsHitTesting(false)
+                                .accessibilityElement()
+                                .accessibilityLabel(frame.label)
+                                .accessibilityIdentifier(id)
+                        }
+                    }
+                }
+            }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+#if DEBUG
+private struct CaptureNameFrame {
+    let label: String
+    let bounds: Anchor<CGRect>
+}
+
+private struct CaptureNameFramesKey: PreferenceKey {
+    static var defaultValue: [String: CaptureNameFrame] { [:] }
+    static func reduce(value: inout [String: CaptureNameFrame], nextValue: () -> [String: CaptureNameFrame]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+#endif
 
 /// Build 54 follow-up (-Nova): the open-Duo window as `StationSplitRoot` measured it, for the
 /// player's rail. `trailingInset` is the window's trailing unsafe width (the device's status

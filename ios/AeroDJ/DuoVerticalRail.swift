@@ -209,6 +209,28 @@ struct DuoRailGlass: ViewModifier {
     }
 }
 
+/// Rail SF Symbols use `.title2`. At accessibility sizes that font is wider than the
+/// 56 pt glass, so Skip, Queue and the sleep timer overflow the rail (closed-ax5_iPhone-Duo,
+/// iOS run 45629736914, Orion to the owner). When a trailing system inset is present (the
+/// closed-Duo status column) the glyph is held at default title2 so it stays inside the
+/// 44 pt plate. No cap on iPhone or at default type sizes: those snapshots stay
+/// byte-identical. Accessibility / layout only; no playback change. -Nova
+private struct DuoRailSymbolFont: ViewModifier {
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.trailingSystemInset) private var trailingSystemInset
+
+    func body(content: Content) -> some View {
+        if let size = RailDLayout.cappedSymbolPointSize(
+            accessibilityText: typeSize.isAccessibilitySize,
+            trailingSystemInset: trailingSystemInset
+        ) {
+            content.font(.system(size: CGFloat(size), weight: .semibold))
+        } else {
+            content.font(.title2.weight(.semibold))
+        }
+    }
+}
+
 // MARK: - Controls
 
 struct DuoRailIconButton: View {
@@ -221,7 +243,7 @@ struct DuoRailIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.title2.weight(.semibold))
+                .modifier(DuoRailSymbolFont())
                 .foregroundStyle(.white)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
@@ -293,7 +315,7 @@ struct DuoRailPlayPauseButton: View {
             Group {
                 if let systemImage = face.systemImage {
                     Image(systemName: systemImage)
-                        .font(.title2.weight(.semibold))
+                        .modifier(DuoRailSymbolFont())
                         .foregroundStyle(.white)
                 } else {
                     ProgressView()
@@ -320,7 +342,7 @@ struct DuoRailMoreButton: View {
     var body: some View {
         Button { open.toggle() } label: {
             Image(systemName: "ellipsis")
-                .font(.title2.weight(.semibold))
+                .modifier(DuoRailSymbolFont())
                 .foregroundStyle(.white)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
@@ -522,7 +544,7 @@ struct DuoSleepTimerButton: View {
             }
         } label: {
             Image(systemName: "timer")
-                .font(.title2.weight(.semibold))
+                .modifier(DuoRailSymbolFont())
                 .foregroundStyle(.white)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
