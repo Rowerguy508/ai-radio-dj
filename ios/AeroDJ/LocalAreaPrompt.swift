@@ -17,14 +17,21 @@ struct LocalAreaPrompt: View {
     @State private var place = ""
     @State private var rejected = false
     /// #465 item 10 (onboarding): nil on every phone and narrow split, which adds 0 pt and
-    /// keeps this prompt exactly as it was. Wide: holds the column at 560 pt. Layout only;
-    /// the copy, the consent version and every action are unchanged (Sentinel, #509).
+    /// keeps the phone layout as it was. Wide: holds the column at 560 pt. Layout only;
+    /// actions are unchanged. The prompt copy is the per-build v2 wording, not the
+    /// earlier #509 / v3-notice text.
     @Environment(\.appWideLayout) private var appWide
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(LocalAreaConsentCopy.title).font(.title2.bold())
-            Text(LocalAreaConsentCopy.body).font(.body).foregroundStyle(.secondary)
+            // Tester and owner A/B bodies are longer; at accessibility text sizes they
+            // must scroll inside the sheet's .medium detent. Buttons stay outside so
+            // they stay reachable (same pattern as CloudVoiceConsentSheet).
+            ScrollView {
+                Text(LocalAreaConsentCopy.body).font(.body).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if typing {
                 TextField(LocalAreaConsentCopy.placeFieldPrompt, text: $place)
                     .textContentType(.addressCityAndState)

@@ -1,9 +1,9 @@
 import XCTest
 @testable import AeroDJCore
 
-/// #465 item 10 (onboarding, -Nova). Sentinel's rule for the layout pass on `LocalAreaPrompt`:
-/// layout only. The copy, the consent version and the actions stay byte-identical, because
-/// #509 and the v3 notice quote this copy word for word. These pins fail on any wording change.
+/// #465 item 10 (onboarding, -Nova). Sentinel's rule for the layout pass on `LocalAreaPrompt`
+/// still applies to layout and actions. The pins below lock the per-build v2 copy, which is
+/// owner-reviewed wording, not the #509 / v3-notice text. These pins fail on any wording change.
 final class LocalAreaPromptCopyTests: XCTestCase {
     /// #625 (-Echo): copy v2 discloses Apple geocoding and says only what each build does
     /// (`LocalAreaConsentCopyBuildTests`). These pins are the owner-reviewed wording.
@@ -66,6 +66,38 @@ final class LocalAreaPromptCopyTests: XCTestCase {
                      "Button(LocalAreaConsentCopy.enterPlace) { typing = true }"] {
             XCTAssertTrue(source.contains(call), "missing \(call)")
         }
+    }
+
+    /// The body sits in a `ScrollView` so it can scroll at accessibility text sizes in the
+    /// sheet's `.medium` detent; the actions stay outside so they stay reachable.
+    func testThePromptBodyScrollsAndKeepsTheButtonsReachable() throws {
+        let source = try promptSource()
+        XCTAssertTrue(source.contains("ScrollView"), "the body must scroll in the medium detent")
+        let block = try XCTUnwrap(scrollViewBlock(in: source), "ScrollView must have a body")
+        XCTAssertTrue(block.contains("Text(LocalAreaConsentCopy.body)"), "the consent body is what scrolls")
+        for token in ["localArea.approximate", "localArea.manual", "localArea.save", "localArea.notNow",
+                      "LocalAreaConsentCopy.useApproximate", "LocalAreaConsentCopy.enterPlace",
+                      "LocalAreaConsentCopy.notNow", "Button(\"Save\""] {
+            XCTAssertTrue(source.contains(token), "missing \(token)")
+            XCTAssertFalse(block.contains(token), "\(token) must stay outside the ScrollView so it stays reachable")
+        }
+    }
+
+    /// The first `{`...`}` after `ScrollView`, so a source scan can see what is inside it.
+    private func scrollViewBlock(in source: String) -> String? {
+        guard let keyword = source.range(of: "ScrollView") else { return nil }
+        guard let open = source[keyword.upperBound...].firstIndex(of: "{") else { return nil }
+        var depth = 0
+        var i = open
+        while i < source.endIndex {
+            if source[i] == "{" { depth += 1 }
+            else if source[i] == "}" {
+                depth -= 1
+                if depth == 0 { return String(source[open...i]) }
+            }
+            source.formIndex(after: &i)
+        }
+        return nil
     }
 
     private func promptSource() throws -> String {
