@@ -21,10 +21,15 @@ extension XCUIApplication {
     /// handles it as before. It never calls `terminate()` first, so a process
     /// that is slow to leave gets time to go before `launch()` would hit
     /// XCTest's un-retried ~60 s "Failed to terminate" path.
+    /// If that wait times out, the leftover is still running: the test fails
+    /// and `launch()` is not called (Refs #654).
     @MainActor
     func launchAfterLeftoverExits() {
         if state != .runningForeground {
-            _ = waitUntilNotRunning()
+            if !waitUntilNotRunning() {
+                XCTFail("Leftover process did not exit within \(Int(Self.exitWait)) s (bundle com.aerodj.app, state \(state.rawValue)); launch skipped")
+                return
+            }
         }
         launch()
     }

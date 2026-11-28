@@ -14,11 +14,16 @@ import Foundation
 public struct CloudVoiceConsentCache: AudioCache {
     /// Private (Sentinel's #409 N1): no caller may reach the base cache past the consent checks.
     private let base: any AudioCache
+    /// #637 follow-up (-Sentinel): `base` is this gate, wrapping the cache passed in, so a launch
+    /// purge started on the wrapper gates every read and write it forwards (`LaunchPurgeGated`).
+    private let launchGate: LaunchPurgeGatedCache
     public let localProviders: Set<String>
     private let isGranted: @Sendable () -> Bool
 
     public init(base: any AudioCache, localProviders: Set<String>, isGranted: @escaping @Sendable () -> Bool) {
-        self.base = base
+        let gate = LaunchPurgeGatedCache(base: base)
+        self.launchGate = gate
+        self.base = gate
         self.localProviders = localProviders
         self.isGranted = isGranted
     }
@@ -52,6 +57,13 @@ public struct CloudVoiceConsentCache: AudioCache {
     public func purgeClips(keepingProviders providerIDs: Set<String>) async {
         await base.purgeClips(keepingProviders: providerIDs)
     }
+}
+
+/// #637 follow-up (-Sentinel): the wrapper is gated on the launch purge through its base, forwarded
+/// to a gated base (`FileAudioCache`) or gated here, so it can be handed to
+/// `AudioCacheSweeper.startPurgingPersonalFirst` without serving an earlier launch's personal clip.
+extension CloudVoiceConsentCache: LaunchPurgeGated {
+    public func beginLaunchPurge() { launchGate.beginLaunchPurge() }
 }
 
 /// Fry's #404 nit 1: the device-run cache log (`AudioCacheFileLog.record`) counts the base

@@ -4,7 +4,8 @@
     "head_sha": "6d5a15054d340a344e47810e928e6ce617dc8ea6",
     "base": "integration/device-duo",
     "state": "open",
-    "merged": false
+    "merged": false,
+    "device_line": "NOT TESTED"
   },
   "base_head": "c77584179c08b4cbdffe013cad698bcb34174a99",
   "merge_base": "c77584179c08b4cbdffe013cad698bcb34174a99",

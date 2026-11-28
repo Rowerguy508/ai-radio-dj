@@ -51,7 +51,7 @@ final class LiquidGlassTransportTests: XCTestCase {
     private func check(_ mode: Mode) {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"] + mode.launchArguments
-        app.launchAfterLeftoverExits()
+        app.launchUntilAccessible(readyIdentifier: "transport.playPause", in: self)
         defer { app.terminateIfRunning() }
 
         let loading = app.descendants(matching: .any)["capture.loading"]

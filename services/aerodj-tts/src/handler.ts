@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, STORE_RETRY_AFTER_SECONDS, paidStopped, testerVoiceOn } from './attest-flags.js';
+import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, STORE_RETRY_AFTER_SECONDS, noCategoryFallbackAllowed, paidStopped, testerVoiceOn } from './attest-flags.js';
 import { keyRecordKey, keyspaceFromEnv, revokedKey } from './attest-store.js';
 import { reserveForInstall } from './install-quota.js';
 import { installTokenKey, tokenKeyId, verifyInstallToken } from './install-token.js';
@@ -177,7 +177,7 @@ export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconf
  * Log-only refinements of a wire reason. `no_store` (Fry on #287): ElevenLabs key set but no
  * shared store, so the 500 `misconfig` was the no-store gate.
  */
-export type LogReason = ErrorReason | 'pro_chars' | 'no_store' | 'tester_pool' | 'reattest' | 'token_expired' | 'mixed_auth';
+export type LogReason = ErrorReason | 'pro_chars' | 'no_store' | 'tester_pool' | 'reattest' | 'token_expired' | 'mixed_auth' | 'fallback_disabled';
 
 /**
  * A verified Pro request is charged to its OWN subject (Sentinel's B1 on #264), never the
@@ -593,8 +593,8 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   const misconfigured = (): TtsResponse => refuse(500, 'misconfig', MISCONFIG_RETRY_AFTER_SECONDS);
   // 400 / 401 with an enum reason and no Retry-After (#378 §1.3): `mixed_auth`, `token_expired`,
   // `reattest` (key record gone or key on the revocation list: register again).
-  const reject = (status: 400 | 401, reason: 'mixed_auth' | 'token_expired' | 'reattest'): TtsResponse => {
-    deps.log({ requestId, status, chars, reason });
+  const reject = (status: 400 | 401, reason: 'mixed_auth' | 'token_expired' | 'reattest', logReason: LogReason = reason): TtsResponse => {
+    deps.log({ requestId, status, chars, reason: logReason });
     return {
       status,
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Request-Id': requestId },
@@ -739,11 +739,20 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
     // install's own 1,500/day. Spoken chars only. Durable store only (503 `store`).
     if (limiter.durable !== true || !limiter.releaseInstall) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
     const releaseInstall = limiter.releaseInstall.bind(limiter);
-    const result = await reserveForInstall(limiter, install.keyId, chars, now, { recordKey: install.recordKey, revokedKey: install.revokedKey });
+    const result = await reserveForInstall(limiter, install.keyId, chars, now, {
+      recordKey: install.recordKey,
+      revokedKey: install.revokedKey,
+      // #407: re-checked on every request, so turning the fallback off also stops tokens
+      // minted before the flip instead of letting them spend until they expire (30 min).
+      fallbackAllowed: noCategoryFallbackAllowed(deps.env),
+    });
     if (!result.ok) {
       if (result.reason === 'store') return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
       if (result.reason === 'misconfig') return misconfigured();
       if (result.reason === 'reattest') return reject(401, 'reattest');
+      // Client sees plain `reattest` (it re-registers, gets no tier, and the token mint answers
+      // 403 `no_entitlement`); the log keeps the enum-only cause.
+      if (result.reason === 'fallback_disabled') return reject(401, 'reattest', 'fallback_disabled');
       if (result.reason === 'install_daily') return refuse(429, 'install_daily', secondsUntilNextUtcDay(now));
       const detail = 'detail' in result && result.detail === 'tester_pool' ? 'tester_pool' : undefined;
       return refuse(429, 'global_daily', secondsUntilNextUtcDay(now), detail);

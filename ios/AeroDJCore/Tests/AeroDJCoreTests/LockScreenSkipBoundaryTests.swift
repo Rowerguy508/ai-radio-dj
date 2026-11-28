@@ -145,6 +145,47 @@ final class LockScreenSkipBoundaryTests: XCTestCase {
         XCTAssertFalse(held.takeRemoteSkip(), "a system pause with the playhead held is not a skip")
     }
 
+    /// After Siri or a system interruption ends and a playing sample arrives, a later lock-screen
+    /// Next (a mid-song clear or rewind) is a skip. The existing interruption tests only cover the
+    /// held period, so they still pass if a playing sample never clears the interruption flag.
+    func testAfterAnInterruptionEndsALaterLockScreenSkipIsASkip() {
+        for shape in ["clear", "rewind"] {
+            var b = BoundaryInterpreter()
+            let t = play(&b)
+            b.pausedByApp(.systemInterruption)
+            XCTAssertNil(b.interpret(PlaybackObservation(entryID: "song-0", isPlaying: true,
+                                                         position: 61, duration: song, uptime: t),
+                                     queueIndex: 0, queueCount: 3),
+                         "the resume itself is not a skip")
+            XCTAssertFalse(b.takeRemoteSkip())
+            let later = shape == "clear" ? cleared(at: t + 1) : rewound(at: t + 1)
+            XCTAssertNil(b.interpret(later, queueIndex: 0, queueCount: 3), "\(shape)")
+            XCTAssertTrue(b.takeRemoteSkip(), "after resume, a mid-song \(shape) is a skip")
+        }
+    }
+
+    /// After a user pause or a route loss ends and a playing sample arrives, a later lock-screen
+    /// Next is a skip. The existing pause and route-loss tests only cover the held period, so they
+    /// still pass if a playing sample never clears the hold.
+    func testAfterAUserPauseOrRouteLossEndsALaterLockScreenSkipIsASkip() {
+        for cause in [PlaybackBoundaryDetector.HoldCause.userPause, .routeLoss] {
+            for shape in ["clear", "rewind"] {
+                var b = BoundaryInterpreter()
+                let t = play(&b)
+                b.pausedByApp(cause)
+                XCTAssertNil(b.interpret(PlaybackObservation(entryID: "song-0", isPlaying: true,
+                                                             position: 61, duration: song, uptime: t),
+                                         queueIndex: 0, queueCount: 3),
+                             "the resume itself is not a skip")
+                XCTAssertFalse(b.takeRemoteSkip())
+                let later = shape == "clear" ? cleared(at: t + 1) : rewound(at: t + 1)
+                XCTAssertNil(b.interpret(later, queueIndex: 0, queueCount: 3), "\(cause) \(shape)")
+                XCTAssertTrue(b.takeRemoteSkip(),
+                              "after \(cause) resume, a mid-song \(shape) is a skip")
+            }
+        }
+    }
+
     func testAppRequestedChangeIsNotASkip() {
         for shape in [cleared(at: 161), rewound(at: 161)] {
             var b = BoundaryInterpreter()
