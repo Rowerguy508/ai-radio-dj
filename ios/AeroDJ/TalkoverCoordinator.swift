@@ -239,6 +239,8 @@ final class TalkoverCoordinator {
     private var ratingCut = StationRatingTalkoverCut()
     /// #525: `routeChangeNotification` marks the next talk-over for the route re-check.
     private let routeChanges = DJRouteChangeObserver()
+    /// #195 (-Fry): rebuilds the voice players and the category after a media services reset.
+    private let mediaReset = MediaServicesResetObserver()
 
     init(music: MusicKitService, interlude: InterludePlaybackAdapter, djSession: DJBreakSession,
          defaults: UserDefaults = .standard,
@@ -257,6 +259,7 @@ final class TalkoverCoordinator {
     func start() {
         guard ticker == nil else { return }
         routeChanges.start()
+        mediaReset.start(music: music, interlude: interlude)
         ticker = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 let interval = self?.tick() ?? 1.0
