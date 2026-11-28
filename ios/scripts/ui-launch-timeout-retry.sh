@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run one UI-test xcodebuild. If it fails only because the app launch timed out,
-# boot the simulator again and rerun just those tests once.
+# or launch() left the app without a process ID, reboot the simulator and rerun
+# just those tests once.
 # An assertion failure, or any other test failure, is not retried.
 #
 #   ui-launch-timeout-retry.sh --udid UDID -- xcodebuild test-without-building ...
@@ -8,6 +9,8 @@
 set -euo pipefail
 
 LAUNCH_TIMEOUT='Timed out while launching application'
+# Run 45970436700: launch() hung about 162 s on a sick automation session, then failed.
+NO_PID='does not have a process ID'
 
 usage() {
   echo "usage: ui-launch-timeout-retry.sh [--udid UDID] -- command..." >&2
@@ -16,9 +19,10 @@ usage() {
 }
 
 # Prints -only-testing identifiers, one per line. Exit 0 when a retry is allowed.
-# A retry is allowed only when every failed test's error is a launch timeout.
+# A retry is allowed only when every failed test's error is a launch timeout
+# or a missing process ID.
 decide() {
-  awk -v launch="$LAUNCH_TIMEOUT" '
+  awk -v launch="$LAUNCH_TIMEOUT" -v nopid="$NO_PID" '
     function testid(objc,    class, method, n, i, parts, target, rest) {
       class = objc
       sub(/ .*/, "", class)
@@ -39,7 +43,7 @@ decide() {
         sub(/\].*/, "", objc)
         msg = line
         sub(/^[^]]*\] : /, "", msg)
-        if (index(msg, launch) && index(msg, "XCTAssert") == 0) {
+        if ((index(msg, launch) || index(msg, nopid)) && index(msg, "XCTAssert") == 0) {
           timeouts = timeouts testid(objc) "\n"
         } else {
           other = 1
@@ -117,9 +121,16 @@ while IFS= read -r id; do
   [[ -n $id ]] || continue
   if [[ -z $warning ]]; then warning=$id; else warning="$warning, $id"; fi
 done <<< "$ids"
-echo "::warning::Retrying UI tests after a simulator launch timeout: ${warning}"
+cause="launch timeout"
+if grep -qF "$NO_PID" "$log"; then
+  if grep -qF "$LAUNCH_TIMEOUT" "$log"; then cause="launch timeout or missing process ID"; else cause="missing process ID"; fi
+fi
+echo "::warning::Retrying UI tests after a simulator ${cause}: ${warning}"
 
 if [[ -n $udid ]]; then
+  # A plain boot is a no-op on an already-booted simulator and keeps a sick
+  # automation session, so shut it down first.
+  xcrun simctl shutdown "$udid" 2>/dev/null || true
   xcrun simctl boot "$udid" 2>/dev/null || true
   xcrun simctl bootstatus "$udid" -b
 fi

@@ -30,6 +30,35 @@ expected=$'AeroDJUITests/StudioScreenTests/testAX5DarkAppearance\nAeroDJUITests/
 [[ $timeout_ids == "$expected" ]] || fail "retry ids were:
 $timeout_ids"
 
+# Shape from iOS run 45970436700 (#656, Duo UI): launch() never got a pid.
+cat > "$tmp/nopid.log" << 'EOF'
+Test Case '-[AeroDJUITests.AppWideLayoutTests testDuoLandscapeLibraryTwoPane]' started.
+/Users/runner/work/ai-radio-dj/ai-radio-dj/ios/AeroDJUITests/XCUIApplication+Terminate.swift:29: error: -[AeroDJUITests.AppWideLayoutTests testDuoLandscapeLibraryTwoPane] : Application 'com.aerodj.app' does not have a process ID
+Test Case '-[AeroDJUITests.AppWideLayoutTests testDuoLandscapeLibraryTwoPane]' failed (173.169 seconds).
+Test Case '-[AeroDJUITests.AppWideLayoutTests testDuoWideLibraryIsTwoReadableColumns]' passed (73.400 seconds).
+** TEST EXECUTE FAILED **
+EOF
+
+nopid_ids=$("$RETRY" --decide "$tmp/nopid.log") || fail "missing-pid log should be retried"
+[[ $nopid_ids == 'AeroDJUITests/AppWideLayoutTests/testDuoLandscapeLibraryTwoPane' ]] \
+  || fail "missing-pid retry ids were:
+$nopid_ids"
+
+# A missing pid next to an assertion failure is not retried.
+cat > "$tmp/nopid-assert.log" << 'EOF'
+/Users/runner/XCUIApplication+Terminate.swift:29: error: -[AeroDJUITests.AppWideLayoutTests testDuoLandscapeLibraryTwoPane] : Application 'com.aerodj.app' does not have a process ID
+Test Case '-[AeroDJUITests.AppWideLayoutTests testDuoLandscapeLibraryTwoPane]' failed (173.169 seconds).
+/Users/runner/AppWideLayoutTests.swift:40: error: -[AeroDJUITests.AppWideLayoutTests testDuoWideLocalAreaPromptIsTheReadableColumn] : XCTAssertEqual failed: ("1") is not equal to ("2")
+Test Case '-[AeroDJUITests.AppWideLayoutTests testDuoWideLocalAreaPromptIsTheReadableColumn]' failed (9.000 seconds).
+EOF
+
+set +e
+nopid_assert_ids=$("$RETRY" --decide "$tmp/nopid-assert.log")
+nopid_assert_code=$?
+set -e
+[[ $nopid_assert_code -ne 0 ]] || fail "missing pid plus assertion was retried: $nopid_assert_ids"
+[[ -z $nopid_assert_ids ]] || fail "missing pid plus assertion printed retry ids: $nopid_assert_ids"
+
 # The phrase appears, but the failure is an assertion. Must not retry.
 cat > "$tmp/assert.log" << 'EOF'
 Test Case '-[AeroDJUITests.StudioScreenTests testOpenDuoIsTwoZoneControlRoom]' started.
@@ -130,5 +159,20 @@ set -e
 [[ $always_run -eq 65 ]] || fail "second timeout exited $always_run"
 [[ $(wc -l < "$tmp/count") -eq 2 ]] || fail "launch timeout was retried more than once"
 [[ $always_out == *'::warning::'* ]] || fail "second-timeout run did not warn"
+
+# A missing pid is retried once, after a reboot, and the warning names the real cause.
+: > "$tmp/count"
+set +e
+nopid_out=$("$RETRY" -- \
+  env MODE=always FIXTURE="$tmp/nopid.log" COUNT="$tmp/count" CALLS="$tmp/calls" BUNDLE="$tmp/nopid.xcresult" \
+  "$tmp/fake-xcodebuild" -resultBundlePath "$tmp/nopid.xcresult")
+nopid_run=$?
+set -e
+[[ $nopid_run -eq 65 ]] || fail "missing-pid rerun exited $nopid_run"
+[[ $(wc -l < "$tmp/count") -eq 2 ]] || fail "missing pid was not retried exactly once"
+[[ $nopid_out == *'::warning::Retrying UI tests after a simulator missing process ID: AeroDJUITests/AppWideLayoutTests/testDuoLandscapeLibraryTwoPane'* ]] \
+  || fail "missing-pid warning was:
+$nopid_out"
+[[ $nopid_out != *'launch timeout'* ]] || fail "missing-pid warning still says launch timeout"
 
 echo "OK: UI launch-timeout retry script tests"
