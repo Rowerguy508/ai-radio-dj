@@ -57,3 +57,42 @@ extension PlaybackLog {
         "session media services reset break=\(state.rawValue) resume=\(resume)"
     }
 }
+
+/// #195 N2/N6/N7 (-Fry): the one music resume after a media services reset.
+///
+/// One at a time: a second reset while one is pending replaces it, and one already running
+/// covers the second. Cancelling (a newer reset, `stop()`, `deinit`) only stops a resume that has
+/// not started. A started resume runs in its own unstructured task, which does not inherit
+/// cancellation, so `play()` never sees a CancellationError and a cancel can never surface as
+/// `playbackStartRefused` or an error banner. A cancelled resume is silent.
+@MainActor
+public final class MediaResetResume {
+    nonisolated(unsafe) private var task: Task<Void, Never>?
+    private var generation = 0
+    public private(set) var isInFlight = false
+
+    public init() {}
+
+    public var isPending: Bool { task != nil && !isInFlight }
+
+    public func request(isPlaying: @escaping @MainActor () -> Bool, resume: @escaping @MainActor () async -> Void) {
+        guard !isInFlight else { return }
+        task?.cancel()
+        generation += 1
+        let mine = generation
+        task = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled, mine == self.generation else { return }
+            defer { if mine == self.generation { self.task = nil } }
+            guard !isPlaying() else { return }
+            self.isInFlight = true
+            defer { self.isInFlight = false }
+            // Not a child: a cancel of the outer task never reaches `resume()` once it started.
+            await Task { @MainActor in await resume() }.value
+        }
+    }
+
+    /// Thread-safe (`Task.cancel` is), so `deinit` of a main-actor owner may call it.
+    nonisolated public func cancel() {
+        task?.cancel()
+    }
+}

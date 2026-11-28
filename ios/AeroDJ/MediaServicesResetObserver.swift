@@ -13,8 +13,9 @@ import os
 @MainActor final class MediaServicesResetObserver {
     private static let log = Logger(subsystem: "com.aerodj.app", category: "playback")
     nonisolated(unsafe) private var token: NSObjectProtocol?
-    /// Sentinel's N2: one resume at a time. A second reset replaces the first's pending resume.
-    private var resume: Task<Void, Never>?
+    /// Sentinel's N2/N6/N7: one resume at a time (Core's `MediaResetResume`). A cancel only stops
+    /// a resume that has not started, so it is silent: never playbackStartRefused, never a banner.
+    private let resume = MediaResetResume()
 
     func start(coordinator: TalkoverCoordinator, music: MusicKitService, interlude: InterludePlaybackAdapter) {
         guard token == nil else { return }
@@ -51,23 +52,20 @@ import os
                 TalkoverAudioSession.restore()
             case .resumeMusicIfAllowed:
                 // Sentinel's N2: coalesced, and skipped while music still plays (no second play()).
-                resume?.cancel()
-                resume = Task { @MainActor [weak music] in
-                    guard let music, !Task.isCancelled, !music.isPlaying else { return }
-                    await music.resumeIfAllowed()
-                }
+                resume.request(isPlaying: { [weak music] in music?.isPlaying ?? true },
+                               resume: { [weak music] in await music?.resumeIfAllowed() })
             }
         }
     }
 
     func stop() {
-        resume?.cancel()
-        resume = nil
+        resume.cancel()
         if let token { NotificationCenter.default.removeObserver(token) }
         token = nil
     }
 
     deinit {
+        resume.cancel()
         if let token { NotificationCenter.default.removeObserver(token) }
     }
 }

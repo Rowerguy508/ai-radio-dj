@@ -122,3 +122,94 @@ final class MediaServicesResetTests: XCTestCase {
                        "session media services reset break=none resume=true")
     }
 }
+
+/// Sentinel's N6/N7: a cancelled resume is silent and never reaches `play()` as a cancellation.
+@MainActor
+final class MediaResetResumeTests: XCTestCase {
+    private final class FakeMusic {
+        var calls = 0
+        var sawCancellation = 0
+        var refused = 0
+        var release: CheckedContinuation<Void, Never>?
+        var started = false
+
+        /// Mirrors `resumeIfAllowed`'s catch: a thrown error, cancellation included, becomes a refusal.
+        @MainActor func resume() async {
+            calls += 1
+            started = true
+            await withCheckedContinuation { release = $0 }
+            do {
+                try Task.checkCancellation()
+            } catch {
+                sawCancellation += 1
+                refused += 1
+            }
+        }
+    }
+
+    private func spin(until condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        for _ in 0..<500 where !condition() { await Task.yield() }
+        XCTAssertTrue(condition(), "condition never held", file: file, line: line)
+    }
+
+    func testCancelBeforeStartIsSilentAndNeverCallsResume() async {
+        let gate = MediaResetResume()
+        let music = FakeMusic()
+        gate.request(isPlaying: { false }, resume: { await music.resume() })
+        gate.cancel()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(music.calls, 0)
+        XCTAssertEqual(music.refused, 0, "a cancelled resume shows no refusal and no banner")
+        XCTAssertFalse(gate.isInFlight)
+    }
+
+    func testCancelWhileInFlightNeverReachesPlayAsCancellation() async {
+        let gate = MediaResetResume()
+        let music = FakeMusic()
+        gate.request(isPlaying: { false }, resume: { await music.resume() })
+        await spin(until: { music.release != nil })
+        XCTAssertTrue(gate.isInFlight)
+        gate.cancel() // deinit or stop() while play() is in flight
+        music.release?.resume()
+        await spin(until: { !gate.isInFlight })
+        XCTAssertEqual(music.calls, 1)
+        XCTAssertEqual(music.sawCancellation, 0, "the started resume does not inherit the cancel")
+        XCTAssertEqual(music.refused, 0)
+    }
+
+    func testSecondResetCoalesces() async {
+        let gate = MediaResetResume()
+        let music = FakeMusic()
+        gate.request(isPlaying: { false }, resume: { await music.resume() })
+        gate.request(isPlaying: { false }, resume: { await music.resume() }) // replaces the pending one
+        await spin(until: { music.release != nil })
+        gate.request(isPlaying: { false }, resume: { await music.resume() }) // covered by the running one
+        music.release?.resume()
+        await spin(until: { !gate.isInFlight && !gate.isPending })
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(music.calls, 1)
+        XCTAssertEqual(music.refused, 0)
+    }
+
+    func testSkipsWhileMusicStillPlays() async {
+        let gate = MediaResetResume()
+        let music = FakeMusic()
+        gate.request(isPlaying: { true }, resume: { await music.resume() })
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(music.calls, 0)
+        XCTAssertFalse(gate.isPending)
+    }
+
+    func testObserverDeinitAndStopCancelTheResume() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("AeroDJ/MediaServicesResetObserver.swift"), encoding: .utf8)
+        let deinitBody = try XCTUnwrap(source.range(of: "deinit {")).upperBound
+        XCTAssertTrue(source[deinitBody...].prefix(200).contains("resume.cancel()"), "N6: deinit cancels the resume")
+        let stopBody = try XCTUnwrap(source.range(of: "func stop() {")).upperBound
+        XCTAssertTrue(source[stopBody...].prefix(200).contains("resume.cancel()"))
+        XCTAssertTrue(source.contains("resume.request("), "the observer goes through the coalescing gate")
+        XCTAssertFalse(source.contains("Task { @MainActor [weak music]"), "no ad-hoc resume task left")
+    }
+}
