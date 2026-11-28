@@ -314,9 +314,12 @@ final class CloudVoiceAllLinesTests: XCTestCase {
         XCTAssertTrue(never.contains("your coordinates or your location itself"))
         XCTAssertTrue(never.contains("a local news line can name your city or area"))
         XCTAssertFalse(never.contains("your location or coordinates,"))
-        XCTAssertTrue(LocalAreaConsentCopy.body.contains("Your coordinates and your location itself are never"))
-        XCTAssertTrue(LocalAreaConsentCopy.body.contains("a local headline can name your city or area"))
-        XCTAssertFalse(LocalAreaConsentCopy.body.contains("on-device voice only"), "v2 sends news and weather lines")
+        // #625: the prompt says this only in builds with a cloud voice (and local news for the headline).
+        let tester = LocalAreaConsentCopy.body(for: .tester)
+        XCTAssertTrue(tester.contains("Your coordinates and your location itself are never"))
+        XCTAssertTrue(tester.contains("a local headline can name your city or area"))
+        XCTAssertFalse(tester.contains("on-device voice only"), "v2 sends news and weather lines")
+        XCTAssertTrue(LocalAreaConsentCopy.body(for: .ownerAB).contains("Your coordinates and your location itself are never"))
         XCTAssertTrue(LocalAreaConsentCopy.usageDescription.contains("Your location itself is never sent"))
 
         let refined = "Your coordinates and your location itself are never sent, but a local news line can name your city or area."

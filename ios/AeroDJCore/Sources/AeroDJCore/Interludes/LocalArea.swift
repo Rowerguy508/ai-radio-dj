@@ -201,16 +201,82 @@ public final class LocalAreaStore: @unchecked Sendable {
 }
 
 /// Copy for the opt-in prompt (`LocalAreaPrompt` in the app). Versioned like the cloud-voice copy.
+///
+/// #625 (-Echo): the title and body say only what this build does (privacy.md, #624):
+/// - every build: Apple's geocoding service (`CLGeocoder` in `CoarseLocation+App.swift`) gets the
+///   coordinate rounded to 0.1 degree, or the typed city or ZIP, to find the city or region; Apple
+///   Weather (WeatherKit) gets the rounded point.
+/// - local news (GDELT, `TesterLocalNews.isCompiledIn`: `AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB`):
+///   the city or region name goes to the news source.
+/// - cloud voice (`AERODJ_TESTER_VOICE` or `AERODJ_OWNER_AB`, `CloudVoiceConsentPrompt`): the
+///   words of weather (and, with local news, news) lines can go to the voice service, never the
+///   coordinates or the location itself. Debug, Release and App Store builds have neither.
 public enum LocalAreaConsentCopy {
-    public static let version = 1
-    public static let title = "Local weather and news?"
-    public static let body = """
-        OnAirly can mention your local weather and headlines between songs. It uses your approximate \
-        location only, while the app is open. Your city or region is sent to the news source, and \
-        Apple Weather gets an approximate point. Your coordinates and your location itself are never \
-        sent to the voice service. If you turn on the cloud voice, the words of weather and news \
-        lines are sent to it, and a local headline can name your city or area.
-        """
+    public static let version = 2
+
+    /// What a build can do with the listener's area, beyond Apple's geocoding and weather.
+    public struct Build: Equatable, Sendable {
+        /// A news provider gets the city or region name (GDELT, tester build only).
+        public var localNews: Bool
+        /// A cloud voice can be turned on (tester and owner A/B builds).
+        public var cloudVoice: Bool
+
+        public init(localNews: Bool, cloudVoice: Bool) {
+            self.localNews = localNews
+            self.cloudVoice = cloudVoice
+        }
+
+        /// Debug, Release and App Store builds: no news provider, no cloud voice.
+        public static let appStore = Build(localNews: false, cloudVoice: false)
+        /// `AERODJ_OWNER_AB`: the owner's cloud-voice trial, no news provider.
+        public static let ownerAB = Build(localNews: false, cloudVoice: true)
+        /// `AERODJ_TESTER_VOICE` alone (internal TestFlight): GDELT local news and the cloud voice.
+        public static let tester = Build(localNews: true, cloudVoice: true)
+
+        /// The same mapping the providers use, from the two Swift conditions.
+        public static func flags(ownerAB: Bool, testerVoice: Bool) -> Build {
+            Build(localNews: testerVoice && !ownerAB, cloudVoice: ownerAB || testerVoice)
+        }
+
+        /// The build this module was compiled as.
+        public static var current: Build {
+            Build(localNews: TesterLocalNews.isCompiledIn,
+                  cloudVoice: TesterVoice.enabled || OwnerVoiceTrial.paidProvidersEnabled)
+        }
+    }
+
+    /// The prompt title for this build: "and news" only where a news provider is compiled in.
+    public static var title: String { title(for: .current) }
+
+    public static func title(for build: Build) -> String {
+        build.localNews ? "Local weather and news?" : "Local weather?"
+    }
+
+    /// The prompt body for this build.
+    public static var body: String { body(for: .current) }
+
+    public static func body(for build: Build) -> String {
+        var parts = [
+            build.localNews
+                ? "OnAirly can mention your local weather and headlines between songs."
+                : "OnAirly can mention your local weather between songs.",
+            "It uses your approximate location only, while the app is open.",
+            "To find your city or region, Apple's geocoding service gets your approximate location, "
+                + "rounded, or the city or ZIP you type.",
+            build.localNews
+                ? "Your city or region is sent to the news source, and Apple Weather gets an approximate point."
+                : "Apple Weather gets an approximate point.",
+        ]
+        if build.cloudVoice {
+            parts.append("Your coordinates and your location itself are never sent to the voice service.")
+            parts.append(build.localNews
+                ? "If you turn on the cloud voice, the words of weather and news lines are sent to it, "
+                    + "and a local headline can name your city or area."
+                : "If you turn on the cloud voice, the words of weather lines are sent to it.")
+        }
+        return parts.joined(separator: " ")
+    }
+
     public static let useApproximate = "Use approximate location"
     public static let enterPlace = "Enter a city or ZIP instead"
     public static let notNow = "Not now"
