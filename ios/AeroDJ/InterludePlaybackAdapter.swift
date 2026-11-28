@@ -494,6 +494,10 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// Drops all of them, so the next break decodes fresh players. Call after the break stop;
     /// idle drops nothing that is speaking. A late delegate callback finds no player.
     func discardPlayersAfterMediaServicesReset() {
+        // Sentinel's N1: a duck the observer released (or one left by a dead session) is gone,
+        // so the next talk-over cannot speak on a session that is no longer ducked.
+        releaseTalkoverDuck()
+        duckedFor = nil
         for player in [clipPlayer, ackPlayer].compactMap({ $0 }) + queue + scriptPlayers {
             player.delegate = nil
             player.stop()

@@ -18,6 +18,11 @@ public enum MediaServicesResetBreak: String, Equatable, Sendable {
 }
 
 public enum MediaServicesResetStep: Equatable, Sendable {
+    /// Sentinel's N1: a talk-over armed for this song (the duck window included) that has not
+    /// spoken. Cancel the run and release its duck before the players are dropped: the
+    /// coordinator's predecoded players are dead and the app's duck record is about to be cleared.
+    /// Its held break has not aired, so it still airs once in the gap from the rendered bytes.
+    case cancelArmedTalkover
     /// Stop the break now, without a fade: its player is dead. Cancels a pending break too.
     case stopBreak
     /// Drop every voice player the app holds, so the next break builds fresh ones.
@@ -35,9 +40,11 @@ public struct MediaServicesResetPlan: Equatable, Sendable {
 
     public var dropsBreak: Bool { steps.contains(.stopBreak) }
 
-    public static func plan(break state: MediaServicesResetBreak, mayAutoResume: Bool) -> MediaServicesResetPlan {
+    public static func plan(break state: MediaServicesResetBreak, talkoverArmed: Bool = false,
+                            mayAutoResume: Bool) -> MediaServicesResetPlan {
         var steps: [MediaServicesResetStep] = []
         if state != .none { steps.append(.stopBreak) }
+        if talkoverArmed { steps.append(.cancelArmedTalkover) }
         steps += [.rebuildVoicePlayers, .releaseAppActivation, .reapplyCategory]
         if state == .none, mayAutoResume { steps.append(.resumeMusicIfAllowed) }
         return MediaServicesResetPlan(steps: steps)
