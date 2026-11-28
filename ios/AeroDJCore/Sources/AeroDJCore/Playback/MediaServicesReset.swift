@@ -60,8 +60,9 @@ extension PlaybackLog {
 
 /// #195 N2/N6/N7 (-Fry): the one music resume after a media services reset.
 ///
-/// One at a time: a second reset while one is pending replaces it, and one already running
-/// covers the second. Cancelling (a newer reset, `stop()`, `deinit`) only stops a resume that has
+/// One at a time: a second reset while one is pending replaces it. N11: a reset while one is
+/// running queues exactly one more pass (any number of resets mid-resume make one rerun), which
+/// re-checks `isPlaying` first, so music is not left silent until Play. Cancelling (a newer reset, `stop()`, `deinit`) only stops a resume that has
 /// not started. A started resume runs in its own unstructured task, which does not inherit
 /// cancellation, so `play()` never sees a CancellationError and a cancel can never surface as
 /// `playbackStartRefused` or an error banner. A cancelled resume is silent.
@@ -70,24 +71,39 @@ public final class MediaResetResume {
     nonisolated(unsafe) private var task: Task<Void, Never>?
     private var generation = 0
     public private(set) var isInFlight = false
+    /// N11: a reset arrived while a resume was running. The newest closures win.
+    private var rerun: (isPlaying: @MainActor () -> Bool, resume: @MainActor () async -> Void)?
 
     public init() {}
 
     public var isPending: Bool { task != nil && !isInFlight }
 
     public func request(isPlaying: @escaping @MainActor () -> Bool, resume: @escaping @MainActor () async -> Void) {
-        guard !isInFlight else { return }
+        if isInFlight {
+            rerun = (isPlaying, resume)
+            return
+        }
         task?.cancel()
+        rerun = nil
         generation += 1
         let mine = generation
         task = Task { @MainActor [weak self] in
             guard let self, !Task.isCancelled, mine == self.generation else { return }
             defer { if mine == self.generation { self.task = nil } }
-            guard !isPlaying() else { return }
-            self.isInFlight = true
-            defer { self.isInFlight = false }
-            // Not a child: a cancel of the outer task never reaches `resume()` once it started.
-            await Task { @MainActor in await resume() }.value
+            var pass: (isPlaying: @MainActor () -> Bool, resume: @MainActor () async -> Void)? = (isPlaying, resume)
+            while let current = pass {
+                pass = nil
+                guard !current.isPlaying() else { break }
+                self.isInFlight = true
+                // Not a child: a cancel of the outer task never reaches `resume()` once it started.
+                await Task { @MainActor in await current.resume() }.value
+                self.isInFlight = false
+                // A cancel (stop(), deinit) drops the queued pass; it stays silent.
+                guard !Task.isCancelled, mine == self.generation else { self.rerun = nil; break }
+                pass = self.rerun
+                self.rerun = nil
+            }
+            self.isInFlight = false
         }
     }
 

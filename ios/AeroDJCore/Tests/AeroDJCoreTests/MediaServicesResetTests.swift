@@ -183,12 +183,59 @@ final class MediaResetResumeTests: XCTestCase {
         gate.request(isPlaying: { false }, resume: { await music.resume() })
         gate.request(isPlaying: { false }, resume: { await music.resume() }) // replaces the pending one
         await spin(until: { music.release != nil })
-        gate.request(isPlaying: { false }, resume: { await music.resume() }) // covered by the running one
         music.release?.resume()
         await spin(until: { !gate.isInFlight && !gate.isPending })
         for _ in 0..<50 { await Task.yield() }
-        XCTAssertEqual(music.calls, 1)
+        XCTAssertEqual(music.calls, 1, "two resets before the start make one resume")
         XCTAssertEqual(music.refused, 0)
+    }
+
+    /// N11: a reset that lands while a resume is running queues exactly one more pass, so music is
+    /// not left silent until Play. Several resets mid-resume still make one rerun.
+    func testResetDuringARunningResumeQueuesOneMorePass() async {
+        let gate = MediaResetResume()
+        let music = FakeMusic()
+        gate.request(isPlaying: { false }, resume: { await music.resume() })
+        await spin(until: { music.release != nil })
+        gate.request(isPlaying: { false }, resume: { await music.resume() })
+        gate.request(isPlaying: { false }, resume: { await music.resume() })
+        let first = music.release
+        music.release = nil
+        first?.resume()
+        await spin(until: { music.release != nil }) // the rerun is running
+        XCTAssertEqual(music.calls, 2)
+        music.release?.resume()
+        await spin(until: { !gate.isInFlight && !gate.isPending })
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(music.calls, 2, "one rerun, not one per reset")
+        XCTAssertEqual(music.refused, 0)
+    }
+
+    func testRerunRechecksPlayingAndACancelDropsIt() async {
+        var playing = false
+        let gate = MediaResetResume()
+        let music = FakeMusic()
+        gate.request(isPlaying: { playing }, resume: { await music.resume() })
+        await spin(until: { music.release != nil })
+        gate.request(isPlaying: { playing }, resume: { await music.resume() })
+        playing = true // the first pass got music going
+        music.release?.resume()
+        await spin(until: { !gate.isInFlight && !gate.isPending })
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(music.calls, 1, "the rerun skips while music plays")
+
+        playing = false
+        let gate2 = MediaResetResume()
+        let music2 = FakeMusic()
+        gate2.request(isPlaying: { playing }, resume: { await music2.resume() })
+        await spin(until: { music2.release != nil })
+        gate2.request(isPlaying: { playing }, resume: { await music2.resume() })
+        gate2.cancel() // stop() or deinit: no rerun
+        music2.release?.resume()
+        await spin(until: { !gate2.isInFlight })
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(music2.calls, 1)
+        XCTAssertEqual(music2.refused, 0)
     }
 
     func testSkipsWhileMusicStillPlays() async {
