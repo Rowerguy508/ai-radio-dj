@@ -61,6 +61,42 @@ final class MediaServicesResetTests: XCTestCase {
         XCTAssertFalse(MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: true, breakTrack: 0, duckedFor: nil))
     }
 
+    /// Atlas's c0203b40 blocker: the talk-over tail and the reset's resume are not ordered. After a
+    /// reset the discard already released the duck (`duckedFor == nil`), so the tail must not
+    /// deactivate the session again: if the resume ran first, that would stop the music.
+    func testTailAfterAResetNeverDeactivatesAgain() {
+        let after = TalkoverTailRelease.decide(ownsDuck: false)
+        XCTAssertEqual(after, .alreadyReleasedByReset)
+        XCTAssertFalse(after.releasesTalkoverSession, "the discard already ran the unduck")
+        XCTAssertFalse(after.deactivatesAfterBreak, "no setActive(false) that can land after play()")
+    }
+
+    func testNormalTailStillReleasesAndDeactivates() {
+        let normal = TalkoverTailRelease.decide(ownsDuck: true)
+        XCTAssertEqual(normal, .releaseAndDeactivate)
+        XCTAssertTrue(normal.releasesTalkoverSession)
+        XCTAssertTrue(normal.deactivatesAfterBreak, "today's normal end is unchanged")
+    }
+
+    func testTailAndBreakReleaseUseTheDecision() throws {
+        let adapter = try appSource("InterludePlaybackAdapter.swift")
+        XCTAssertTrue(adapter.contains("let tail = TalkoverTailRelease.decide(ownsDuck: duckedFor != nil)"),
+                      "the tail reads ownership before it clears duckedFor")
+        XCTAssertTrue(adapter.contains("if tail.releasesTalkoverSession { TalkoverAudioSession.release(afterTrack: afterTrack, spoken: true) }"))
+        XCTAssertTrue(adapter.contains("music.completeNarration(decision, deactivate: tail.deactivatesAfterBreak)"))
+        let music = try appSource("MusicKitService.swift")
+        XCTAssertTrue(music.contains("func completeNarration(_ decision: NarrationResumeDecision, deactivate: Bool = true) {"))
+        XCTAssertTrue(music.contains("if deactivate { releaseSessionAfterBreak() }"),
+                      "a break the reset already released skips setActive(false)")
+    }
+
+    /// Sentinel's N17: the adapter's getter goes through the tested Core function.
+    func testAdapterUsesTheCoreTalkoverCheck() throws {
+        let adapter = try appSource("InterludePlaybackAdapter.swift")
+        XCTAssertEqual(adapter.components(separatedBy: "MediaServicesResetPlan.isTalkoverSpeaking(").count - 1, 1)
+        XCTAssertTrue(adapter.contains("var mediaServicesResetTalkoverSpeaking: Bool {"))
+    }
+
     func testObserverPassesTheTalkoverFlag() throws {
         let observer = try appSource("MediaServicesResetObserver.swift")
         XCTAssertTrue(observer.contains("talkoverSpeaking: interlude.mediaServicesResetTalkoverSpeaking"),
