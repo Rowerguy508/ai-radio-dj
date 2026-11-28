@@ -159,11 +159,26 @@ final class AppWideLayoutTests: XCTestCase {
         XCTAssertEqual(approximate.label, "Use approximate location")
         XCTAssertEqual(app.buttons["localArea.manual"].label, "Enter a city or ZIP instead")
         XCTAssertEqual(app.buttons["localArea.notNow"].label, "Not now")
-        // #625: CI builds have no news provider, so the title is "Local weather?", never "and news".
-        XCTAssertTrue(app.staticTexts["Local weather?"].exists, "title missing\n\(app.debugDescription)")
-        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS[c] %@",
-                                                            "Local weather", "news")).firstMatch.exists,
-                       "the title says news in a build without a news provider")
+        // #631 (-Fry): the same test runs in ios.yml's flagged `consent-copy-flagged` legs, so the
+        // title, body and shot name follow the build's own flags (`LocalAreaConsentCopy.Build`):
+        // news only with AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB, a cloud voice with either flag.
+        #if AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB
+        let expectedTitle = "Local weather and news?"
+        let hasNews = true, hasVoice = true, shotName = "duo-wide-localarea-tester"
+        #elseif AERODJ_TESTER_VOICE || AERODJ_OWNER_AB
+        let expectedTitle = "Local weather?"
+        let hasNews = false, hasVoice = true, shotName = "duo-wide-localarea-ownerab"
+        #else
+        let expectedTitle = "Local weather?"
+        let hasNews = false, hasVoice = false, shotName = "duo-wide-localarea"
+        #endif
+        // #625: only a build with a news provider says "and news" in the title.
+        XCTAssertTrue(app.staticTexts[expectedTitle].exists, "title missing\n\(app.debugDescription)")
+        if !hasNews {
+            XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS[c] %@",
+                                                                "Local weather", "news")).firstMatch.exists,
+                           "the title says news in a build without a news provider")
+        }
         // #625 (-Echo): this required shot is the owner's real capture of copy v2. CI builds have
         // neither voice flag, so it is the Debug/Release/App Store body (`body(for: .appStore)`).
         func bodyText(_ phrase: String) -> XCUIElement {
@@ -171,8 +186,8 @@ final class AppWideLayoutTests: XCTestCase {
         }
         XCTAssertTrue(bodyText("Apple's geocoding service gets your approximate location").exists,
                       "geocoding disclosure missing\n\(app.debugDescription)")
-        XCTAssertFalse(bodyText("news source").exists, "no news provider in this build")
-        XCTAssertFalse(bodyText("voice service").exists, "no cloud voice in this build")
+        XCTAssertEqual(bodyText("news source").exists, hasNews, "news-source line must match this build")
+        XCTAssertEqual(bodyText("voice service").exists, hasVoice, "voice-service line must match this build")
         // 40 pt inset plus the prompt's own 24 pt padding on each side.
         for id in ["localArea.approximate", "localArea.manual", "localArea.notNow"] {
             let button = app.buttons[id]
@@ -181,9 +196,9 @@ final class AppWideLayoutTests: XCTestCase {
             XCTAssertTrue(box.contains(button.frame), "\(id) left the container")
             assertTarget(button, in: box, id) // #515 N1 (Fry): 44 pt minimum height
         }
-        let title = app.staticTexts["Local weather?"]
+        let title = app.staticTexts[expectedTitle]
         XCTAssertGreaterThanOrEqual(title.frame.minX, box.minX + 63, "title \(title.frame)")
-        save(app, "duo-wide-localarea")
+        save(app, shotName)
     }
 
     /// #461 PR 3 (-Nova): Open-Duo Landscape (`820 × 640 pt`) horizontal two-pane Library picker.
