@@ -61,6 +61,24 @@ public struct MediaServicesResetPlan: Equatable, Sendable {
     }
 }
 
+/// Atlas's c0203b40 blocker: how a talk-over's tail releases the session. After a media services
+/// reset the discard already ran the unduck and cleared the duck, and the reset's music resume may
+/// run before this tail. A second `setActive(false)` then could land after `play()` and stop the
+/// music, so a tail that no longer owns the duck releases nothing.
+public enum TalkoverTailRelease: Equatable, Sendable {
+    /// Normal end: the talk-over's own unduck, then the break's session release.
+    case releaseAndDeactivate
+    /// The reset released this break already; touch nothing.
+    case alreadyReleasedByReset
+
+    public static func decide(ownsDuck: Bool) -> TalkoverTailRelease {
+        ownsDuck ? .releaseAndDeactivate : .alreadyReleasedByReset
+    }
+
+    public var releasesTalkoverSession: Bool { self == .releaseAndDeactivate }
+    public var deactivatesAfterBreak: Bool { self == .releaseAndDeactivate }
+}
+
 extension PlaybackLog {
     /// One log-safe line per reset. No track, no user data.
     public static func mediaServicesReset(break state: MediaServicesResetBreak, resume: Bool) -> String {

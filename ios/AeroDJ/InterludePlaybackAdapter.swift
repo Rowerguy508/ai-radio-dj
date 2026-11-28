@@ -744,10 +744,13 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         let decision = NarrationResumePolicy.decide(end, mayAutoResume: music.mayAutoResume, phase: music.audioState)
         // The unduck: the talk-over's own release sequence (deactivate with notify, then the
         // normal category). completeNarration then finds the session already inactive. Music
-        // was never paused, so nothing is resumed.
+        // was never paused, so nothing is resumed. Atlas's #195 blocker: after a media services
+        // reset the discard already unducked and cleared duckedFor, and the reset's resume may
+        // already be playing, so this tail must not deactivate again.
+        let tail = TalkoverTailRelease.decide(ownsDuck: duckedFor != nil)
         duckedFor = nil
-        TalkoverAudioSession.release(afterTrack: afterTrack, spoken: true)
-        music.completeNarration(decision)
+        if tail.releasesTalkoverSession { TalkoverAudioSession.release(afterTrack: afterTrack, spoken: true) }
+        music.completeNarration(decision, deactivate: tail.deactivatesAfterBreak)
         switch outcome {
         case .finished: onPlayback?(.finished(afterTrack: breakTrack))
         case .revoked: onPlayback?(.revoked(afterTrack: breakTrack))
