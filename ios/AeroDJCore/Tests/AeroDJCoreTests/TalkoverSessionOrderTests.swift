@@ -172,7 +172,7 @@ final class TalkoverSessionOrderTests: XCTestCase {
         XCTAssertTrue(play.contains("TalkoverVoiceRamp.plan(duration: player.duration, gain: gain)"))
         XCTAssertFalse(play.contains("player.volume = gain"), "no flat start at full level")
         let unduck = try XCTUnwrap(play.range(of: "TalkoverAudioSession.release(afterTrack: afterTrack, spoken: true)"))
-        let complete = try XCTUnwrap(play.range(of: "music.completeNarration(decision)"))
+        let complete = try XCTUnwrap(play.range(of: "music.completeNarration(decision, deactivate:"))
         XCTAssertLessThan(unduck.lowerBound, complete.lowerBound)
         let ramp = try body(adapter, "private func runRamp(")
         XCTAssertTrue(ramp.contains("setVolume(ramp.gain, fadeDuration: ramp.fadeIn)"))
