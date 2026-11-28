@@ -6,7 +6,8 @@
 ///
 /// The app never calls `setActive(true)` for music (MusicKit activates on `play()`), so
 /// re-activation is the existing `resumeIfAllowed`, gated by `mayAutoResume`. A break that was
-/// speaking or pending is dropped, never replayed: its stop path already owns the one resume.
+/// speaking or pending is dropped, never replayed: a gap break's stop path already owns the one
+/// resume. A speaking talk-over's tail never resumes, so the plan resumes for it (Atlas's M2).
 
 /// The break's state when the reset arrives.
 public enum MediaServicesResetBreak: String, Equatable, Sendable {
@@ -40,13 +41,16 @@ public struct MediaServicesResetPlan: Equatable, Sendable {
 
     public var dropsBreak: Bool { steps.contains(.stopBreak) }
 
-    public static func plan(break state: MediaServicesResetBreak, talkoverArmed: Bool = false,
-                            mayAutoResume: Bool) -> MediaServicesResetPlan {
+    /// `talkoverSpeaking` (Atlas's M2): the speaking break is a talk-over over playing music.
+    /// Its tail never resumes music, so the reset owns the one resume, after the stop.
+    public static func plan(break state: MediaServicesResetBreak, talkoverSpeaking: Bool = false,
+                            talkoverArmed: Bool = false, mayAutoResume: Bool) -> MediaServicesResetPlan {
         var steps: [MediaServicesResetStep] = []
         if state != .none { steps.append(.stopBreak) }
         if talkoverArmed { steps.append(.cancelArmedTalkover) }
         steps += [.rebuildVoicePlayers, .releaseAppActivation, .reapplyCategory]
-        if state == .none, mayAutoResume { steps.append(.resumeMusicIfAllowed) }
+        let ownsResume = state == .none || (state == .speaking && talkoverSpeaking)
+        if ownsResume, mayAutoResume { steps.append(.resumeMusicIfAllowed) }
         return MediaServicesResetPlan(steps: steps)
     }
 }
