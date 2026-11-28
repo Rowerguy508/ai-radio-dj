@@ -2162,3 +2162,99 @@ final class CreatedStationSupersession217Tests: XCTestCase {
         XCTAssertTrue(queue.contains("self.createdStart.cancelPending()"))
     }
 }
+
+/// Holds a station tap's `apply` until the test lets it write its recipe (#298).
+@MainActor
+private final class ApplyGate {
+    private(set) var entered = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    func wait() async {
+        entered = true
+        await withCheckedContinuation { waiter = $0 }
+    }
+    func release() {
+        waiter?.resume()
+        waiter = nil
+    }
+}
+
+/// #298 (-Atlas): a song tap that lands while a mid-song station tap is still applying its recipe
+/// (before the pending change is written) wins. Orion's rule: the tapped songs keep playing across
+/// the next natural boundary, the tapped station stays selected, and a later idle Play starts it.
+@MainActor
+final class SongTapDuringStationApply298Tests: XCTestCase {
+    func testASongTapWhileAStationTapAppliesKeepsTheTappedSongsAcrossTheBoundary() async throws {
+        let old = station([seed(.artist, "old")])
+        let tapped = station([seed(.artist, "a")])
+        let model = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: old))),
+            consent: StaticIntegrationConsent([:]))
+        await model.load()
+        await model.setPlaybackActivity(.holdingSong)                // mid-song
+        let feed = makeFeed(QueueFakeCatalog())
+        feed.follow(model)
+        let session = DJBreakSession(
+            preparer: DJBreakPreparer(renderer: djRenderer(), userID: "u", stationID: "s", cadence: old.cadence()),
+            station: model, dj: DJPresentationStore(), seed: 1, hour: { 14 })
+        await session.start()
+        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1),
+                                            fillTimeout: .seconds(5), introDelay: .milliseconds(1))
+
+        // The old station's queue is playing (the player owns it, as after a station start).
+        var epoch = 1
+        var playingStation = StationQueueKey(old)
+        feed.queueStarted(for: model.committedDisplayed)
+        var starts: [[String]] = []
+        let gate = ApplyGate()
+
+        let tap = Task { @MainActor in
+            await starter.open(
+                .userTap, recipeID: UUID(),
+                authorize: {},
+                apply: {
+                    await gate.wait()                                // still applying: nothing pending yet
+                    await model.applyRecipe(StationRecipe(name: "A Radio", configuration: tapped))
+                    return true
+                },
+                active: { model.active },
+                nothingQueued: { false },
+                playingStation: { playingStation },
+                switchNow: { await model.applyPendingForStationSwitch() },
+                queueEpoch: { epoch },
+                start: { starts.append($0) })
+        }
+        for _ in 0..<500 where !gate.entered { await Task.yield() }
+        XCTAssertTrue(gate.entered, "the station tap is inside apply()")
+        XCTAssertFalse(model.hasPendingChanges)
+
+        // The song tap, exactly as `StationQueuePlayer`'s `onQueueReplaced` reports it.
+        let tappedSongs = ["song-1", "song-2", "song-3", "song-4", "song-5"]
+        epoch += 1
+        starter.cancelPending()
+        playingStation = nil
+        feed.queueStarted(for: model.committedDisplayed, songCount: tappedSongs.count)
+
+        gate.release()
+        let outcome = await tap.value
+        XCTAssertEqual(outcome, .notStarted(.superseded))
+        XCTAssertTrue(starts.isEmpty, "the superseded station tap starts nothing")
+        XCTAssertTrue(model.hasPendingChanges, "mid-song: the tapped station waits for the boundary")
+        for _ in 0..<500 where feed.stagedKey != StationQueueKey(tapped) {
+            await Task.yield()
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(feed.stagedKey, StationQueueKey(tapped), "the tapped station's queue is ready")
+
+        // The tapped song ends on its own: the real boundary path.
+        _ = await session.naturalBoundary(afterTrack: 0)
+        let handOff = feed.queueForNextSong(after: 0, in: tappedSongs, active: model.active,
+                                            playbackMayStart: true, sameSong: { $0 == $1 })
+        XCTAssertNil(handOff, "#298: the listener's tapped songs keep playing at the boundary")
+        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["a"], "the tapped station stays selected")
+        XCTAssertFalse(model.hasPendingChanges)
+
+        // Later, Play with nothing queued starts the tapped station.
+        let idle = try XCTUnwrap(feed.takeForIdleStart(active: model.active))
+        XCTAssertTrue(idle.allSatisfy { $0.hasPrefix("a-") }, "idle Play starts the tapped station")
+    }
+}
