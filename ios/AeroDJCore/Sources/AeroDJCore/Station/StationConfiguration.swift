@@ -27,6 +27,10 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
     public var seeds: [StationSeed]
     /// How far the station may go from `seeds`. `discovery` is the familiar-vs-new mix within it.
     public var reach: StationReach
+    /// #196: host language and Spanglish (Latin host persona). Default English, no Spanglish,
+    /// which is today's host. Encoded only when it differs from the default, so configs and
+    /// recipes saved before #196 round-trip byte for byte.
+    public var hostLanguage: DJHostLanguagePreference
 
     public init(
         genres: [String] = [],
@@ -38,7 +42,8 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
         briefing: BriefingPreferences = .init(),
         requestedIntegrations: Set<StationIntegration> = [],
         seeds: [StationSeed] = [],
-        reach: StationReach = .default
+        reach: StationReach = .default,
+        hostLanguage: DJHostLanguagePreference = .default
     ) {
         self.genres = genres
         self.moods = moods
@@ -50,6 +55,7 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
         self.requestedIntegrations = requestedIntegrations
         self.seeds = seeds
         self.reach = reach
+        self.hostLanguage = hostLanguage
         self = validated()
     }
 
@@ -139,7 +145,7 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case genres, moods, energy, discovery, personality, commentary, briefing, requestedIntegrations
-        case seeds, reach
+        case seeds, reach, hostLanguage
     }
 
     /// Decodes one seed, or nothing: an unknown kind drops that seed, not the whole list.
@@ -167,6 +173,7 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
         self.seeds = seeds?.compactMap(\.seed) ?? d.seeds
         self.reach = (try? c.decodeIfPresent(String.self, forKey: .reach))
             .flatMap(StationReach.init(rawValue:)) ?? d.reach
+        self.hostLanguage = (try? c.decodeIfPresent(DJHostLanguagePreference.self, forKey: .hostLanguage)) ?? d.hostLanguage
         self = validated()
     }
 
@@ -182,6 +189,7 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
         try c.encode(requestedIntegrations.map(\.rawValue).sorted(), forKey: .requestedIntegrations)
         try c.encode(seeds, forKey: .seeds)
         try c.encode(reach.rawValue, forKey: .reach)
+        if hostLanguage != .default { try c.encode(hostLanguage, forKey: .hostLanguage) }
     }
 }
 
