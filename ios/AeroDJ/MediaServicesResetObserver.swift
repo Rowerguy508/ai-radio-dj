@@ -31,9 +31,7 @@ import os
 
     func apply(coordinator: TalkoverCoordinator, music: MusicKitService, interlude: InterludePlaybackAdapter) {
         let state = interlude.mediaServicesResetBreak
-        // Atlas's M2: a speaking talk-over gets the resume (its tail never resumes music). The
-        // talk-over tail runs on a later main-actor turn, queued by the stop before the resume's
-        // Task, and the resume re-checks isPlaying, so a resumed music is never resumed twice.
+        // Atlas's M2: a speaking talk-over gets the resume (its tail never resumes music).
         let plan = MediaServicesResetPlan.plan(break: state,
                                                talkoverSpeaking: interlude.mediaServicesResetTalkoverSpeaking,
                                                talkoverArmed: coordinator.hasArmedTalkover,

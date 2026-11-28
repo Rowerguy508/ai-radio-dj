@@ -43,6 +43,12 @@ public struct MediaServicesResetPlan: Equatable, Sendable {
 
     /// `talkoverSpeaking` (Atlas's M2): the speaking break is a talk-over over playing music.
     /// Its tail never resumes music, so the reset owns the one resume, after the stop.
+    /// Sentinel's N14/N15: the speaking break is this song's talk-over: a clip is speaking, the
+    /// adapter holds a duck, and the duck is for the track the break is about. Read before the stop.
+    public static func isTalkoverSpeaking(clipSpeaking: Bool, breakTrack: Int, duckedFor: Int?) -> Bool {
+        clipSpeaking && duckedFor != nil && duckedFor == breakTrack
+    }
+
     public static func plan(break state: MediaServicesResetBreak, talkoverSpeaking: Bool = false,
                             talkoverArmed: Bool = false, mayAutoResume: Bool) -> MediaServicesResetPlan {
         var steps: [MediaServicesResetStep] = []

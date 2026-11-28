@@ -49,9 +49,19 @@ final class MediaServicesResetTests: XCTestCase {
                         .steps.contains(.resumeMusicIfAllowed), "a gap break's stop still owns the one resume")
     }
 
-    func testAdapterReportsATalkoverOnlyWhenDuckedAndSpeaking() throws {
-        let source = try appSource("InterludePlaybackAdapter.swift")
-        XCTAssertTrue(source.contains("var mediaServicesResetTalkoverSpeaking: Bool { stopState.isPlaying && duckedFor != nil }"))
+    /// Sentinel's N14/N15: the getter is a Core pure function, so it is unit-tested here.
+    func testTalkoverSpeakingNeedsASpeakingClipAndADuckForThisBreaksTrack() {
+        XCTAssertTrue(MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: true, breakTrack: 4, duckedFor: 4))
+        XCTAssertFalse(MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: false, breakTrack: 4, duckedFor: 4),
+                       "armed or ducked but not speaking is cancelArmedTalkover's case, not this one")
+        XCTAssertFalse(MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: true, breakTrack: 4, duckedFor: nil),
+                       "a speaking gap break holds no duck; its stop owns the resume")
+        XCTAssertFalse(MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: true, breakTrack: 4, duckedFor: 5),
+                       "N15: a duck for another track is not this break's talk-over")
+        XCTAssertFalse(MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: true, breakTrack: 0, duckedFor: nil))
+    }
+
+    func testObserverPassesTheTalkoverFlag() throws {
         let observer = try appSource("MediaServicesResetObserver.swift")
         XCTAssertTrue(observer.contains("talkoverSpeaking: interlude.mediaServicesResetTalkoverSpeaking"),
                       "the observer reads it before the stop clears duckedFor")

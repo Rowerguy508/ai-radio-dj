@@ -492,7 +492,10 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
 
     /// #195 (-Fry), Atlas's M2: the speaking break is a talk-over (ducked, music playing under it).
     /// Read before the stop: the talk-over tail and the discard both clear `duckedFor`.
-    var mediaServicesResetTalkoverSpeaking: Bool { stopState.isPlaying && duckedFor != nil }
+    var mediaServicesResetTalkoverSpeaking: Bool {
+        MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: stopState.isPlaying, breakTrack: breakTrack,
+                                                  duckedFor: duckedFor)
+    }
 
     /// #195 (-Fry): after `mediaServicesWereResetNotification` every `AVAudioPlayer` is dead.
     /// Drops all of them, so the next break decodes fresh players. Call after the break stop;
