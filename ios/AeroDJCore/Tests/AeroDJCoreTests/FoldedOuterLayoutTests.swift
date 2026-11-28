@@ -161,6 +161,61 @@ final class FoldedOuterLayoutTests: XCTestCase {
         }
     }
 
+    /// #668 AX5 follow-up (-Nova): the DJ chip joins the names' flow only where the names wrap on
+    /// the closed body beside a status column. Default sizes stay under the title; other
+    /// accessibility cases (iPhone, split slices, no inset) stay pinned above the controls.
+    func testDJLineStacksUnderTheNamesOnlyWhereTheyWrapBesideAStatusColumn() {
+        typealias L = FoldedOuterLayout
+        for inset in [73.0, 59, 1] {
+            XCTAssertEqual(L.djLinePlacement(accessibilityText: true, trailingSystemInset: inset,
+                                             outerTrailingUnsafeWidth: inset), .inFlowBelowNames, "\(inset)")
+        }
+        // The iPhone: no trailing inset anywhere.
+        XCTAssertEqual(L.djLinePlacement(accessibilityText: true, trailingSystemInset: 0,
+                                         outerTrailingUnsafeWidth: 0), .pinnedAboveControls)
+        // The split slices call the outer body without a trailing width, whatever the window says.
+        XCTAssertEqual(L.djLinePlacement(accessibilityText: true, trailingSystemInset: 73,
+                                         outerTrailingUnsafeWidth: 0), .pinnedAboveControls)
+        // A safe-area inset with no window value: the names stay one line, so the chip stays pinned.
+        XCTAssertEqual(L.djLinePlacement(accessibilityText: true, trailingSystemInset: 0,
+                                         outerTrailingUnsafeWidth: 47), .pinnedAboveControls)
+        for bad in [0.5, -12, .nan, .infinity] {
+            XCTAssertEqual(L.djLinePlacement(accessibilityText: true, trailingSystemInset: 73,
+                                             outerTrailingUnsafeWidth: bad), .pinnedAboveControls, "\(bad)")
+        }
+        for (inset, outer) in [(0.0, 0.0), (73, 73), (73, 0), (0, 47)] {
+            XCTAssertEqual(L.djLinePlacement(accessibilityText: false, trailingSystemInset: inset,
+                                             outerTrailingUnsafeWidth: outer), .belowNames, "\(inset) \(outer)")
+        }
+        // Same gate as the names: the chip moves in exactly when they wrap (with the body's width).
+        for inset in [0.0, 1, 73] {
+            XCTAssertEqual(L.djLinePlacement(accessibilityText: true, trailingSystemInset: inset,
+                                             outerTrailingUnsafeWidth: 73) == .inFlowBelowNames,
+                           L.wrapsNames(accessibilityText: true, trailingSystemInset: inset))
+        }
+    }
+
+    /// #668 AX5 follow-up (-Nova): a wrapped name shrinks (to 0.7 at most) only as far as its longest
+    /// word needs to fit one line, so it breaks between words ("Morning" / "Calm"), never inside one.
+    func testWrappedNamesShrinkSoTheLongestWordFitsOneLine() {
+        typealias L = FoldedOuterLayout
+        XCTAssertEqual(L.wrappedNameScales, [1, 0.9, 0.8, 0.7])
+        XCTAssertEqual(L.wrappedNameScales, L.wrappedNameScales.sorted(by: >), "largest first")
+        XCTAssertEqual(L.wrappedNameScales.last, 0.7)
+        XCTAssertEqual(L.longestWord(in: "Morning Calm"), "Morning")
+        XCTAssertEqual(L.longestWord(in: "The Calm Collective"), "Collective")
+        XCTAssertEqual(L.longestWord(in: "  Late\tNight  "), "Night", "split on any whitespace")
+        XCTAssertEqual(L.longestWord(in: "Calm Late"), "Calm", "a tie keeps the first")
+        XCTAssertEqual(L.longestWord(in: ""), "")
+        XCTAssertEqual(L.longestWord(in: "   "), "")
+        XCTAssertEqual(L.wrappedNameScale(wordWidth: 150, lineWidth: 200), 1, "fits: full size")
+        XCTAssertEqual(L.wrappedNameScale(wordWidth: 200, lineWidth: 200), 1, "exactly fits")
+        XCTAssertEqual(L.wrappedNameScale(wordWidth: 220, lineWidth: 200), 0.9)
+        XCTAssertEqual(L.wrappedNameScale(wordWidth: 250, lineWidth: 200), 0.8)
+        XCTAssertEqual(L.wrappedNameScale(wordWidth: 280, lineWidth: 200), 0.7)
+        XCTAssertEqual(L.wrappedNameScale(wordWidth: 400, lineWidth: 200), 0.7, "floor: never below 0.7")
+    }
+
     func testFreedSpaceGoesToTheArt() {
         // The NEXT row (44 + 12) and the Playing-from toolbar (52 + 12 + 8) are gone.
         XCTAssertEqual(FoldedOuterLayout.artReserveBelowBefore537 - FoldedOuterLayout.artReserveBelow, 128)
@@ -214,7 +269,7 @@ final class FoldedOuterLayoutTests: XCTestCase {
             let b = try XCTUnwrap(source.range(of: end, range: a.upperBound..<source.endIndex), end)
             return source[a.lowerBound..<b.lowerBound]
         }
-        let controls = try slice(from: "private func outerControls(pinsStatus: Bool)", to: "private extension View")
+        let controls = try slice(from: "private func outerControls(pinsStatus: Bool", to: "private extension View")
         XCTAssertFalse(controls.contains("FoldedToolbar("), "no Playing-from row when closed")
         XCTAssertFalse(controls.contains("FoldedOuterUpNext"), "no NEXT row when closed")
         XCTAssertFalse(source.contains("struct FoldedOuterUpNext"))
@@ -261,7 +316,7 @@ final class FoldedOuterLayoutTests: XCTestCase {
         let iosRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let player = try String(contentsOf: iosRoot.appendingPathComponent("AeroDJ/FoldedPlayer.swift"), encoding: .utf8)
-        let a = try XCTUnwrap(player.range(of: "private func outerControls(pinsStatus: Bool)"))
+        let a = try XCTUnwrap(player.range(of: "private func outerControls(pinsStatus: Bool"))
         let b = try XCTUnwrap(player.range(of: "private extension View", range: a.upperBound..<player.endIndex))
         let controls = player[a.lowerBound..<b.lowerBound]
         XCTAssertFalse(controls.contains("FoldedOuterTransport"), "play/skip moved to the rail")

@@ -49,6 +49,17 @@ struct RailDCaptureContainer: View {
     /// wrap instead of truncating. Accessibility only; a 0.001-alpha fill in that capture only.
     static var exposesNameFrames: Bool { UserDefaults.standard.bool(forKey: closedStatusColumnKey) }
 
+    /// #668 AX5 follow-up (-Nova): `-AeroDJCaptureHidesTestStationTag YES` draws the closed-Duo
+    /// status-column frame without the TEST STATION tag, so the owner's AX3 / AX5 name shots show the
+    /// names alone. Only `RailDLayoutTests`' AX status-column tests pass it, and it applies only
+    /// with the status column on the closed Duo (`hidesTestStationTag(for:)`). Every other capture,
+    /// including the default-size status-column shot, keeps the tag and its pixels. DEBUG-only file.
+    static let hidesTestStationTagKey = "AeroDJCaptureHidesTestStationTag"
+
+    static func hidesTestStationTag(for scenario: StudioCaptureScenario) -> Bool {
+        closedStatusColumn(for: scenario) > 0.5 && UserDefaults.standard.bool(forKey: hidesTestStationTagKey)
+    }
+
     /// The injected column width for this scenario: 0 unless the launch asks for it on the closed Duo.
     static func closedStatusColumn(for scenario: StudioCaptureScenario) -> Double {
         guard scenario.railDFrame == .railDDuoClosed,
@@ -154,6 +165,22 @@ struct RailDCaptureContainer: View {
                           DuoStationSwitch.Stop(id: "late-night", name: "Late Night"),
                       ],
                       onOpenStation: { _ in })
+            .modifier(CaptureHidesTestStationTag(hides: Self.hidesTestStationTag(for: scenario)))
+    }
+}
+
+/// `RailDCaptureContainer.hidesTestStationTagKey` on the player. `hides == false` returns the
+/// content as is, so every other capture keeps its pixels.
+private struct CaptureHidesTestStationTag: ViewModifier {
+    let hides: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if hides {
+            content.environment(\.captureHidesTestStationTag, true)
+        } else {
+            content
+        }
     }
 }
 

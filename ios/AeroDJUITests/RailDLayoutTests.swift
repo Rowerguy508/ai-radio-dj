@@ -137,6 +137,8 @@ final class RailDLayoutTests: XCTestCase {
                                                        shot: String, requiresWrap: Bool) throws {
         let app = try launch("railDDuoClosed", container: Self.closed, orientation: .portrait,
                              extra: ["-AeroDJCaptureClosedStatusColumn", "YES",
+                                     // #668 AX5 follow-up: the owner's AX shots without the tag.
+                                     "-AeroDJCaptureHidesTestStationTag", "YES",
                                      "-UIPreferredContentSizeCategoryName", size.launch])
         let any = app.descendants(matching: .any)
         XCTAssertTrue(any["folded.outer"].waitForExistence(timeout: 15), "the closed reskin\n\(app.debugDescription)")
@@ -173,6 +175,21 @@ final class RailDLayoutTests: XCTestCase {
             // so the check above must have seen at least it wrap.
             XCTAssertGreaterThanOrEqual(wrapped, 1, "no name needed to wrap at AX5: the check is not testing anything")
         }
+        // #668 AX5 follow-up (-Nova): on 5a0a3904's AX5 shot the pinned DJ chip cut the wrapped
+        // song title off and hid the artist. The chip now stacks under the names in their own flow:
+        // its top is at or below the artist's bottom, inside the column, left of the rail.
+        let artist = try XCTUnwrap(settledFrame(of: any["folded.titleBlock.artist"], "artist"))
+        let title = try XCTUnwrap(settledFrame(of: any["folded.titleBlock.title"], "title"))
+        XCTAssertLessThanOrEqual(title.maxY, artist.minY + 1, "title \(title) runs into the artist \(artist)")
+        let chip = any["dj.ready"]
+        XCTAssertTrue(chip.waitForExistence(timeout: 5), "DJ chip missing\n\(app.debugDescription)")
+        let chipFrame = try XCTUnwrap(settledFrame(of: chip, "dj.ready"))
+        XCTAssertGreaterThanOrEqual(chipFrame.minY, artist.maxY - 1,
+                                    "DJ chip \(chipFrame) sits over the artist \(artist)")
+        XCTAssertFalse(chipFrame.intersects(title), "DJ chip \(chipFrame) overlaps the title \(title)")
+        XCTAssertLessThanOrEqual(chipFrame.maxX, rail.minX + 1, "DJ chip \(chipFrame) runs under the rail \(rail)")
+        // Capture-only: these two owner shots draw without the TEST STATION tag.
+        XCTAssertFalse(any["folded.testStation"].exists, "TEST STATION tag is still drawn in \(shot)")
         assertNoHorizontalBar(app)
         save(app, shot, container: any["capture.railDContainer"])
     }
@@ -199,7 +216,9 @@ final class RailDLayoutTests: XCTestCase {
         let font = UIFont.systemFont(ofSize: pointSize, weight: weight)
         let oneLine = (text as NSString).size(withAttributes: [.font: font]).width + tracking * CGFloat(text.count)
         guard oneLine > frame.width + 2 else { return 0 }
-        XCTAssertGreaterThan(frame.height, font.lineHeight * 1.5,
+        // #668 AX5 follow-up: a wrapped name may be drawn down to 0.7× (`WordFitName`) so it breaks
+        // between words; two lines at 0.7× (1.4 lines) still clear 1.05 lines, one full line does not.
+        XCTAssertGreaterThan(frame.height, font.lineHeight * 0.7 * 1.5,
                              "\(id) \(frame) is one line but \(text) needs \(oneLine) pt at \(pointSize) pt: truncated",
                              file: file, line: line)
         return 1

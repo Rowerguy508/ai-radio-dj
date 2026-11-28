@@ -60,6 +60,54 @@ public enum FoldedOuterLayout {
     public static func wrapsNames(accessibilityText: Bool, trailingSystemInset: Double) -> Bool {
         accessibilityText && trailingSystemInset.isFinite && trailingSystemInset > 0.5
     }
+
+    /// Where the closed player's quiet DJ line ("DJ break after this song") goes.
+    public enum DJLinePlacement: Equatable, Sendable {
+        /// Default sizes: in the upper part, under the title row (#537).
+        case belowNames
+        /// Accessibility sizes (#310 / #345): pinned in the controls under the upper part.
+        case pinnedAboveControls
+        /// #668 AX5 follow-up (Orion, Nov 27, -Nova): in the upper part's own flow, under the
+        /// station, song and artist names, so it scrolls with them and can never sit over them.
+        case inFlowBelowNames
+    }
+
+    /// #668 AX5 follow-up (-Nova): on 5a0a3904 the AX5 status-column shot showed the wrapped song
+    /// title cut off at the pinned DJ chip's top edge and the artist hidden. The chip was pinned
+    /// under the upper part, whose ScrollView clipped the wrapped names at that edge. Wherever the
+    /// names wrap (`wrapsNames`) on the closed body beside a status column (the phone reader's
+    /// `trailingUnsafeWidth`, which the split slices never pass), the chip moves into the names'
+    /// own flow. Every other case keeps its #537 / #310 placement, so default sizes, the iPhone
+    /// (no trailing inset) and the slices draw exactly as before.
+    public static func djLinePlacement(accessibilityText: Bool, trailingSystemInset: Double,
+                                       outerTrailingUnsafeWidth: Double) -> DJLinePlacement {
+        guard accessibilityText else { return .belowNames }
+        let besideStatusColumn = outerTrailingUnsafeWidth.isFinite && outerTrailingUnsafeWidth > 0.5
+        return besideStatusColumn && wrapsNames(accessibilityText: accessibilityText,
+                                                trailingSystemInset: trailingSystemInset)
+            ? .inFlowBelowNames : .pinnedAboveControls
+    }
+
+    /// #668 AX5 follow-up (-Nova): a wrapped name must break between words, never inside one
+    /// ("Mornin" / "g Calm" on the 5a0a3904 AX5 shot). Text breaks inside a word only when that word
+    /// is wider than the line, so the name is drawn at the first of these scales at which its
+    /// longest word fits on one line (largest first), and at the last one otherwise. 0.7 is the
+    /// floor, so the type stays an accessibility size. Wrapped names only.
+    public static let wrappedNameScales: [Double] = [1, 0.9, 0.8, 0.7]
+
+    /// The widest-by-characters word of `name` (whitespace-separated), the one most likely to need
+    /// a smaller scale. The view measures the real glyph width; this only picks the probe string.
+    /// Empty for an empty or all-space name.
+    public static func longestWord(in name: String) -> String {
+        let words: [Substring] = name.split(whereSeparator: { (c: Character) in c.isWhitespace })
+        return words.max(by: { $0.count < $1.count }).map(String.init) ?? ""
+    }
+
+    /// The first `wrappedNameScales` entry at which a word `wordWidth` wide (at scale 1) fits in
+    /// `lineWidth`; the last entry when none does. Mirrors the view's `ViewThatFits` order, for tests.
+    public static func wrappedNameScale(wordWidth: Double, lineWidth: Double) -> Double {
+        wrappedNameScales.first(where: { wordWidth * $0 <= lineWidth }) ?? wrappedNameScales[wrappedNameScales.count - 1]
+    }
     /// Height kept for the header, title, DJ line and pinned controls under the art at
     /// default text sizes (accessibility sizes use `FoldedStyle.artReserveAccessibility`).
     /// #537 gives the art what the NEXT row (44 + 12) and the Playing-from toolbar
