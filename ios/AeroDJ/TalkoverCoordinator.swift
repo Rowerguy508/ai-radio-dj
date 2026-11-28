@@ -239,6 +239,8 @@ final class TalkoverCoordinator {
     private var ratingCut = StationRatingTalkoverCut()
     /// #525: `routeChangeNotification` marks the next talk-over for the route re-check.
     private let routeChanges = DJRouteChangeObserver()
+    /// #195 (-Fry): rebuilds the voice players and the category after a media services reset.
+    private let mediaReset = MediaServicesResetObserver()
 
     init(music: MusicKitService, interlude: InterludePlaybackAdapter, djSession: DJBreakSession,
          defaults: UserDefaults = .standard,
@@ -257,6 +259,7 @@ final class TalkoverCoordinator {
     func start() {
         guard ticker == nil else { return }
         routeChanges.start()
+        mediaReset.start(coordinator: self, music: music, interlude: interlude)
         ticker = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 let interval = self?.tick() ?? 1.0
@@ -641,6 +644,21 @@ final class TalkoverCoordinator {
         cancelRun(cancel)
         // A revoke drops the held break: it must not be narrated later in the gap.
         if cancel == .revoked, let h = held, afterTrack == nil || afterTrack == h.afterTrack { drop(h.afterTrack) }
+    }
+
+    /// #195 N1 (-Fry): a run armed for this song, duck window included, whose voice has not started.
+    var hasArmedTalkover: Bool {
+        guard let r = run, r.cancelled == nil else { return false }
+        return r.phase == .armed
+    }
+
+    /// #195 N1 (-Fry): a media services reset in the arm/duck window. The run is cancelled as a
+    /// route removal (its predecoded players are dead) and its duck is released. The held break
+    /// has not aired, so it still airs once in the gap. `stillArmed` then ends the arm task.
+    func cancelArmedTalkoverAfterMediaReset() {
+        guard hasArmedTalkover else { return }
+        cancelRun(.routeRemoved)
+        interlude.releaseTalkoverDuck()
     }
 
     private func cancelRun(_ reason: TalkoverCancel) {

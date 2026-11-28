@@ -484,6 +484,35 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         }
     }
 
+    /// #195 (-Fry): the break's state for `MediaServicesResetPlan`. Main actor.
+    var mediaServicesResetBreak: MediaServicesResetBreak {
+        if stopState.isPlaying { return .speaking }
+        return pendingPlay.handedOutTrack != nil ? .pending : .none
+    }
+
+    /// #195 (-Fry): after `mediaServicesWereResetNotification` every `AVAudioPlayer` is dead.
+    /// Drops all of them, so the next break decodes fresh players. Call after the break stop;
+    /// idle drops nothing that is speaking. A late delegate callback finds no player.
+    func discardPlayersAfterMediaServicesReset() {
+        // Sentinel's N1: a duck the observer released (or one left by a dead session) is gone,
+        // so the next talk-over cannot speak on a session that is no longer ducked.
+        releaseTalkoverDuck()
+        duckedFor = nil
+        for player in [clipPlayer, ackPlayer].compactMap({ $0 }) + queue + scriptPlayers {
+            player.delegate = nil
+            player.stop()
+        }
+        clipPlayer = nil
+        ackPlayer = nil
+        queue = []
+        scriptPlayers = []
+        lineCueIDs = []
+        resumeLines = []
+        ramps = [:]
+        rampTask?.cancel()
+        rampTask = nil
+    }
+
     private func haltAudio() {
         queue = []
         let player = clipPlayer
