@@ -1653,9 +1653,10 @@ final class MusicKitService: ObservableObject {
     }
 
     /// Applies the state-machine and playback events for a break that just ended.
-    /// The caller starts music only when `decision.resumeMusic` is true.
-    func completeNarration(_ decision: NarrationResumeDecision) {
-        releaseSessionAfterBreak()
+    /// The caller starts music only when `decision.resumeMusic` is true. `deactivate` false: a
+    /// media services reset already released this break (#195), so no late `setActive(false)`.
+    func completeNarration(_ decision: NarrationResumeDecision, deactivate: Bool = true) {
+        if deactivate { releaseSessionAfterBreak() }
         if let event = decision.audioEvent {
             stateMachine.apply(event)
         }

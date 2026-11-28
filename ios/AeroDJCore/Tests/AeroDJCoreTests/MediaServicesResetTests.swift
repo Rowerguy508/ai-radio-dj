@@ -29,6 +29,80 @@ final class MediaServicesResetTests: XCTestCase {
         }
     }
 
+    /// Atlas's M2: a talk-over speaks over playing music and its tail never resumes it ("Music was
+    /// never paused"). If the reset paused MusicKit, nobody resumes it, so the reset owns the resume
+    /// here, after the stop, exactly as in the no-break case.
+    func testResetDuringASpeakingTalkoverStopsItThenResumesMusic() {
+        let plan = MediaServicesResetPlan.plan(break: .speaking, talkoverSpeaking: true, mayAutoResume: true)
+        XCTAssertEqual(plan.steps, [.stopBreak, .rebuildVoicePlayers, .releaseAppActivation,
+                                    .reapplyCategory, .resumeMusicIfAllowed],
+                       "the dead clip stops first; music resumes last, since the talk-over tail never does")
+        XCTAssertTrue(plan.dropsBreak)
+    }
+
+    func testTalkoverResumeStillNeedsMayAutoResumeAndOnlyAppliesWhileSpeaking() {
+        XCTAssertFalse(MediaServicesResetPlan.plan(break: .speaking, talkoverSpeaking: true, mayAutoResume: false)
+                        .steps.contains(.resumeMusicIfAllowed), "a paused listener stays paused")
+        XCTAssertFalse(MediaServicesResetPlan.plan(break: .pending, talkoverSpeaking: true, mayAutoResume: true)
+                        .steps.contains(.resumeMusicIfAllowed), "only a speaking talk-over; a pending gap break owns its resume")
+        XCTAssertFalse(MediaServicesResetPlan.plan(break: .speaking, talkoverSpeaking: false, mayAutoResume: true)
+                        .steps.contains(.resumeMusicIfAllowed), "a gap break's stop still owns the one resume")
+    }
+
+    /// Sentinel's N14/N15: the getter is a Core pure function, so it is unit-tested here.
+    func testTalkoverSpeakingNeedsASpeakingClipAndADuckForThisBreaksTrack() {
+        XCTAssertTrue(MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: true, breakTrack: 4, duckedFor: 4))
+        XCTAssertFalse(MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: false, breakTrack: 4, duckedFor: 4),
+                       "armed or ducked but not speaking is cancelArmedTalkover's case, not this one")
+        XCTAssertFalse(MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: true, breakTrack: 4, duckedFor: nil),
+                       "a speaking gap break holds no duck; its stop owns the resume")
+        XCTAssertFalse(MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: true, breakTrack: 4, duckedFor: 5),
+                       "N15: a duck for another track is not this break's talk-over")
+        XCTAssertFalse(MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: true, breakTrack: 0, duckedFor: nil))
+    }
+
+    /// Atlas's c0203b40 blocker: the talk-over tail and the reset's resume are not ordered. After a
+    /// reset the discard already released the duck (`duckedFor == nil`), so the tail must not
+    /// deactivate the session again: if the resume ran first, that would stop the music.
+    func testTailAfterAResetNeverDeactivatesAgain() {
+        let after = TalkoverTailRelease.decide(ownsDuck: false)
+        XCTAssertEqual(after, .alreadyReleasedByReset)
+        XCTAssertFalse(after.releasesTalkoverSession, "the discard already ran the unduck")
+        XCTAssertFalse(after.deactivatesAfterBreak, "no setActive(false) that can land after play()")
+    }
+
+    func testNormalTailStillReleasesAndDeactivates() {
+        let normal = TalkoverTailRelease.decide(ownsDuck: true)
+        XCTAssertEqual(normal, .releaseAndDeactivate)
+        XCTAssertTrue(normal.releasesTalkoverSession)
+        XCTAssertTrue(normal.deactivatesAfterBreak, "today's normal end is unchanged")
+    }
+
+    func testTailAndBreakReleaseUseTheDecision() throws {
+        let adapter = try appSource("InterludePlaybackAdapter.swift")
+        XCTAssertTrue(adapter.contains("let tail = TalkoverTailRelease.decide(ownsDuck: duckedFor != nil)"),
+                      "the tail reads ownership before it clears duckedFor")
+        XCTAssertTrue(adapter.contains("if tail.releasesTalkoverSession { TalkoverAudioSession.release(afterTrack: afterTrack, spoken: true) }"))
+        XCTAssertTrue(adapter.contains("music.completeNarration(decision, deactivate: tail.deactivatesAfterBreak)"))
+        let music = try appSource("MusicKitService.swift")
+        XCTAssertTrue(music.contains("func completeNarration(_ decision: NarrationResumeDecision, deactivate: Bool = true) {"))
+        XCTAssertTrue(music.contains("if deactivate { releaseSessionAfterBreak() }"),
+                      "a break the reset already released skips setActive(false)")
+    }
+
+    /// Sentinel's N17: the adapter's getter goes through the tested Core function.
+    func testAdapterUsesTheCoreTalkoverCheck() throws {
+        let adapter = try appSource("InterludePlaybackAdapter.swift")
+        XCTAssertEqual(adapter.components(separatedBy: "MediaServicesResetPlan.isTalkoverSpeaking(").count - 1, 1)
+        XCTAssertTrue(adapter.contains("var mediaServicesResetTalkoverSpeaking: Bool {"))
+    }
+
+    func testObserverPassesTheTalkoverFlag() throws {
+        let observer = try appSource("MediaServicesResetObserver.swift")
+        XCTAssertTrue(observer.contains("talkoverSpeaking: interlude.mediaServicesResetTalkoverSpeaking"),
+                      "the observer reads it before the stop clears duckedFor")
+    }
+
     func testRebuildAlwaysComesBeforeTheCategory() throws {
         for state in [MediaServicesResetBreak.none, .speaking, .pending] {
             for armed in [true, false] {
@@ -76,6 +150,13 @@ final class MediaServicesResetTests: XCTestCase {
                     if let r = steps.firstIndex(of: .resumeMusicIfAllowed) {
                         XCTAssertEqual(r, steps.count - 1, "resume is the last step")
                         XCTAssertFalse(steps.contains(.stopBreak))
+                    }
+                    let talkover = MediaServicesResetPlan.plan(break: state, talkoverSpeaking: true,
+                                                               talkoverArmed: armed, mayAutoResume: resume).steps
+                    XCTAssertLessThanOrEqual(talkover.filter { $0 == .resumeMusicIfAllowed }.count, 1)
+                    if let r = talkover.firstIndex(of: .resumeMusicIfAllowed) {
+                        XCTAssertEqual(r, talkover.count - 1, "resume is the last step")
+                        if let stop = talkover.firstIndex(of: .stopBreak) { XCTAssertLessThan(stop, r) }
                     }
                 }
             }

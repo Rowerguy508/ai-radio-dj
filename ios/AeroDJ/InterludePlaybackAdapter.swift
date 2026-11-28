@@ -490,6 +490,13 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         return pendingPlay.handedOutTrack != nil ? .pending : .none
     }
 
+    /// #195 (-Fry), Atlas's M2: the speaking break is a talk-over (ducked, music playing under it).
+    /// Read before the stop: the talk-over tail and the discard both clear `duckedFor`.
+    var mediaServicesResetTalkoverSpeaking: Bool {
+        MediaServicesResetPlan.isTalkoverSpeaking(clipSpeaking: stopState.isPlaying, breakTrack: breakTrack,
+                                                  duckedFor: duckedFor)
+    }
+
     /// #195 (-Fry): after `mediaServicesWereResetNotification` every `AVAudioPlayer` is dead.
     /// Drops all of them, so the next break decodes fresh players. Call after the break stop;
     /// idle drops nothing that is speaking. A late delegate callback finds no player.
@@ -737,10 +744,13 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         let decision = NarrationResumePolicy.decide(end, mayAutoResume: music.mayAutoResume, phase: music.audioState)
         // The unduck: the talk-over's own release sequence (deactivate with notify, then the
         // normal category). completeNarration then finds the session already inactive. Music
-        // was never paused, so nothing is resumed.
+        // was never paused, so nothing is resumed. Atlas's #195 blocker: after a media services
+        // reset the discard already unducked and cleared duckedFor, and the reset's resume may
+        // already be playing, so this tail must not deactivate again.
+        let tail = TalkoverTailRelease.decide(ownsDuck: duckedFor != nil)
         duckedFor = nil
-        TalkoverAudioSession.release(afterTrack: afterTrack, spoken: true)
-        music.completeNarration(decision)
+        if tail.releasesTalkoverSession { TalkoverAudioSession.release(afterTrack: afterTrack, spoken: true) }
+        music.completeNarration(decision, deactivate: tail.deactivatesAfterBreak)
         switch outcome {
         case .finished: onPlayback?(.finished(afterTrack: breakTrack))
         case .revoked: onPlayback?(.revoked(afterTrack: breakTrack))

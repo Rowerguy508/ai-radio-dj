@@ -6,7 +6,8 @@
 ///
 /// The app never calls `setActive(true)` for music (MusicKit activates on `play()`), so
 /// re-activation is the existing `resumeIfAllowed`, gated by `mayAutoResume`. A break that was
-/// speaking or pending is dropped, never replayed: its stop path already owns the one resume.
+/// speaking or pending is dropped, never replayed: a gap break's stop path already owns the one
+/// resume. A speaking talk-over's tail never resumes, so the plan resumes for it (Atlas's M2).
 
 /// The break's state when the reset arrives.
 public enum MediaServicesResetBreak: String, Equatable, Sendable {
@@ -40,15 +41,42 @@ public struct MediaServicesResetPlan: Equatable, Sendable {
 
     public var dropsBreak: Bool { steps.contains(.stopBreak) }
 
-    public static func plan(break state: MediaServicesResetBreak, talkoverArmed: Bool = false,
-                            mayAutoResume: Bool) -> MediaServicesResetPlan {
+    /// `talkoverSpeaking` (Atlas's M2): the speaking break is a talk-over over playing music.
+    /// Its tail never resumes music, so the reset owns the one resume, after the stop.
+    /// Sentinel's N14/N15: the speaking break is this song's talk-over: a clip is speaking, the
+    /// adapter holds a duck, and the duck is for the track the break is about. Read before the stop.
+    public static func isTalkoverSpeaking(clipSpeaking: Bool, breakTrack: Int, duckedFor: Int?) -> Bool {
+        clipSpeaking && duckedFor != nil && duckedFor == breakTrack
+    }
+
+    public static func plan(break state: MediaServicesResetBreak, talkoverSpeaking: Bool = false,
+                            talkoverArmed: Bool = false, mayAutoResume: Bool) -> MediaServicesResetPlan {
         var steps: [MediaServicesResetStep] = []
         if state != .none { steps.append(.stopBreak) }
         if talkoverArmed { steps.append(.cancelArmedTalkover) }
         steps += [.rebuildVoicePlayers, .releaseAppActivation, .reapplyCategory]
-        if state == .none, mayAutoResume { steps.append(.resumeMusicIfAllowed) }
+        let ownsResume = state == .none || (state == .speaking && talkoverSpeaking)
+        if ownsResume, mayAutoResume { steps.append(.resumeMusicIfAllowed) }
         return MediaServicesResetPlan(steps: steps)
     }
+}
+
+/// Atlas's c0203b40 blocker: how a talk-over's tail releases the session. After a media services
+/// reset the discard already ran the unduck and cleared the duck, and the reset's music resume may
+/// run before this tail. A second `setActive(false)` then could land after `play()` and stop the
+/// music, so a tail that no longer owns the duck releases nothing.
+public enum TalkoverTailRelease: Equatable, Sendable {
+    /// Normal end: the talk-over's own unduck, then the break's session release.
+    case releaseAndDeactivate
+    /// The reset released this break already; touch nothing.
+    case alreadyReleasedByReset
+
+    public static func decide(ownsDuck: Bool) -> TalkoverTailRelease {
+        ownsDuck ? .releaseAndDeactivate : .alreadyReleasedByReset
+    }
+
+    public var releasesTalkoverSession: Bool { self == .releaseAndDeactivate }
+    public var deactivatesAfterBreak: Bool { self == .releaseAndDeactivate }
 }
 
 extension PlaybackLog {
